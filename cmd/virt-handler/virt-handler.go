@@ -308,16 +308,20 @@ func (app *virtHandlerApp) Run() {
 	defer close(stop)
 	var capabilities *api.Capabilities
 	var hostCpuModel string
-	nodeLabellerrecorder := broadcaster.NewRecorder(scheme.Scheme, k8sv1.EventSource{Component: "node-labeller", Host: app.HostOverride})
-	nodeLabellerController, err := nodelabeller.NewNodeLabeller(app.clusterConfig, app.virtCli.CoreV1().Nodes(), app.HostOverride, nodeLabellerrecorder)
-	if err != nil {
+	
+	capManager := nodelabeller.NewNodeCapabilitiesManager()
+	if err := capManager.LoadAll(); err != nil {
 		panic(err)
 	}
-	capabilities = nodeLabellerController.HostCapabilities()
+
+	nodeLabellerrecorder := broadcaster.NewRecorder(scheme.Scheme, k8sv1.EventSource{Component: "node-labeller", Host: app.HostOverride})
+	nodeLabellerController := nodelabeller.NewNodeLabeller(app.clusterConfig, app.virtCli.CoreV1().Nodes(), app.HostOverride, nodeLabellerrecorder, capManager)
+
+	capabilities = capManager.HostCapabilities()
 
 	// Node labelling is only relevant on x86_64 arch.
 	if virtconfig.IsAMD64(runtime.GOARCH) {
-		hostCpuModel = nodeLabellerController.GetHostCpuModel().Name
+		hostCpuModel = capManager.GetHostCpuModel().Name
 
 		go nodeLabellerController.Run(10, stop)
 	}

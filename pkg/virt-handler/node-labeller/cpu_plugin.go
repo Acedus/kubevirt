@@ -50,7 +50,7 @@ func (n *NodeLabeller) getSupportedCpuModels(obsoleteCPUsx86 map[string]bool) []
 		obsoleteCPUsx86 = util.DefaultObsoleteCPUModels
 	}
 
-	for _, model := range n.hostCapabilities.items {
+	for _, model := range n.capManager.hostCapabilities.items {
 		if _, ok := obsoleteCPUsx86[model]; ok {
 			continue
 		}
@@ -63,19 +63,19 @@ func (n *NodeLabeller) getSupportedCpuModels(obsoleteCPUsx86 map[string]bool) []
 func (n *NodeLabeller) getSupportedCpuFeatures() cpuFeatures {
 	supportedCpuFeatures := make(cpuFeatures)
 
-	for _, feature := range n.supportedFeatures {
+	for _, feature := range n.capManager.supportedFeatures {
 		supportedCpuFeatures[feature] = true
 	}
 
 	return supportedCpuFeatures
 }
 
-func (n *NodeLabeller) GetHostCpuModel() hostCPUModel {
+func (n *NodeCapabilitiesManager) GetHostCpuModel() hostCPUModel {
 	return n.hostCPUModel
 }
 
 // loadDomCapabilities loads info about cpu models, which can host emulate
-func (n *NodeLabeller) loadDomCapabilities() error {
+func (n *NodeCapabilitiesManager) loadDomCapabilities() error {
 	hostDomCapabilities, err := n.getDomCapabilities()
 	if err != nil {
 		return err
@@ -124,11 +124,11 @@ func (n *NodeLabeller) loadDomCapabilities() error {
 }
 
 // loadHostSupportedFeatures loads supported features
-func (n *NodeLabeller) loadHostSupportedFeatures() error {
+func (n *NodeCapabilitiesManager) loadHostSupportedFeatures() error {
 	featuresFile := filepath.Join(n.volumePath, supportedFeaturesXml)
 
 	hostFeatures := SupportedHostFeature{}
-	err := n.getStructureFromXMLFile(featuresFile, &hostFeatures)
+	err := getStructureFromXMLFile(featuresFile, &hostFeatures)
 	if err != nil {
 		return err
 	}
@@ -146,20 +146,20 @@ func (n *NodeLabeller) loadHostSupportedFeatures() error {
 	return nil
 }
 
-func (n *NodeLabeller) loadHostCapabilities() error {
+func (n *NodeCapabilitiesManager) loadHostCapabilities() error {
 	capsFile := filepath.Join(n.volumePath, "capabilities.xml")
 	n.capabilities = &api.Capabilities{}
-	err := n.getStructureFromXMLFile(capsFile, n.capabilities)
+	err := getStructureFromXMLFile(capsFile, n.capabilities)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (n *NodeLabeller) getDomCapabilities() (HostDomCapabilities, error) {
+func (n *NodeCapabilitiesManager) getDomCapabilities() (HostDomCapabilities, error) {
 	domCapabilitiesFile := filepath.Join(n.volumePath, n.domCapabilitiesFileName)
 	hostDomCapabilities := HostDomCapabilities{}
-	err := n.getStructureFromXMLFile(domCapabilitiesFile, &hostDomCapabilities)
+	err := getStructureFromXMLFile(domCapabilitiesFile, &hostDomCapabilities)
 	if err != nil {
 		return hostDomCapabilities, err
 	}
@@ -175,13 +175,14 @@ func (n *NodeLabeller) getDomCapabilities() (HostDomCapabilities, error) {
 
 // GetStructureFromXMLFile load data from xml file and unmarshals them into given structure
 // Given structure has to be pointer
-func (n *NodeLabeller) getStructureFromXMLFile(path string, structure interface{}) error {
+func getStructureFromXMLFile(path string, structure interface{}) error {
 	rawFile, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 
-	n.logger.V(4).Infof("node-labeller - loading data from xml file: %#v", string(rawFile))
+        log.Log.Infof("capabilities-manager - loading data from xml file: %#v", string(rawFile))
+	//n.logger.V(4).Infof("node-labeller - loading data from xml file: %#v", string(rawFile))
 
 	return xml.Unmarshal(rawFile, structure)
 }

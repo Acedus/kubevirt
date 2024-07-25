@@ -9,6 +9,7 @@ go_library(
         "kvm-caps-info-plugin_s390x.go",
         "model.go",
         "node_labeller.go",
+        "capabilities_manager.go",
     ],
     cgo = True,
     importpath = "kubevirt.io/kubevirt/pkg/virt-handler/node-labeller",
