@@ -177,6 +177,22 @@ load(
     "go_repository",
 )
 
+go_repository(
+    name = "org_golang_google_grpc",
+    build_file_proto_mode = "disable",
+    importpath = "google.golang.org/grpc",
+    sum = "h1:bs/cUb4lp1G5iImFFd3u5ixQzweKizoZJAwBNLR42lc=",
+    version = "v1.65.0",
+)
+
+go_repository(
+    name = "org_golang_google_genproto_googleapis_rpc",
+    build_file_proto_mode = "disable_global",
+    importpath = "google.golang.org/genproto/googleapis/rpc",
+    sum = "h1:Zy9XzmMEflZ/MAaA7vNcoebnRAld7FsPW1EeBB7V0m8=",
+    version = "v0.0.0-20240528184218-531527333157",
+)
+
 gazelle_dependencies()
 
 load("@com_github_bazelbuild_buildtools//buildifier:deps.bzl", "buildifier_dependencies")
@@ -408,13 +424,6 @@ go_repository(
     importpath = "github.com/golang/glog",
     sum = "h1:VKtxabqXZkF25pY9ekfRL6a582T4P37/31XEstQ5p58=",
     version = "v0.0.0-20160126235308-23def4e6c14b",
-)
-
-go_repository(
-    name = "org_golang_google_grpc",
-    importpath = "google.golang.org/grpc",
-    sum = "h1:M5a8xTlYTxwMn5ZFkwhRabsygDY5G8TYLyQDBxJNAxE=",
-    version = "v1.30.0",
 )
 
 go_repository(
