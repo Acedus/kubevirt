@@ -34,6 +34,7 @@ import (
 	"time"
 
 	kvtls "kubevirt.io/kubevirt/pkg/util/tls"
+	nodecapabilities "kubevirt.io/kubevirt/pkg/virt-handler/node-capabilities"
 	"kubevirt.io/kubevirt/pkg/virt-handler/seccomp"
 	"kubevirt.io/kubevirt/pkg/virt-handler/vsock"
 
@@ -49,7 +50,6 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/certificate"
 	"k8s.io/client-go/util/flowcontrol"
-	"libvirt.org/go/libvirtxml"
 
 	"kubevirt.io/kubevirt/pkg/safepath"
 
@@ -305,15 +305,15 @@ func (app *virtHandlerApp) Run() {
 
 	stop := make(chan struct{})
 	defer close(stop)
-	var capabilities libvirtxml.Caps
 	var hostCpuModel string
 
-	hostCapsFile, err := os.ReadFile(filepath.Join(nodelabeller.NodeLabellerVolumePath, "capabilities.xml"))
+	hostCapabilitiesFile, err := os.Open(filepath.Join(nodecapabilities.CapabilitiesVolumePath, nodecapabilities.HostCapabilitiesFilename))
 	if err != nil {
 		panic(err)
 	}
-
-	if err := capabilities.Unmarshal(string(hostCapsFile)); err != nil {
+	defer hostCapabilitiesFile.Close()
+	capabilities, err := nodecapabilities.HostCapabilities(hostCapabilitiesFile)
+	if err != nil {
 		panic(err)
 	}
 
@@ -359,7 +359,7 @@ func (app *virtHandlerApp) Run() {
 		podIsolationDetector,
 		migrationProxy,
 		downwardMetricsManager,
-		&capabilities,
+		capabilities,
 		hostCpuModel,
 		netsetup.NewNetConf(),
 		netsetup.NewNetStat(),
