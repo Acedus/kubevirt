@@ -305,33 +305,63 @@ func (app *virtHandlerApp) Run() {
 
 	stop := make(chan struct{})
 	defer close(stop)
-	var hostCpuModel string
 
-	hostCapabilitiesFile, err := os.Open(filepath.Join(nodecapabilities.CapabilitiesVolumePath, nodecapabilities.HostCapabilitiesFilename))
+	var supportedFeatures []string
+
+	hostCapabilitiesXML, err := os.ReadFile(filepath.Join(nodecapabilities.CapabilitiesVolumePath, nodecapabilities.HostCapabilitiesFilename))
 	if err != nil {
 		panic(err)
 	}
-	defer hostCapabilitiesFile.Close()
-	capabilities, err := nodecapabilities.HostCapabilities(hostCapabilitiesFile)
+	capabilities, err := nodecapabilities.HostCapabilities(string(hostCapabilitiesXML))
 	if err != nil {
 		panic(err)
+	}
+
+	domCapabilitiesXML, err := os.ReadFile(filepath.Join(nodecapabilities.CapabilitiesVolumePath, nodecapabilities.DomCapabiliitesFilename))
+	if err != nil {
+		panic(err)
+	}
+	domCapabiliites, err := nodecapabilities.DomCapabilities(string(domCapabilitiesXML))
+	if err != nil {
+		panic(err)
+	}
+
+	supportedHostCPUs, err := nodecapabilities.SupportedHostCPUs(domCapabiliites.CPU.Modes, runtime.GOARCH)
+	if err != nil {
+		panic(err)
+	}
+	supportedSEV := nodecapabilities.SupportedHostSEV(domCapabiliites.Features.SEV)
+
+	if virtconfig.IsAMD64(runtime.GOARCH) || virtconfig.IsS390X(runtime.GOARCH) {
+		supportedFeaturesXML, err := os.ReadFile(filepath.Join(nodecapabilities.CapabilitiesVolumePath, nodecapabilities.SupportedFeaturesFilename))
+		if err != nil {
+			panic(err)
+		}
+		supportedFeatures, err = nodecapabilities.SupportedFeatures(string(supportedFeaturesXML), runtime.GOARCH)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	nodeLabellerrecorder := broadcaster.NewRecorder(scheme.Scheme, k8sv1.EventSource{Component: "node-labeller", Host: app.HostOverride})
-	nodeLabellerController, err := nodelabeller.NewNodeLabeller(app.clusterConfig,
+	nodeLabellerController := nodelabeller.NewNodeLabeller(
+		app.clusterConfig,
 		app.virtCli.CoreV1().Nodes(),
 		app.HostOverride,
 		nodeLabellerrecorder,
+		supportedFeatures,
 		capabilities.Host.CPU.Counter,
+		supportedHostCPUs.Model,
+		supportedHostCPUs.Vendor,
+		supportedHostCPUs.UsableModels,
+		supportedHostCPUs.RequiredFeatures,
+		supportedSEV.Supported,
+		supportedSEV.SupportedES,
+		nodecapabilities.GetCapLabels(),
 	)
-	if err != nil {
-		panic(err)
-	}
 
 	// Node labelling is only relevant on x86_64 and s390x arches.
 	if virtconfig.IsAMD64(runtime.GOARCH) || virtconfig.IsS390X(runtime.GOARCH) {
-		hostCpuModel = nodeLabellerController.GetHostCpuModel().Name
-
 		go nodeLabellerController.Run(10, stop)
 	}
 
@@ -360,7 +390,7 @@ func (app *virtHandlerApp) Run() {
 		migrationProxy,
 		downwardMetricsManager,
 		capabilities,
-		hostCpuModel,
+		supportedHostCPUs.Model,
 		netsetup.NewNetConf(),
 		netsetup.NewNetStat(),
 		netbinding.MemoryCalculator{},

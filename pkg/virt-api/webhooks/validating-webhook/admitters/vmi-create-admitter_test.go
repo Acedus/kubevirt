@@ -54,7 +54,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/virt-api/webhooks"
 	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
 	"kubevirt.io/kubevirt/pkg/virt-config/deprecation"
-	nodelabellerutil "kubevirt.io/kubevirt/pkg/virt-handler/node-labeller/util"
+	nodecapabilitiesutil "kubevirt.io/kubevirt/pkg/virt-handler/node-capabilities/util"
 	"kubevirt.io/kubevirt/pkg/virt-operator/resource/generate/components"
 )
 
@@ -4254,8 +4254,8 @@ var _ = Describe("Function getNumberOfPodInterfaces()", func() {
 		vmi.Spec.Domain.CPU = &v1.CPU{
 			Features: []v1.CPUFeature{
 				{
-					Name:   nodelabellerutil.VmxFeature,
-					Policy: nodelabellerutil.RequirePolicy,
+					Name:   nodecapabilitiesutil.VmxFeature,
+					Policy: nodecapabilitiesutil.RequirePolicy,
 				},
 			},
 		}
@@ -4297,7 +4297,7 @@ var _ = Describe("Function getNumberOfPodInterfaces()", func() {
 		vmi.Spec.Domain.CPU = &v1.CPU{
 			Features: []v1.CPUFeature{
 				{
-					Name:   nodelabellerutil.VmxFeature,
+					Name:   nodecapabilitiesutil.VmxFeature,
 					Policy: "forbid",
 				},
 			},
@@ -4324,8 +4324,8 @@ var _ = Describe("Function getNumberOfPodInterfaces()", func() {
 		vmi.Spec.Domain.CPU = &v1.CPU{
 			Features: []v1.CPUFeature{
 				{
-					Name:   nodelabellerutil.VmxFeature,
-					Policy: nodelabellerutil.RequirePolicy,
+					Name:   nodecapabilitiesutil.VmxFeature,
+					Policy: nodecapabilitiesutil.RequirePolicy,
 				},
 			},
 		}

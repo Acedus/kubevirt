@@ -39,7 +39,7 @@ import (
 	v1 "kubevirt.io/api/core/v1"
 
 	"kubevirt.io/kubevirt/pkg/testutils"
-	util "kubevirt.io/kubevirt/pkg/virt-handler/node-labeller/util"
+	nodecapabilitiesutil "kubevirt.io/kubevirt/pkg/virt-handler/node-capabilities/util"
 )
 
 const nodeName = "testNode"
@@ -47,24 +47,53 @@ const nodeName = "testNode"
 var _ = Describe("Node-labeller ", func() {
 	var nlController *NodeLabeller
 	var kubeClient *fake.Clientset
+	var supportedFeatures []string
 	var cpuCounter *libvirtxml.CapsHostCPUCounter
+	var hostCPUModel string
+	var cpuModelVendor string
+	var usableModels []string
+	var cpuRequiredFeatures []string
+	var sevSupported bool
+	var sevSupportedES bool
+	var hypervFeatures []string
 
 	initNodeLabeller := func(kubevirt *v1.KubeVirt) {
 		config, _, _ := testutils.NewFakeClusterConfigUsingKV(kubevirt)
 		recorder := record.NewFakeRecorder(100)
 		recorder.IncludeObject = true
 
-		var err error
-		nlController, err = newNodeLabeller(config, kubeClient.CoreV1().Nodes(), nodeName, "testdata", recorder, cpuCounter)
-		Expect(err).ToNot(HaveOccurred())
+		nlController = NewNodeLabeller(
+			config,
+			kubeClient.CoreV1().Nodes(),
+			nodeName,
+			recorder,
+			supportedFeatures,
+			cpuCounter,
+			hostCPUModel,
+			cpuModelVendor,
+			usableModels,
+			cpuRequiredFeatures,
+			sevSupported,
+			sevSupportedES,
+			hypervFeatures,
+		)
 	}
 
 	BeforeEach(func() {
+
+		supportedFeatures = []string{"test", "test"}
 		cpuCounter = &libvirtxml.CapsHostCPUCounter{
 			Name:      "tsc",
 			Frequency: 4008012000,
 			Scaling:   "no",
 		}
+		hostCPUModel = "Skylake-Client-IBRS"
+		cpuModelVendor = "test"
+		usableModels = []string{"Skylake-Client-IBRS", "Penryn"}
+		cpuRequiredFeatures = []string{"test"}
+		sevSupported = true
+		sevSupportedES = true
+		hypervFeatures = []string{"test"}
 
 		node := newNode(nodeName)
 		kubeClient = fake.NewSimpleClientset(node)
@@ -75,7 +104,7 @@ var _ = Describe("Node-labeller ", func() {
 			},
 			Spec: v1.KubeVirtSpec{
 				Configuration: v1.KubeVirtConfiguration{
-					ObsoleteCPUModels: util.DefaultObsoleteCPUModels,
+					ObsoleteCPUModels: nodecapabilitiesutil.DefaultObsoleteCPUModels,
 					MinCPUModel:       "Penryn",
 				},
 			},

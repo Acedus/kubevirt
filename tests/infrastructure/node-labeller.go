@@ -38,7 +38,7 @@ import (
 	"kubevirt.io/client-go/kubecli"
 
 	"kubevirt.io/kubevirt/pkg/libvmi"
-	nodelabellerutil "kubevirt.io/kubevirt/pkg/virt-handler/node-labeller/util"
+	nodecapabilitiesutil "kubevirt.io/kubevirt/pkg/virt-handler/node-capabilities/util"
 	"kubevirt.io/kubevirt/tests"
 	"kubevirt.io/kubevirt/tests/events"
 	"kubevirt.io/kubevirt/tests/framework/kubevirt"
@@ -209,7 +209,7 @@ var _ = DescribeInfra("Node-labeller", func() {
 				for key := range node.Labels {
 					if strings.Contains(key, v1.CPUModelLabel) {
 						model := strings.TrimPrefix(key, v1.CPUModelLabel)
-						if _, ok := nodelabellerutil.DefaultObsoleteCPUModels[model]; ok {
+						if _, ok := nodecapabilitiesutil.DefaultObsoleteCPUModels[model]; ok {
 							return fmt.Errorf("node can't contain label with cpu model, which is in default obsolete filter")
 						}
 					}
@@ -282,7 +282,7 @@ var _ = DescribeInfra("Node-labeller", func() {
 			node := nodesWithKVM[0]
 
 			obsoleteModels := map[string]bool{}
-			for k, v := range nodelabellerutil.DefaultObsoleteCPUModels {
+			for k, v := range nodecapabilitiesutil.DefaultObsoleteCPUModels {
 				obsoleteModels[k] = v
 			}
 

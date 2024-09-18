@@ -18,13 +18,13 @@ package nodecapabilities
 
 import (
 	"fmt"
-	"io"
-	"runtime"
 
+	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/log"
 	"libvirt.org/go/libvirtxml"
 
 	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
+	nodecapabilitiesutil "kubevirt.io/kubevirt/pkg/virt-handler/node-capabilities/util"
 )
 
 const (
@@ -36,64 +36,59 @@ const (
 
 type SupportedCPU struct {
 	Vendor           string
-	Model            libvirtxml.DomainCapsCPUModel
-	RequiredFeatures []libvirtxml.DomainCapsCPUFeature
+	Model            string
+	RequiredFeatures []string
 	UsableModels     []string
 }
 
 type SupportedSEV struct {
-	SEV         libvirtxml.DomainCapsFeatureSEV
-	SupportedES string
+	Supported   bool
+	SupportedES bool
 }
 
-func HostCapabilities(capabilitiesSource io.Reader) (*libvirtxml.Caps, error) {
-	hostCapabilities, err := io.ReadAll(capabilitiesSource)
-	if err != nil {
-		return nil, err
-	}
+func HostCapabilities(hostCapabilities string) (*libvirtxml.Caps, error) {
 	var capabilities libvirtxml.Caps
-	if err := capabilities.Unmarshal(string(hostCapabilities)); err != nil {
+	if err := capabilities.Unmarshal(hostCapabilities); err != nil {
 		return nil, err
 	}
 	return &capabilities, nil
 }
 
-func DomCapabilities(capabilitiesSource io.Reader) (*libvirtxml.DomainCaps, error) {
-	hostDomCapabilities, err := io.ReadAll(capabilitiesSource)
-	if err != nil {
-		return nil, err
-	}
+func DomCapabilities(hostDomCapabilities string) (*libvirtxml.DomainCaps, error) {
 	var capabilities libvirtxml.DomainCaps
-	if err := capabilities.Unmarshal(string(hostDomCapabilities)); err != nil {
+	if err := capabilities.Unmarshal(hostDomCapabilities); err != nil {
 		return nil, err
 	}
 	return &capabilities, nil
 }
 
-func SupportedHostCPUs(cpuModes []libvirtxml.DomainCapsCPUMode) (*SupportedCPU, error) {
+func SupportedHostCPUs(cpuModes []libvirtxml.DomainCapsCPUMode, arch string) (*SupportedCPU, error) {
 	var supportedCPU SupportedCPU
 	for _, mode := range cpuModes {
-		if virtconfig.IsAMD64(runtime.GOARCH) {
-			log.Log.Warning("host-model cpu mode is not supported for ARM architecture")
-			continue
-		}
+		if mode.Name == v1.CPUModeHostModel {
+			if virtconfig.IsARM64(arch) {
+				log.Log.Warning("host-model cpu mode is not supported for ARM architecture")
+				continue
+			}
 
-		// On s390x the xml does not include a CPU Vendor, however there is only one company selling them anyway.
-		if virtconfig.IsS390X(runtime.GOARCH) && mode.Vendor == "" {
-			supportedCPU.Vendor = "IBM"
-		}
+			supportedCPU.Vendor = mode.Vendor
+			// On s390x the xml does not include a CPU Vendor, however there is only one company selling them anyway.
+			if virtconfig.IsS390X(arch) && mode.Vendor == "" {
+				supportedCPU.Vendor = "IBM"
+			}
 
-		if len(mode.Models) < 1 {
-			return nil, fmt.Errorf("host model mode is expected to contain a model")
-		}
-		if len(mode.Models) > 1 {
-			log.Log.Warning("host model mode is expected to contain only one model")
-		}
+			if len(mode.Models) < 1 {
+				return nil, fmt.Errorf("host model mode is expected to contain a model")
+			}
+			if len(mode.Models) > 1 {
+				log.Log.Warning("host model mode is expected to contain only one model")
+			}
 
-		supportedCPU.Model = mode.Models[0]
-		for _, feature := range mode.Features {
-			if feature.Policy == "require" {
-				supportedCPU.RequiredFeatures = append(supportedCPU.RequiredFeatures, feature)
+			supportedCPU.Model = mode.Models[0].Name
+			for _, feature := range mode.Features {
+				if feature.Policy == "require" {
+					supportedCPU.RequiredFeatures = append(supportedCPU.RequiredFeatures, feature.Name)
+				}
 			}
 		}
 
@@ -107,13 +102,42 @@ func SupportedHostCPUs(cpuModes []libvirtxml.DomainCapsCPUMode) (*SupportedCPU, 
 	return &supportedCPU, nil
 }
 
-func SupportedHostSEV(sev libvirtxml.DomainCapsFeatureSEV) *SupportedSEV {
-	var supportedSEV SupportedSEV
-	supportedSEV.SEV = sev
-	if sev.Supported == "yes" && sev.MaxESGuests > 0 {
-		supportedSEV.SupportedES = "yes"
-	} else {
-		supportedSEV.SupportedES = "no"
+func SupportedHostSEV(sev *libvirtxml.DomainCapsFeatureSEV) *SupportedSEV {
+	supported := sev.Supported == "yes"
+	return &SupportedSEV{
+		Supported:   supported,
+		SupportedES: supported && sev.MaxESGuests > 0,
 	}
-	return &supportedSEV
+}
+
+func SupportedFeatures(hostCPU string, arch string) ([]string, error) {
+	var cpu libvirtxml.DomainCPU
+	if err := cpu.Unmarshal(hostCPU); err != nil {
+		return nil, err
+	}
+	supportedFeatures := make([]string, 0)
+	for _, feature := range cpu.Features {
+		// On s390x, the policy is not set
+		if feature.Policy == "require" || (virtconfig.IsS390X(arch) && feature.Policy == "") {
+			supportedFeatures = append(supportedFeatures, feature.Name)
+		}
+	}
+	return supportedFeatures, nil
+
+}
+func SupportedCPUModels(usableModels []string, obsoleteCPUsx86 map[string]bool) []string {
+	supportedCPUModels := make([]string, 0)
+
+	if obsoleteCPUsx86 == nil {
+		obsoleteCPUsx86 = nodecapabilitiesutil.DefaultObsoleteCPUModels
+	}
+
+	for _, model := range usableModels {
+		if _, ok := obsoleteCPUsx86[model]; ok {
+			continue
+		}
+		supportedCPUModels = append(supportedCPUModels, model)
+	}
+
+	return supportedCPUModels
 }
