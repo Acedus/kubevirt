@@ -24,7 +24,6 @@ import (
 	"libvirt.org/go/libvirtxml"
 
 	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
-	nodecapabilitiesutil "kubevirt.io/kubevirt/pkg/virt-handler/node-capabilities/util"
 )
 
 const (
@@ -32,7 +31,17 @@ const (
 	HostCapabilitiesFilename  = "capabilities.xml"
 	DomCapabiliitesFilename   = "virsh_domcapabilities.xml"
 	SupportedFeaturesFilename = "supported_features.xml"
+
+	DefaultMinCPUModel = "Penryn"
+	RequirePolicy      = "require"
+	VmxFeature         = "vmx"
 )
+
+var DefaultArchitecturePrefix = map[string]string{
+	"amd64": "x86_",
+	"arm64": "arm_",
+	"s390x": "s390x_",
+}
 
 type SupportedCPU struct {
 	Vendor           string
@@ -124,20 +133,4 @@ func SupportedFeatures(hostCPU string, arch string) ([]string, error) {
 	}
 	return supportedFeatures, nil
 
-}
-func SupportedCPUModels(usableModels []string, obsoleteCPUsx86 map[string]bool) []string {
-	supportedCPUModels := make([]string, 0)
-
-	if obsoleteCPUsx86 == nil {
-		obsoleteCPUsx86 = nodecapabilitiesutil.DefaultObsoleteCPUModels
-	}
-
-	for _, model := range usableModels {
-		if _, ok := obsoleteCPUsx86[model]; ok {
-			continue
-		}
-		supportedCPUModels = append(supportedCPUModels, model)
-	}
-
-	return supportedCPUModels
 }

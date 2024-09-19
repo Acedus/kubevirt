@@ -42,8 +42,27 @@ import (
 
 	"kubevirt.io/kubevirt/pkg/apimachinery/patch"
 	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
-	nodecapabilities "kubevirt.io/kubevirt/pkg/virt-handler/node-capabilities"
 )
+
+var DefaultObsoleteCPUModels = map[string]bool{
+	"486":        true,
+	"pentium":    true,
+	"pentium2":   true,
+	"pentium3":   true,
+	"pentiumpro": true,
+	"coreduo":    true,
+	"n270":       true,
+	"core2duo":   true,
+	"Conroe":     true,
+	"athlon":     true,
+	"phenom":     true,
+	"qemu64":     true,
+	"qemu32":     true,
+	"kvm64":      true,
+	"kvm32":      true,
+	"Opteron_G1": true,
+	"Opteron_G2": true,
+}
 
 var nodeLabellerLabels = []string{
 	kubevirtv1.CPUFeatureLabel,
@@ -212,7 +231,7 @@ func (n *NodeLabeller) prepareLabels(node *v1.Node) map[string]string {
 	}
 
 	obsoleteCPUsx86 := n.clusterConfig.GetObsoleteCPUModels()
-	cpuModels := nodecapabilities.SupportedCPUModels(n.usableModels, obsoleteCPUsx86)
+	cpuModels := n.supportedCPUModels(obsoleteCPUsx86)
 
 	for _, value := range cpuModels {
 		newLabels[kubevirtv1.CPUModelLabel+value] = "true"
@@ -315,4 +334,21 @@ func (n *NodeLabeller) alertIfHostModelIsObsolete(originalNode *v1.Node, hostMod
 
 func (n *NodeLabeller) hasTSCCounter() bool {
 	return n.cpuCounter.Name == "tsc"
+}
+
+func (n *NodeLabeller) supportedCPUModels(obsoleteCPUsx86 map[string]bool) []string {
+	supportedCPUModels := make([]string, 0)
+
+	if obsoleteCPUsx86 == nil {
+		obsoleteCPUsx86 = DefaultObsoleteCPUModels
+	}
+
+	for _, model := range n.usableModels {
+		if _, ok := obsoleteCPUsx86[model]; ok {
+			continue
+		}
+		supportedCPUModels = append(supportedCPUModels, model)
+	}
+
+	return supportedCPUModels
 }

@@ -27,8 +27,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	nodecapabilitiesutil "kubevirt.io/kubevirt/pkg/virt-handler/node-capabilities/util"
 )
 
 //go:embed testdata/virsh_domcapabilities.xml
@@ -66,9 +64,7 @@ var _ = Describe("node-capabilities", func() {
 		supportedCPUs, err := SupportedHostCPUs(domainCapabilities.CPU.Modes, runtime.GOARCH)
 		Expect(err).ToNot(HaveOccurred())
 
-		supportedCPUModels := SupportedCPUModels(supportedCPUs.UsableModels, nodecapabilitiesutil.DefaultObsoleteCPUModels)
-
-		Expect(supportedCPUModels).To(HaveLen(4), "number of models must match")
+		Expect(supportedCPUs.UsableModels).To(HaveLen(5), "number of models must match")
 		Expect(cpuFeatures).To(HaveLen(4), "number of features must match")
 	})
 
@@ -79,12 +75,10 @@ var _ = Describe("node-capabilities", func() {
 		supportedCPUs, err := SupportedHostCPUs(domainCapabilities.CPU.Modes, runtime.GOARCH)
 		Expect(err).ToNot(HaveOccurred())
 
-		supportedCPUModels := SupportedCPUModels(supportedCPUs.UsableModels, nodecapabilitiesutil.DefaultObsoleteCPUModels)
-
 		cpuFeatures, err := SupportedFeatures(supportedFeaturesXML, runtime.GOARCH)
 		Expect(err).ToNot(HaveOccurred())
 
-		Expect(supportedCPUModels).To(BeEmpty(), "no CPU models are expected to be supported")
+		Expect(supportedCPUs.UsableModels).To(BeEmpty(), "no CPU models are expected to be supported")
 		Expect(cpuFeatures).To(HaveLen(4), "number of features must match")
 	})
 
