@@ -34,6 +34,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/types"
 	admissionv1 "k8s.io/api/admission/v1"
 	authv1 "k8s.io/api/authentication/v1"
 	k8sv1 "k8s.io/api/core/v1"
@@ -77,6 +78,133 @@ var _ = Describe("Validating VMICreate Admitter", func() {
 	config, _, kvStore := testutils.NewFakeClusterConfigUsingKV(kv)
 	vmiCreateAdmitter := &VMICreateAdmitter{ClusterConfig: config}
 
+	disableFeatureGates := func() {
+		testutils.UpdateFakeKubeVirtClusterConfig(kvStore, kv)
+	}
+
+	AfterEach(func() {
+		disableFeatureGates()
+	})
+
+	It("should reject invalid VirtualMachineInstance spec on create (disk with no volume reference)", func() {
+		vmi := newBaseVmi()
+		vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks, v1.Disk{
+			Name: "testdisk",
+		})
+
+		ar, err := newAdmissionReviewForVMICreation(vmi)
+		Expect(err).ToNot(HaveOccurred())
+
+		resp := vmiCreateAdmitter.Admit(context.Background(), ar)
+
+		Expect(resp.Allowed).To(BeFalse())
+		Expect(resp.Result.Details.Causes).To(HaveLen(1))
+		Expect(resp.Result.Details.Causes[0].Field).To(Equal("spec.domain.devices.disks[0].name"))
+	})
+
+	It("should reject VMIs without memory after presets were applied", func() {
+		vmi := newBaseVmi()
+		vmi.Spec.Domain.Resources = v1.ResourceRequirements{}
+
+		ar, err := newAdmissionReviewForVMICreation(vmi)
+		Expect(err).ToNot(HaveOccurred())
+
+		resp := vmiCreateAdmitter.Admit(context.Background(), ar)
+		Expect(resp.Allowed).To(BeFalse())
+		Expect(resp.Result.Details.Causes).To(HaveLen(1))
+		Expect(resp.Result.Message).To(ContainSubstring("no memory requested"))
+	})
+
+	It("should allow Clock without Timer", func() {
+		vmi := newBaseVmi(withDomainClock(
+			&v1.Clock{
+				ClockOffset: v1.ClockOffset{
+					UTC: &v1.ClockOffsetUTC{
+						OffsetSeconds: pointer.Int(5),
+					},
+				},
+			},
+		))
+
+		ar, err := newAdmissionReviewForVMICreation(vmi)
+		Expect(err).ToNot(HaveOccurred())
+
+		resp := vmiCreateAdmitter.Admit(context.Background(), ar)
+		Expect(resp.Allowed).To(BeTrue())
+	})
+
+	DescribeTable("should correctly admit vmi with container disk path", func(containerDiskPath string, matcher types.GomegaMatcher) {
+		vmi := newBaseVmi(libvmi.WithContainerDisk("testdisk", "testimage"))
+		vmi.Spec.Volumes[0].ContainerDisk.Path = containerDiskPath
+
+		ar, err := newAdmissionReviewForVMICreation(vmi)
+		Expect(err).ToNot(HaveOccurred())
+
+		resp := vmiCreateAdmitter.Admit(context.Background(), ar)
+		Expect(resp.Allowed).To(matcher)
+	},
+		Entry("if path is not absolute", "a/b/c", BeFalse()),
+		Entry("if path contains relative elements", "/a/b/c/../d", BeFalse()),
+		Entry("if path is root", "/", BeFalse()),
+		Entry("if path is absolute", "/a/b/c", BeTrue()),
+		Entry("if path is absolute and has trailing slash", "/a/b/c/", BeTrue()),
+	)
+
+	It("should allow unknown fields in the status to allow updates", func() {
+		ar := &admissionv1.AdmissionReview{
+			Request: &admissionv1.AdmissionRequest{
+				Resource: webhooks.VirtualMachineInstanceGroupVersionResource,
+				Object: runtime.RawExtension{
+					Raw: []byte(`{"very": "unknown", "spec": { "extremely": "unknown" }, "status": {"unknown": "allowed"}}`),
+				},
+				Operation: admissionv1.Create,
+			},
+		}
+		resp := vmiCreateAdmitter.Admit(context.Background(), ar)
+		Expect(resp.Allowed).To(BeFalse())
+		Expect(resp.Result.Message).To(Equal(
+			`.very in body is a forbidden property, spec.extremely in body is a forbidden property, spec.domain in body is required`,
+		))
+	})
+
+	It("should reject documents containing unknown or missing fields for VMI creation", func() {
+		ar := &admissionv1.AdmissionReview{
+			Request: &admissionv1.AdmissionRequest{
+				Resource: webhooks.VirtualMachineInstanceGroupVersionResource,
+				Object: runtime.RawExtension{
+					Raw: []byte(`{"very": "unknown", "spec": { "extremely": "unknown" }}`),
+				},
+				Operation: admissionv1.Create,
+			},
+		}
+		resp := vmiCreateAdmitter.Admit(context.Background(), ar)
+		Expect(resp.Allowed).To(BeFalse())
+		Expect(resp.Result.Message).To(Equal(
+			`.very in body is a forbidden property, spec.extremely in body is a forbidden property, spec.domain in body is required`,
+		))
+
+	})
+})
+
+var _ = Describe("Validating VMICreate Admitter", func() {
+	kv := &v1.KubeVirt{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kubevirt",
+			Namespace: "kubevirt",
+		},
+		Spec: v1.KubeVirtSpec{
+			Configuration: v1.KubeVirtConfiguration{
+				DeveloperConfiguration: &v1.DeveloperConfiguration{},
+			},
+		},
+		Status: v1.KubeVirtStatus{
+			Phase:               v1.KubeVirtPhaseDeploying,
+			DefaultArchitecture: "amd64",
+		},
+	}
+	config, _, kvStore := testutils.NewFakeClusterConfigUsingKV(kv)
+	vmiCreateAdmitter := &VMICreateAdmitter{ClusterConfig: config}
+
 	dnsConfigTestOption := "test"
 	enableFeatureGate := func(featureGate string) {
 		kvConfig := kv.DeepCopy()
@@ -99,83 +227,20 @@ var _ = Describe("Validating VMICreate Admitter", func() {
 		disableFeatureGates()
 	})
 
-	It("should reject invalid VirtualMachineInstance spec on create", func() {
-		vmi := newBaseVmi()
-		vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks, v1.Disk{
-			Name: "testdisk",
-		})
-		vmiBytes, _ := json.Marshal(&vmi)
+	//DescribeTable("path validation should fail", func(path string) {
+	//	Expect(validatePath(k8sfield.NewPath("fake"), path)).To(HaveLen(1))
+	//},
+	//	Entry("if path is not absolute", "a/b/c"),
+	//	Entry("if path contains relative elements", "/a/b/c/../d"),
+	//	Entry("if path is root", "/"),
+	//)
 
-		ar := &admissionv1.AdmissionReview{
-			Request: &admissionv1.AdmissionRequest{
-				Resource: webhooks.VirtualMachineInstanceGroupVersionResource,
-				Object: runtime.RawExtension{
-					Raw: vmiBytes,
-				},
-			},
-		}
-
-		resp := vmiCreateAdmitter.Admit(context.Background(), ar)
-		Expect(resp.Allowed).To(BeFalse())
-		Expect(resp.Result.Details.Causes).To(HaveLen(1))
-		Expect(resp.Result.Details.Causes[0].Field).To(Equal("spec.domain.devices.disks[0].name"))
-	})
-	It("should reject VMIs without memory after presets were applied", func() {
-		vmi := newBaseVmi()
-		vmi.Spec.Domain.Resources = v1.ResourceRequirements{}
-		vmiBytes, _ := json.Marshal(&vmi)
-
-		ar := &admissionv1.AdmissionReview{
-			Request: &admissionv1.AdmissionRequest{
-				Resource: webhooks.VirtualMachineInstanceGroupVersionResource,
-				Object: runtime.RawExtension{
-					Raw: vmiBytes,
-				},
-			},
-		}
-		resp := vmiCreateAdmitter.Admit(context.Background(), ar)
-		Expect(resp.Allowed).To(BeFalse())
-		Expect(resp.Result.Details.Causes).To(HaveLen(1))
-		Expect(resp.Result.Message).To(ContainSubstring("no memory requested"))
-	})
-
-	It("should allow Clock without Timer", func() {
-		vmi := api.NewMinimalVMI("testvmi")
-		vmi.Spec.Domain.Clock = &v1.Clock{
-			ClockOffset: v1.ClockOffset{
-				UTC: &v1.ClockOffsetUTC{
-					OffsetSeconds: pointer.Int(5),
-				},
-			},
-		}
-		vmiBytes, _ := json.Marshal(&vmi)
-
-		ar := &admissionv1.AdmissionReview{
-			Request: &admissionv1.AdmissionRequest{
-				Resource: webhooks.VirtualMachineInstanceGroupVersionResource,
-				Object: runtime.RawExtension{
-					Raw: vmiBytes,
-				},
-			},
-		}
-		resp := vmiCreateAdmitter.Admit(context.Background(), ar)
-		Expect(resp.Allowed).To(BeTrue())
-	})
-
-	DescribeTable("path validation should fail", func(path string) {
-		Expect(validatePath(k8sfield.NewPath("fake"), path)).To(HaveLen(1))
-	},
-		Entry("if path is not absolute", "a/b/c"),
-		Entry("if path contains relative elements", "/a/b/c/../d"),
-		Entry("if path is root", "/"),
-	)
-
-	DescribeTable("path validation should succeed", func(path string) {
-		Expect(validatePath(k8sfield.NewPath("fake"), path)).To(BeEmpty())
-	},
-		Entry("if path is absolute", "/a/b/c"),
-		Entry("if path is absolute and has trailing slash", "/a/b/c/"),
-	)
+	//DescribeTable("path validation should succeed", func(path string) {
+	//	Expect(validatePath(k8sfield.NewPath("fake"), path)).To(BeEmpty())
+	//},
+	//	Entry("if path is absolute", "/a/b/c"),
+	//	Entry("if path is absolute and has trailing slash", "/a/b/c/"),
+	//)
 
 	Context("tolerations with eviction policies given", func() {
 		var vmi *v1.VirtualMachineInstance
@@ -335,60 +400,6 @@ var _ = Describe("Validating VMICreate Admitter", func() {
 			Expect(resp.Result.Message).To(Equal(`spec.readinessProbe.tcpSocket is only allowed if the Pod Network is attached, spec.livenessProbe.httpGet is only allowed if the Pod Network is attached`))
 		})
 	})
-
-	It("should accept valid vmi spec on create", func() {
-		vmi := newBaseVmi(libvmi.WithContainerDisk("testdisk", "testimage"))
-		vmiBytes, _ := json.Marshal(&vmi)
-
-		ar := &admissionv1.AdmissionReview{
-			Request: &admissionv1.AdmissionRequest{
-				Resource: webhooks.VirtualMachineInstanceGroupVersionResource,
-				Object: runtime.RawExtension{
-					Raw: vmiBytes,
-				},
-			},
-		}
-		resp := vmiCreateAdmitter.Admit(context.Background(), ar)
-		Expect(resp.Allowed).To(BeTrue())
-	})
-
-	It("should allow unknown fields in the status to allow updates", func() {
-		ar := &admissionv1.AdmissionReview{
-			Request: &admissionv1.AdmissionRequest{
-				Resource: webhooks.VirtualMachineInstanceGroupVersionResource,
-				Object: runtime.RawExtension{
-					Raw: []byte(`{"very": "unknown", "spec": { "extremely": "unknown" }, "status": {"unknown": "allowed"}}`),
-				},
-			},
-		}
-		resp := vmiCreateAdmitter.Admit(context.Background(), ar)
-		Expect(resp.Allowed).To(BeFalse())
-		Expect(resp.Result.Message).To(Equal(`.very in body is a forbidden property, spec.extremely in body is a forbidden property, spec.domain in body is required`))
-	})
-
-	DescribeTable("should reject documents containing unknown or missing fields for", func(data string, validationResult string, gvr metav1.GroupVersionResource, review func(ctx context.Context, ar *admissionv1.AdmissionReview) *admissionv1.AdmissionResponse) {
-		input := map[string]interface{}{}
-		json.Unmarshal([]byte(data), &input)
-
-		ar := &admissionv1.AdmissionReview{
-			Request: &admissionv1.AdmissionRequest{
-				Resource: gvr,
-				Object: runtime.RawExtension{
-					Raw: []byte(data),
-				},
-			},
-		}
-		resp := review(context.Background(), ar)
-		Expect(resp.Allowed).To(BeFalse())
-		Expect(resp.Result.Message).To(Equal(validationResult))
-	},
-		Entry("VirtualMachineInstance creation",
-			`{"very": "unknown", "spec": { "extremely": "unknown" }}`,
-			`.very in body is a forbidden property, spec.extremely in body is a forbidden property, spec.domain in body is required`,
-			webhooks.VirtualMachineInstanceGroupVersionResource,
-			vmiCreateAdmitter.Admit,
-		),
-	)
 
 	Context("with VirtualMachineInstance metadata", func() {
 		DescribeTable(
@@ -4392,4 +4403,27 @@ var _ = Describe("Function getNumberOfPodInterfaces()", func() {
 func newBaseVmi(opts ...libvmi.Option) *v1.VirtualMachineInstance {
 	opts = append(opts, libvmi.WithResourceMemory("512Mi"))
 	return libvmi.New(opts...)
+}
+
+func newAdmissionReviewForVMICreation(vmi *v1.VirtualMachineInstance) (*admissionv1.AdmissionReview, error) {
+	vmiBytes, err := json.Marshal(vmi)
+	if err != nil {
+		return nil, err
+	}
+
+	return &admissionv1.AdmissionReview{
+		Request: &admissionv1.AdmissionRequest{
+			Resource: webhooks.VirtualMachineInstanceGroupVersionResource,
+			Object: runtime.RawExtension{
+				Raw: vmiBytes,
+			},
+			Operation: admissionv1.Create,
+		},
+	}, nil
+}
+
+func withDomainClock(clock *v1.Clock) libvmi.Option {
+	return func(vmi *v1.VirtualMachineInstance) {
+		vmi.Spec.Domain.Clock = clock
+	}
 }
