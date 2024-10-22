@@ -78,6 +78,11 @@ var _ = Describe("Validating VMICreate Admitter", func() {
 	config, _, kvStore := testutils.NewFakeClusterConfigUsingKV(kv)
 	vmiCreateAdmitter := &VMICreateAdmitter{ClusterConfig: config}
 
+	enableFeatureGate := func(featureGate string) {
+		kvConfig := kv.DeepCopy()
+		kvConfig.Spec.Configuration.DeveloperConfiguration.FeatureGates = []string{featureGate}
+		testutils.UpdateFakeKubeVirtClusterConfig(kvStore, kvConfig)
+	}
 	disableFeatureGates := func() {
 		testutils.UpdateFakeKubeVirtClusterConfig(kvStore, kv)
 	}
@@ -184,6 +189,51 @@ var _ = Describe("Validating VMICreate Admitter", func() {
 		))
 
 	})
+
+	Context("tolerations with eviction policies given", func() {
+		BeforeEach(func() {
+			enableFeatureGate(deprecation.LiveMigrationGate)
+		})
+
+		DescribeTable("it should allow", func(policy v1.EvictionStrategy) {
+			vmi := newBaseVmi(libvmi.WithEvictionStrategy(policy))
+
+			ar, err := newAdmissionReviewForVMICreation(vmi)
+			Expect(err).ToNot(HaveOccurred())
+
+			resp := vmiCreateAdmitter.Admit(context.Background(), ar)
+
+			Expect(resp.Allowed).To(BeTrue())
+		},
+			Entry("migration policy to be set to LiveMigrate", v1.EvictionStrategyLiveMigrate),
+			Entry("migration policy to be set None", v1.EvictionStrategyNone),
+			Entry("migration policy to be set External", v1.EvictionStrategyExternal),
+			Entry("migration policy to be set to LiveMigrateIfPossible", v1.EvictionStrategyLiveMigrateIfPossible),
+		)
+
+		It("should allow no eviction policy to be set", func() {
+			vmi := newBaseVmi()
+			vmi.Spec.EvictionStrategy = nil
+
+			ar, err := newAdmissionReviewForVMICreation(vmi)
+			Expect(err).ToNot(HaveOccurred())
+
+			resp := vmiCreateAdmitter.Admit(context.Background(), ar)
+			Expect(resp.Allowed).To(BeTrue())
+		})
+
+		It("should not allow unknown eviction policies", func() {
+			vmi := newBaseVmi(libvmi.WithEvictionStrategy(v1.EvictionStrategy("fantasy")))
+
+			ar, err := newAdmissionReviewForVMICreation(vmi)
+			Expect(err).ToNot(HaveOccurred())
+
+			resp := vmiCreateAdmitter.Admit(context.Background(), ar)
+
+			Expect(resp.Allowed).To(BeFalse())
+			Expect(resp.Result.Message).To(Equal("spec.evictionStrategy is set with an unrecognized option: fantasy"))
+		})
+	})
 })
 
 var _ = Describe("Validating VMICreate Admitter", func() {
@@ -225,61 +275,6 @@ var _ = Describe("Validating VMICreate Admitter", func() {
 
 	AfterEach(func() {
 		disableFeatureGates()
-	})
-
-	//DescribeTable("path validation should fail", func(path string) {
-	//	Expect(validatePath(k8sfield.NewPath("fake"), path)).To(HaveLen(1))
-	//},
-	//	Entry("if path is not absolute", "a/b/c"),
-	//	Entry("if path contains relative elements", "/a/b/c/../d"),
-	//	Entry("if path is root", "/"),
-	//)
-
-	//DescribeTable("path validation should succeed", func(path string) {
-	//	Expect(validatePath(k8sfield.NewPath("fake"), path)).To(BeEmpty())
-	//},
-	//	Entry("if path is absolute", "/a/b/c"),
-	//	Entry("if path is absolute and has trailing slash", "/a/b/c/"),
-	//)
-
-	Context("tolerations with eviction policies given", func() {
-		var vmi *v1.VirtualMachineInstance
-		var policyMigrate = v1.EvictionStrategyLiveMigrate
-		var policyMigrateIfPossible = v1.EvictionStrategyLiveMigrateIfPossible
-		var policyNone = v1.EvictionStrategyNone
-		var policyExternal = v1.EvictionStrategyExternal
-
-		BeforeEach(func() {
-			enableFeatureGate(deprecation.LiveMigrationGate)
-			vmi = api.NewMinimalVMI("testvmi")
-			vmi.Spec.EvictionStrategy = nil
-		})
-
-		DescribeTable("it should allow", func(policy *v1.EvictionStrategy) {
-			vmi.Spec.EvictionStrategy = policy
-			resp := ValidateVirtualMachineInstanceSpec(k8sfield.NewPath("fake"), &vmi.Spec, config)
-			Expect(resp).To(BeEmpty())
-		},
-			Entry("migration policy to be set to LiveMigrate", &policyMigrate),
-			Entry("migration policy to be set None", &policyNone),
-			Entry("migration policy to be set External", &policyExternal),
-			Entry("migration policy to be set to LiveMigrateIfPossible", &policyMigrateIfPossible),
-			Entry("migration policy to be set nil", nil),
-		)
-
-		It("should allow no eviction policy to be set", func() {
-			vmi.Spec.EvictionStrategy = nil
-			resp := ValidateVirtualMachineInstanceSpec(k8sfield.NewPath("fake"), &vmi.Spec, config)
-			Expect(resp).To(BeEmpty())
-		})
-
-		It("should  not allow unknown eviction policies", func() {
-			policy := v1.EvictionStrategy("fantasy")
-			vmi.Spec.EvictionStrategy = &policy
-			resp := ValidateVirtualMachineInstanceSpec(k8sfield.NewPath("fake"), &vmi.Spec, config)
-			Expect(resp).To(HaveLen(1))
-			Expect(resp[0].Message).To(Equal("fake.evictionStrategy is set with an unrecognized option: fantasy"))
-		})
 	})
 
 	Context("with probes given", func() {
