@@ -616,6 +616,7 @@ spec:
             dhCert: dhCertValue
             policy:
               encryptedState: true
+              secureNestedPaging: true
             session: sessionValue
         machine:
           type: typeValue
