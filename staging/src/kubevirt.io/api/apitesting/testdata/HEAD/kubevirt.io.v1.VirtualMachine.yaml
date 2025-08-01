@@ -616,8 +616,8 @@ spec:
             dhCert: dhCertValue
             policy:
               encryptedState: true
-              secureNestedPaging: true
             session: sessionValue
+          snp: {}
         machine:
           type: typeValue
         memory:
