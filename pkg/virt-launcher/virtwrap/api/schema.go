@@ -1001,6 +1001,10 @@ func NewUserDefinedAlias(aliasName string) *Alias {
 	return &Alias{name: aliasName, userDefined: true}
 }
 
+func NewNonUserDefinedAlias(aliasName string) *Alias {
+	return &Alias{name: aliasName, userDefined: false}
+}
+
 func (alias Alias) GetName() string {
 	return alias.name
 }
