@@ -322,6 +322,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"kubevirt.io/api/backup/v1alpha1.BackupOptions":                                                   schema_kubevirtio_api_backup_v1alpha1_BackupOptions(ref),
 		"kubevirt.io/api/backup/v1alpha1.Condition":                                                       schema_kubevirtio_api_backup_v1alpha1_Condition(ref),
 		"kubevirt.io/api/backup/v1alpha1.VirtualMachineBackup":                                            schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackup(ref),
+		"kubevirt.io/api/backup/v1alpha1.VirtualMachineBackupEndpoint":                                    schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupEndpoint(ref),
 		"kubevirt.io/api/backup/v1alpha1.VirtualMachineBackupList":                                        schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupList(ref),
 		"kubevirt.io/api/backup/v1alpha1.VirtualMachineBackupSpec":                                        schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupSpec(ref),
 		"kubevirt.io/api/backup/v1alpha1.VirtualMachineBackupStatus":                                      schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupStatus(ref),
@@ -16929,6 +16930,12 @@ func schema_kubevirtio_api_backup_v1alpha1_BackupOptions(ref common.ReferenceCal
 							Format: "",
 						},
 					},
+					"scratchPath": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
 					"skipQuiesce": {
 						SchemaProps: spec.SchemaProps{
 							Type:   []string{"boolean"},
@@ -17042,6 +17049,36 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackup(ref common.Refer
 	}
 }
 
+func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupEndpoint(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VirtualMachineBackupEndpoint contains the backup interactable endpoint",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"cert": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Cert is the public CA certificate base64 encoded",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"url": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Url is the url of the endpoint that returns the manifest",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"cert", "url"},
+			},
+		},
+	}
+}
+
 func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -17111,7 +17148,7 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupSpec(ref common.R
 					},
 					"mode": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Mode specifies the way the backup output will be recieved",
+							Description: "Mode specifies the way the backup output will be received",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -17134,6 +17171,13 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupSpec(ref common.R
 						SchemaProps: spec.SchemaProps{
 							Description: "ForceFullBackup indicates that a full backup is desired",
 							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"tokenSecretRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TokenSecretRef is the name of the custom-defined secret that contains the token used by the backup server pod",
+							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
@@ -17175,6 +17219,13 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupStatus(ref common
 									},
 								},
 							},
+						},
+					},
+					"serviceName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ServiceName is the name of the service created associated with the Virtual Machine backup. It will be used to create the internal URLs for interacting with the backup endpoints",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},

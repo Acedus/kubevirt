@@ -26,18 +26,28 @@ func (VirtualMachineBackupSpec) SwaggerDoc() map[string]string {
 	return map[string]string{
 		"":                "VirtualMachineBackupSpec is the spec for a VirtualMachineBackup resource",
 		"source":          "+optional\nSource specifies the VM to backup\nIf not provided, a reference to a VirtualMachineBackupTracker must be specified instead",
-		"mode":            "+optional\nMode specifies the way the backup output will be recieved",
+		"mode":            "+optional\nMode specifies the way the backup output will be received",
 		"pvcName":         "+optional\nPvcName required in push mode. Specifies the name of the PVC\nwhere the backup output will be stored",
 		"skipQuiesce":     "+optional\nSkipQuiesce indicates whether the VM's filesystem shoule not be quiesced before the backup",
 		"forceFullBackup": "+optional\nForceFullBackup indicates that a full backup is desired",
+		"tokenSecretRef":  "+optional\nTokenSecretRef is the name of the custom-defined secret that contains the token used by the backup server pod",
 	}
 }
 
 func (VirtualMachineBackupStatus) SwaggerDoc() map[string]string {
 	return map[string]string{
-		"":           "VirtualMachineBackupStatus is the status for a VirtualMachineBackup resource",
-		"type":       "+optional\nType indicates if the backup was full or incremental",
-		"conditions": "+optional\n+listType=atomic",
+		"":            "VirtualMachineBackupStatus is the status for a VirtualMachineBackup resource",
+		"type":        "+optional\nType indicates if the backup was full or incremental",
+		"conditions":  "+optional\n+listType=atomic",
+		"serviceName": "+optional\nServiceName is the name of the service created associated with the Virtual Machine backup. It will be used to\ncreate the internal URLs for interacting with the backup endpoints",
+	}
+}
+
+func (VirtualMachineBackupEndpoint) SwaggerDoc() map[string]string {
+	return map[string]string{
+		"":     "VirtualMachineBackupEndpoint contains the backup interactable endpoint",
+		"cert": "Cert is the public CA certificate base64 encoded",
+		"url":  "Url is the url of the endpoint that returns the manifest",
 	}
 }
 

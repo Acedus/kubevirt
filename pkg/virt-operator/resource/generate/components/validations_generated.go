@@ -8965,7 +8965,7 @@ var CRDsValidation map[string]string = map[string]string{
           description: ForceFullBackup indicates that a full backup is desired
           type: boolean
         mode:
-          description: Mode specifies the way the backup output will be recieved
+          description: Mode specifies the way the backup output will be received
           type: string
         pvcName:
           description: |-
@@ -8998,6 +8998,10 @@ var CRDsValidation map[string]string = map[string]string{
           - name
           type: object
           x-kubernetes-map-type: atomic
+        tokenSecretRef:
+          description: TokenSecretRef is the name of the custom-defined secret that
+            contains the token used by the backup server pod
+          type: string
       type: object
     status:
       description: VirtualMachineBackupStatus is the status for a VirtualMachineBackup
@@ -9030,6 +9034,11 @@ var CRDsValidation map[string]string = map[string]string{
             type: object
           type: array
           x-kubernetes-list-type: atomic
+        serviceName:
+          description: |-
+            ServiceName is the name of the service created associated with the Virtual Machine backup. It will be used to
+            create the internal URLs for interacting with the backup endpoints
+          type: string
         type:
           description: Type indicates if the backup was full or incremental
           type: string

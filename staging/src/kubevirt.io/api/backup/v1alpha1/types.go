@@ -31,6 +31,9 @@ const (
 	// PushMode defines backup which pushes the backup output
 	// to a provided PVC - this is the default behavior
 	PushMode BackupMode = "Push"
+	// PullMode defines backup which exposes an endpoint
+	// that allows interacting with the backup
+	PullMode BackupMode = "Pull"
 )
 
 // BackupType is the const type for the backup possible types
@@ -46,6 +49,7 @@ type BackupCmd string
 
 const (
 	Start BackupCmd = "Start"
+	Abort BackupCmd = "Abort"
 )
 
 // BackupOptions are options used to configure virtual machine backup job
@@ -56,6 +60,7 @@ type BackupOptions struct {
 	BackupStartTime *metav1.Time `json:"backupStartTime,omitempty"`
 	Incremental     *string      `json:"incremental,omitempty"`
 	PushPath        *string      `json:"pushPath,omitempty"`
+	ScratchPath     *string      `json:"scratchPath,omitempty"`
 	SkipQuiesce     bool         `json:"skipQuiesce,omitempty"`
 }
 
@@ -89,7 +94,7 @@ type VirtualMachineBackupSpec struct {
 	// If not provided, a reference to a VirtualMachineBackupTracker must be specified instead
 	Source *corev1.TypedLocalObjectReference `json:"source,omitempty"`
 	// +optional
-	// Mode specifies the way the backup output will be recieved
+	// Mode specifies the way the backup output will be received
 	Mode *BackupMode `json:"mode,omitempty"`
 	// +optional
 	// PvcName required in push mode. Specifies the name of the PVC
@@ -101,6 +106,9 @@ type VirtualMachineBackupSpec struct {
 	// +optional
 	// ForceFullBackup indicates that a full backup is desired
 	ForceFullBackup bool `json:"forceFullBackup,omitempty"`
+	// +optional
+	// TokenSecretRef is the name of the custom-defined secret that contains the token used by the backup server pod
+	TokenSecretRef *string `json:"tokenSecretRef,omitempty"`
 }
 
 // VirtualMachineBackupStatus is the status for a VirtualMachineBackup resource
@@ -111,6 +119,18 @@ type VirtualMachineBackupStatus struct {
 	// +optional
 	// +listType=atomic
 	Conditions []Condition `json:"conditions,omitempty"`
+	// +optional
+	// ServiceName is the name of the service created associated with the Virtual Machine backup. It will be used to
+	// create the internal URLs for interacting with the backup endpoints
+	ServiceName string `json:"serviceName,omitempty"`
+}
+
+// VirtualMachineBackupEndpoint contains the backup interactable endpoint
+type VirtualMachineBackupEndpoint struct {
+	// Cert is the public CA certificate base64 encoded
+	Cert string `json:"cert"`
+	// Url is the url of the endpoint that returns the manifest
+	URL string `json:"url"`
 }
 
 // ConditionType is the const type for Conditions
@@ -129,8 +149,17 @@ const (
 	// ConditionFailure indicates the backup failed
 	ConditionFailure ConditionType = "Failure"
 
-	// ConditionDeleting indicates the backup is deleteing
+	// ConditionDeleting indicates the backup is deleting
 	ConditionDeleting ConditionType = "Deleting"
+
+	// ConditionWaitingForBackupServer indicates the backup is
+	// waiting for the backup server pod to start
+	ConditionWaitingForBackupServer = "WaitingForBackupServer"
+
+	// ConditionReadyToPull indicates that the backup server pod
+	// has successfully initialized and is ready to accept client
+	// connections
+	ConditionReadyToPull = "ReadyToPull"
 )
 
 // Condition defines conditions
