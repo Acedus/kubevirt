@@ -209,11 +209,14 @@ func validateBackupMode(vmBackup *backupv1.VirtualMachineBackup, causes []metav1
 	switch *vmBackup.Spec.Mode {
 	case backupv1.PushMode:
 		return validatePVCNameExists(vmBackup, causes)
+	case backupv1.PullMode:
+		// TODO: Add secret token validation
+		return causes
 	default:
 		modeField := k8sfield.NewPath("spec", "mode")
 		causes = append(causes, metav1.StatusCause{
 			Type:    metav1.CauseTypeFieldValueInvalid,
-			Message: "invalid mode",
+			Message: fmt.Sprintf("invalid mode: %s", *vmBackup.Spec.Mode),
 			Field:   modeField.String(),
 		})
 		return causes

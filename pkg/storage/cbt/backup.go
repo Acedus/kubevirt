@@ -24,11 +24,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/openshift/library-go/pkg/build/naming"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
@@ -324,6 +326,19 @@ func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) *Syn
 		}
 		backupOptions.Mode = backupv1.PushMode
 		backupOptions.PushPath = pointer.P(hotplugdisk.GetVolumeMountDir(backupTargetPVC))
+	case backupv1.PullMode:
+		pvcName := naming.GetName(backup.Name, "scratch", validation.DNS1035LabelMaxLength)
+		syncInfo := ctrl.getOrCreateBackupScratchPVC(backup, vmi, pvcName)
+		if syncInfo != nil {
+			return syncInfo
+		}
+
+		attached := ctrl.backupScratchPVCAttached(vmi)
+		if !attached {
+			return ctrl.attachBackupScratchPVC(vmi, pvcName)
+		}
+		backupOptions.Mode = backupv1.PullMode
+		backupOptions.ScratchPath = pointer.P(hotplugdisk.GetVolumeMountDir(pullScratchPVC))
 	default:
 		log.Log.Errorf("Invalid backup mode: %s", *backup.Spec.Mode)
 		return syncInfoError(fmt.Errorf("invalid backup mode"))
@@ -647,6 +662,11 @@ func (ctrl *VMBackupController) cleanup(backup *backupv1.VirtualMachineBackup, v
 		detached := ctrl.backupTargetPVCDetached(vmi)
 		if !detached {
 			return false, ctrl.detachBackupTargetPVC(vmi)
+		}
+	} else {
+		detached := ctrl.backupScratchPVCDetached(vmi)
+		if !detached {
+			return false, ctrl.detachBackupScratchPVC(vmi)
 		}
 	}
 

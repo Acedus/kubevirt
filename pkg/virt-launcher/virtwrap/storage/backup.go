@@ -125,27 +125,25 @@ func (m *StorageManager) backup(vmi *v1.VirtualMachineInstance, backupOptions *b
 		return err
 	}
 
-	var backupPath string
-	if backupOptions.PushPath != nil {
-		backupPath = getBackupPath(backupOptions, vmi.Name)
-		if err := kutil.MkdirAllWithNosec(backupPath); err != nil {
-			return fmt.Errorf("error creating dir for backup: %v", err)
-		}
-		defer func(path string) {
-			if failed != nil {
-				logger.Reason(failed).Error("failed to run backup")
-				if err := os.RemoveAll(path); err != nil {
-					logger.Reason(err).Error("failed to clean up backup directory")
-				}
-			}
-		}(backupPath)
+	backupPath := getBackupPath(backupOptions, vmi.Name)
+	if err := kutil.MkdirAllWithNosec(backupPath); err != nil {
+		return fmt.Errorf("error creating dir for backup: %v", err)
 	}
+	defer func(path string) {
+		if failed != nil {
+			logger.Reason(failed).Error("failed to run backup")
+			if err := os.RemoveAll(path); err != nil {
+				logger.Reason(err).Error("failed to clean up backup directory")
+			}
+		}
+	}(backupPath)
 	domainBackup, domainCheckpoint := generateDomainBackup(domainDisks, backupOptions, backupPath)
 	backupXML, err := xml.Marshal(domainBackup)
 	if err != nil {
 		logger.Reason(err).Error("marshalling backup xml failed")
 		return err
 	}
+	logger.Infof("The backup xml result: %+s", backupXML)
 	checkpointXML, err := xml.Marshal(domainCheckpoint)
 	if err != nil {
 		logger.Reason(err).Error("marshalling checkpoint xml failed")
@@ -183,10 +181,16 @@ func (m *StorageManager) backup(vmi *v1.VirtualMachineInstance, backupOptions *b
 func generateDomainBackup(disks []api.Disk, backupOptions *backupv1.BackupOptions, backupPath string) (*api.DomainBackup, *api.DomainCheckpoint) {
 	log.Log.Infof("backup generateDomainBackup")
 	domainBackup := &api.DomainBackup{
-		Mode: string(backupOptions.Mode),
+		Mode: strings.ToLower(string(backupOptions.Mode)),
 	}
 	if backupOptions.Incremental != nil && *backupOptions.Incremental != "" {
 		domainBackup.Incremental = backupOptions.Incremental
+	}
+	if backupOptions.Mode == backupv1.PullMode {
+		domainBackup.Server = &api.DomainBackupServer{
+			Transport: api.BackupUnixTransport,
+			Socket:    "/var/run/kubevirt/sockets/backup-nbd-sock",
+		}
 	}
 	backupDisks := &api.BackupDisks{}
 	checkpointDisks := &api.CheckpointDisks{}
@@ -208,6 +212,11 @@ func generateDomainBackup(disks []api.Disk, backupOptions *backupv1.BackupOption
 			if backupOptions.PushPath != nil {
 				backupDisk.Target = &api.BackupTarget{
 					File: targetQCOW2File(backupPath, backupOptions.BackupName, volumeName),
+				}
+			}
+			if backupOptions.ScratchPath != nil {
+				backupDisk.Scratch = &api.BackupScratch{
+					File: targetScratchFile(backupPath, backupOptions.BackupName, volumeName),
 				}
 			}
 			checkpointDisk.Checkpoint = "bitmap"
@@ -232,12 +241,24 @@ func generateDomainBackup(disks []api.Disk, backupOptions *backupv1.BackupOption
 func getBackupPath(backupOptions *backupv1.BackupOptions, vmiName string) string {
 	backupTime := backupTimeFormatted(backupOptions.BackupStartTime)
 	backupNameWithTime := fmt.Sprintf("%s-%s", backupOptions.BackupName, backupTime)
-	return filepath.Join(*backupOptions.PushPath, vmiName, backupNameWithTime)
+	var path string
+	switch backupOptions.Mode {
+	case backupv1.PushMode:
+		path = *backupOptions.PushPath
+	case backupv1.PullMode:
+		path = *backupOptions.ScratchPath
+	}
+	return filepath.Join(path, vmiName, backupNameWithTime)
 }
 
 func targetQCOW2File(pushPath, backupName, volumeName string) string {
 	fileName := fmt.Sprintf("%s-%s.qcow2", backupName, volumeName)
 	return filepath.Join(pushPath, fileName)
+}
+
+func targetScratchFile(scratchPath, backupName, volumeName string) string {
+	fileName := fmt.Sprintf("%s-%s-scratch", backupName, volumeName)
+	return filepath.Join(scratchPath, fileName)
 }
 
 func backupTimeFormatted(time *metav1.Time) string {
