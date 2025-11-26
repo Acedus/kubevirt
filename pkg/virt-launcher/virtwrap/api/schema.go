@@ -419,6 +419,7 @@ type MigrationMetadata struct {
 
 type BackupMetadata struct {
 	Name           string       `xml:"name,omitempty"`
+	Mode           string       `xml:"mode,omitempty"`
 	SkipQuiesce    bool         `xml:"skipQuiesce,omitempty"`
 	StartTimestamp *metav1.Time `xml:"startTimestamp,omitempty"`
 	EndTimestamp   *metav1.Time `xml:"endTimestamp,omitempty"`

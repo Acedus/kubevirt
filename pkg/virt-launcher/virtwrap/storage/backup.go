@@ -76,6 +76,20 @@ func (m *StorageManager) BackupVirtualMachine(vmi *v1.VirtualMachineInstance, ba
 	return nil
 }
 
+func (m *StorageManager) AbortVirtualMachineBackup(vmi *v1.VirtualMachineInstance, backupOptions *backupv1.BackupOptions) error {
+	log.Log.Object(vmi).Infof("aborting backup job")
+	err := m.abortBackup(vmi)
+	if err != nil {
+		log.Log.Object(vmi).Reason(err).Error("failed to abort backup")
+		// Reset metadata cache so retries can proceed with fresh metadata
+		m.metadataCache.Backup.Store(api.BackupMetadata{})
+		return err
+	}
+
+	log.Log.Object(vmi).Infof("backup abort")
+	return nil
+}
+
 func (m *StorageManager) initializeBackupMetadata(backupOptions *backupv1.BackupOptions) (bool, error) {
 	backupMetadata, exists := m.metadataCache.Backup.Load()
 	// Same start time is a unique indication for the backup
@@ -103,6 +117,7 @@ func (m *StorageManager) initializeBackupMetadata(backupOptions *backupv1.Backup
 		Name:           backupOptions.BackupName,
 		StartTimestamp: backupOptions.BackupStartTime,
 		SkipQuiesce:    backupOptions.SkipQuiesce,
+		Mode:           string(backupOptions.Mode),
 	}
 	m.metadataCache.Backup.Store(b)
 	log.Log.V(3).Infof("initialize backup metadata: %v", b)
@@ -176,6 +191,16 @@ func (m *StorageManager) backup(vmi *v1.VirtualMachineInstance, backupOptions *b
 	}()
 
 	return dom.BackupBegin(strings.ToLower(string(backupXML)), strings.ToLower(string(checkpointXML)), 0)
+}
+
+func (m *StorageManager) abortBackup(vmi *v1.VirtualMachineInstance) (failed error) {
+	domName := api.VMINamespaceKeyFunc(vmi)
+	dom, err := m.virConn.LookupDomainByName(domName)
+	if dom == nil || err != nil {
+		return err
+	}
+	defer dom.Free()
+	return dom.AbortJob()
 }
 
 func generateDomainBackup(disks []api.Disk, backupOptions *backupv1.BackupOptions, backupPath string) (*api.DomainBackup, *api.DomainCheckpoint) {
@@ -277,17 +302,31 @@ func HandleBackupJobCompletedEvent(domain cli.VirDomain, event *libvirt.DomainEv
 	if domain != nil {
 		finalStats, err := domain.GetJobStats(libvirt.DOMAIN_JOB_STATS_COMPLETED)
 		if err != nil {
-			logger.Reason(err).Error("Failed to get final job stats for completed backup.")
+			logger.Reason(err).Error("Failed to get final job stats for completed backup (expected for cancelled/pull jobs).")
 		} else if finalStats != nil {
 			event.Info.Type = finalStats.Type
 		}
 	}
 
-	// TODO: Handle non-success job completion (DOMAIN_JOB_FAILED, DOMAIN_JOB_CANCELLED, unknown types)
-	if event.Info.Type == libvirt.DOMAIN_JOB_COMPLETED {
-		logger.Info("Backup has been completed successfully")
-	} else {
-		logger.Warningf("Unexpected job completion type: %d (only handling success case)", event.Info.Type)
+	success := true
+	switch event.Info.Type {
+	case libvirt.DOMAIN_JOB_COMPLETED:
+		logger.Info("Backup job has been completed successfully")
+		success = true
+	case libvirt.DOMAIN_JOB_CANCELLED:
+		if backupMetadata.Mode == string(backupv1.PullMode) {
+			logger.Info("Backup job was aborted successfully, (pull mode completion)")
+			success = true
+		} else {
+			logger.Warning("Backup job was canceled/aborted (push mode failure)")
+			success = false
+		}
+	case libvirt.DOMAIN_JOB_FAILED:
+		logger.Error("Backup job failed internally in Libvirt/QEMU")
+		success = false
+	default:
+		logger.Warningf("Unexpected job completion type: %d", event.Info.Type)
+		success = false
 	}
 
 	metadataCache.Backup.WithSafeBlock(func(backupMetadata *api.BackupMetadata, exists bool) {
@@ -296,12 +335,15 @@ func HandleBackupJobCompletedEvent(domain cli.VirDomain, event *libvirt.DomainEv
 			logger.Warning("Backup metadata changed or was cleared before update could complete. Backup completion may not be properly recorded.")
 			return
 		}
+
 		backupMetadata.Completed = true
 		now := metav1.Now()
 		backupMetadata.EndTimestamp = &now
+		backupMetadata.BackupMsg = ""
+		if !success {
+			backupMetadata.BackupMsg = fmt.Sprintf("Job ended with non-success status: %d", event.Info.Type)
+		}
 	})
 
 	log.Log.V(2).Infof("Updated backup result in metadata via Notifier: %s", metadataCache.Backup.String())
 }
-
-// TODO: Implement backup abort functionality for graceful shutdown

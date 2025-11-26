@@ -822,18 +822,27 @@ func getBackupOptionsFromRequest(request *cmdv1.BackupRequest) (*backupv1.Backup
 		return nil, fmt.Errorf("no valid backup options object present in command server request: %v", err)
 	}
 
-	switch options.Mode {
-	case backupv1.PushMode:
-		if options.PushPath == nil {
-			return nil, fmt.Errorf("backup with push mode - pushPath wasn't provided")
-		}
-	case backupv1.PullMode:
-		if options.ScratchPath == nil {
-			return nil, fmt.Errorf("backup with pull mode - scratchPath wasn't provided")
-		}
+	if options.Cmd == backupv1.Abort {
+		return options, nil
 	}
 
-	return options, nil
+	if options.Cmd == backupv1.Start {
+		switch options.Mode {
+		case backupv1.PushMode:
+			if options.PushPath == nil {
+				return nil, fmt.Errorf("backup with push mode - pushPath wasn't provided")
+			}
+		case backupv1.PullMode:
+			if options.ScratchPath == nil {
+				return nil, fmt.Errorf("backup with pull mode - scratchPath wasn't provided")
+			}
+		default:
+			return nil, fmt.Errorf("invalid or missing backup mode: %s", options.Mode)
+		}
+		return options, nil
+	}
+
+	return options, fmt.Errorf("unknown backup command: %s", options.Cmd)
 }
 
 func (l *Launcher) BackupVirtualMachine(_ context.Context, request *cmdv1.BackupRequest) (*cmdv1.Response, error) {

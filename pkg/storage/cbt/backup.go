@@ -637,9 +637,17 @@ func (ctrl *VMBackupController) deletionCleanup(backup *backupv1.VirtualMachineB
 		!vmi.Status.ChangedBlockTracking.BackupStatus.Completed
 
 	if vmiBackupInProgress {
-		log.Log.V(3).Infof("Backup %s/%s is being deleted before VMI completion, waiting for completion",
+		log.Log.V(3).Infof("Backup %s/%s is being deleted before VMI completion, aborting backup job.",
 			backup.Namespace, backup.Name)
-		// TODO: abort running backup on deletion instead of waiting for completion
+		backupOptions := backupv1.BackupOptions{
+			BackupName: backup.Name,
+			Cmd:        backupv1.Abort,
+			Mode:       *backup.Spec.Mode,
+		}
+		err = ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, &backupOptions)
+		if err != nil {
+			return syncInfoError(err)
+		}
 		return nil
 	}
 
