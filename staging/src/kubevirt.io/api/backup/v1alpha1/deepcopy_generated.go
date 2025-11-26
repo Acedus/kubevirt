@@ -50,6 +50,16 @@ func (in *BackupOptions) DeepCopyInto(out *BackupOptions) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.BackupServerAddr != nil {
+		in, out := &in.BackupServerAddr, &out.BackupServerAddr
+		*out = new(string)
+		**out = **in
+	}
+	if in.Token != nil {
+		in, out := &in.Token, &out.Token
+		*out = new(string)
+		**out = **in
+	}
 	return
 }
 

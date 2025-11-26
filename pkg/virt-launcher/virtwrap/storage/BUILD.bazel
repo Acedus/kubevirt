@@ -4,6 +4,7 @@ go_library(
     name = "go_default_library",
     srcs = [
         "backup.go",
+        "backup_tunnel.go",
         "cbt.go",
         "fsfreeze.go",
         "manager.go",

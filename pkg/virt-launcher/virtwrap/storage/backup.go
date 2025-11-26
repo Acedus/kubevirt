@@ -46,6 +46,7 @@ const (
 	backupTimeXMLFormat               = "2006-01-02_15-04-05"
 	freezeFailedMsg                   = "Failed freezing guest filesystem: %s"
 	unfreezeFailedMsg                 = "Failed to unfreeze filesystem after backup completion"
+	pullBackupSocket                  = "/var/run/kubevirt/sockets/backup-nbd-sock"
 )
 
 func (m *StorageManager) BackupVirtualMachine(vmi *v1.VirtualMachineInstance, backupOptions *backupv1.BackupOptions) error {
@@ -87,6 +88,18 @@ func (m *StorageManager) AbortVirtualMachineBackup(vmi *v1.VirtualMachineInstanc
 	}
 
 	log.Log.Object(vmi).Infof("backup abort")
+	return nil
+}
+
+func (m *StorageManager) BackupConnect(vmi *v1.VirtualMachineInstance, backupOptions *backupv1.BackupOptions) error {
+	log.Log.Object(vmi).Infof("establishing backup tunnel for pull-mode backup job")
+	if backupOptions.BackupServerAddr == nil {
+		return fmt.Errorf("cannot establish tunnel, no backup server address provided")
+	} else if backupOptions.Token == nil {
+		return fmt.Errorf("cannot establish tunnel, no backup server token provided")
+	}
+	m.backupTunnelCtrl.StartOrUpdate(*backupOptions.BackupServerAddr, *backupOptions.Token)
+
 	return nil
 }
 
@@ -200,6 +213,7 @@ func (m *StorageManager) abortBackup(vmi *v1.VirtualMachineInstance) (failed err
 		return err
 	}
 	defer dom.Free()
+	m.backupTunnelCtrl.Stop()
 	return dom.AbortJob()
 }
 

@@ -274,7 +274,7 @@ func (ctrl *VMBackupController) attachBackupScratchPVC(vmi *v1.VirtualMachineIns
 
 	_, err = ctrl.client.VirtualMachineInstance(vmi.Namespace).Patch(context.Background(), vmi.Name, k8stypes.JSONPatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		failedPatchErr := fmt.Errorf(failedTargetPVCAttach, err)
+		failedPatchErr := fmt.Errorf(failedScratchPVCAttach, err)
 		log.Log.Object(vmi).Errorf("%s", failedPatchErr.Error())
 		return syncInfoError(failedPatchErr)
 	}

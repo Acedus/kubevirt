@@ -34,6 +34,7 @@ type StorageManager struct {
 	metadataCache            *metadata.Cache
 	memoryDumpInProgress     chan struct{}
 	cancelSafetyUnfreezeChan chan struct{}
+	backupTunnelCtrl         *BackupTunnelController
 }
 
 func NewStorageManager(connection cli.Connection, metadataCache *metadata.Cache) *StorageManager {
@@ -42,6 +43,7 @@ func NewStorageManager(connection cli.Connection, metadataCache *metadata.Cache)
 		metadataCache:            metadataCache,
 		memoryDumpInProgress:     make(chan struct{}, MaxConcurrentMemoryDumps),
 		cancelSafetyUnfreezeChan: make(chan struct{}),
+		backupTunnelCtrl:         NewBackupTunnelController(),
 	}
 }
 

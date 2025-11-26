@@ -1314,15 +1314,15 @@ func (in *DomainBackup) DeepCopyInto(out *DomainBackup) {
 		*out = new(string)
 		**out = **in
 	}
-	if in.BackupDisks != nil {
-		in, out := &in.BackupDisks, &out.BackupDisks
-		*out = new(BackupDisks)
-		(*in).DeepCopyInto(*out)
-	}
 	if in.Server != nil {
 		in, out := &in.Server, &out.Server
 		*out = new(DomainBackupServer)
 		**out = **in
+	}
+	if in.BackupDisks != nil {
+		in, out := &in.BackupDisks, &out.BackupDisks
+		*out = new(BackupDisks)
+		(*in).DeepCopyInto(*out)
 	}
 	return
 }

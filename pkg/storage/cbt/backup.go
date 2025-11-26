@@ -51,6 +51,8 @@ const (
 	vmBackupFinalizer = "backup.kubevirt.io/vmbackup-protection"
 
 	backupInitiatedEvent            = "VirtualMachineBackupInitiated"
+	backupReadyEvent                = "VirtualMachineBackupReady"
+	backupAbortEvent                = "VirtualMachineBackupAbort"
 	backupCompletedEvent            = "VirtualMachineBackupCompletedSuccessfully"
 	backupCompletedWithWarningEvent = "VirtualMachineBackupCompletedWithWarning"
 
@@ -64,6 +66,8 @@ const (
 
 	backupInitializing = "Backup is initializing"
 	backupInProgress   = "Backup is in progress"
+	backupReady        = "Backup is ready for pull"
+	backupAbort        = "Backup is being aborted"
 	backupDeleting     = "Backup is deleting"
 	backupCompleted    = "Successfully completed VirtualMachineBackup"
 
@@ -276,7 +280,7 @@ func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) *Syn
 		return syncInfoError(errSourceNameEmpty)
 	}
 
-	if isBackupDeleting(backup) {
+	if isBackupDeleting(backup) && !IsBackupDone(backup.Status) {
 		log.Log.V(3).Infof(backupDeletingMsg, backup.Namespace, backup.Name)
 		return ctrl.deletionCleanup(backup)
 	}
@@ -284,6 +288,10 @@ func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) *Syn
 	vmi, syncInfo := ctrl.verifyBackupSource(backup, sourceName)
 	if syncInfo != nil {
 		return syncInfo
+	}
+
+	if isBackupProgressing(backup.Status) && backup.Spec.Mode != nil && *backup.Spec.Mode == backupv1.PullMode {
+		return ctrl.connectToBackupServer(vmi, backup)
 	}
 
 	if !isBackupInitializing(backup.Status) || vmi == nil {
@@ -378,6 +386,16 @@ func (ctrl *VMBackupController) updateStatus(backup *backupv1.VirtualMachineBack
 			removeBackupCondition(backupOut, backupv1.ConditionInitializing)
 			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionTrue, syncInfo.reason))
 			updateBackupCondition(backupOut, newDoneCondition(corev1.ConditionFalse, syncInfo.reason))
+		case backupReadyEvent:
+			log.Log.Infof("backup updateStatus Ready")
+			updateBackupCondition(backupOut, newReadyCondition(corev1.ConditionTrue, syncInfo.reason))
+			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionFalse, syncInfo.reason))
+			updateBackupCondition(backupOut, newDoneCondition(corev1.ConditionFalse, syncInfo.reason))
+		case backupAbortEvent:
+			log.Log.Infof("backup updateStatus Abort")
+			updateBackupCondition(backupOut, newReadyCondition(corev1.ConditionFalse, syncInfo.reason))
+			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionFalse, syncInfo.reason))
+			updateBackupCondition(backupOut, newDoneCondition(corev1.ConditionTrue, syncInfo.reason))
 		case backupCompletedEvent, backupCompletedWithWarningEvent:
 			log.Log.Info("backup updateStatus Completed")
 			if syncInfo.event == backupCompletedWithWarningEvent {
@@ -386,6 +404,7 @@ func (ctrl *VMBackupController) updateStatus(backup *backupv1.VirtualMachineBack
 				ctrl.recorder.Eventf(backupOut, corev1.EventTypeNormal, backupCompletedEvent, syncInfo.reason)
 			}
 			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionFalse, syncInfo.reason))
+			updateBackupCondition(backupOut, newReadyCondition(corev1.ConditionFalse, syncInfo.reason))
 			updateBackupCondition(backupOut, newDoneCondition(corev1.ConditionTrue, syncInfo.reason))
 			backupOut.Status.Type = backupv1.Full
 		}
@@ -648,7 +667,10 @@ func (ctrl *VMBackupController) deletionCleanup(backup *backupv1.VirtualMachineB
 		if err != nil {
 			return syncInfoError(err)
 		}
-		return nil
+		return &SyncInfo{
+			event:  backupAbortEvent,
+			reason: backupAbort,
+		}
 	}
 
 	done, syncInfo := ctrl.cleanup(backup, vmi)
@@ -692,8 +714,39 @@ func (ctrl *VMBackupController) cleanup(backup *backupv1.VirtualMachineBackup, v
 	return true, nil
 }
 
+func (ctrl *VMBackupController) connectToBackupServer(vmi *v1.VirtualMachineInstance, backup *backupv1.VirtualMachineBackup) *SyncInfo {
+	backupOptions := &backupv1.BackupOptions{
+		BackupName:       backup.Name,
+		BackupStartTime:  &backup.CreationTimestamp,
+		Cmd:              backupv1.Connect,
+		BackupServerAddr: pointer.P(getBackupServerAddress()),
+		Token:            pointer.P(getGeneratedToken()),
+		Mode:             backupv1.PullMode,
+	}
+	err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions)
+	if err != nil {
+		return syncInfoError(fmt.Errorf("failed to establish backup server tunnel: %w", err))
+	}
+	return &SyncInfo{
+		event:  backupReadyEvent,
+		reason: backupReady,
+	}
+}
+
+func getBackupServerAddress() string {
+	return "backup-server-internal.default.svc:9090"
+}
+
+func getGeneratedToken() string {
+	return "my-super-secret-token"
+}
+
 func isBackupInitializing(status *backupv1.VirtualMachineBackupStatus) bool {
 	return status == nil || hasCondition(status.Conditions, backupv1.ConditionInitializing)
+}
+
+func isBackupProgressing(status *backupv1.VirtualMachineBackupStatus) bool {
+	return status != nil && hasCondition(status.Conditions, backupv1.ConditionProgressing)
 }
 
 func IsBackupDone(status *backupv1.VirtualMachineBackupStatus) bool {
@@ -738,6 +791,10 @@ func newDoneCondition(status corev1.ConditionStatus, reason string) backupv1.Con
 
 func newProgressingCondition(status corev1.ConditionStatus, reason string) backupv1.Condition {
 	return newCondition(backupv1.ConditionProgressing, status, reason)
+}
+
+func newReadyCondition(status corev1.ConditionStatus, reason string) backupv1.Condition {
+	return newCondition(backupv1.ConditionReadyToPull, status, reason)
 }
 
 func newDeletingCondition(status corev1.ConditionStatus, reason string) backupv1.Condition {

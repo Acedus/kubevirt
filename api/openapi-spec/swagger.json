@@ -19723,6 +19723,9 @@
      "backupName": {
       "type": "string"
      },
+     "backupServerAddr": {
+      "type": "string"
+     },
      "backupStartTime": {
       "$ref": "#/definitions/k8s.io.apimachinery.pkg.apis.meta.v1.Time"
      },
@@ -19743,6 +19746,9 @@
      },
      "skipQuiesce": {
       "type": "boolean"
+     },
+     "token": {
+      "type": "string"
      }
     }
    },

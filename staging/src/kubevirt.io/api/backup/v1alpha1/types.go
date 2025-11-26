@@ -48,20 +48,23 @@ const (
 type BackupCmd string
 
 const (
-	Start BackupCmd = "Start"
-	Abort BackupCmd = "Abort"
+	Start   BackupCmd = "Start"
+	Abort   BackupCmd = "Abort"
+	Connect BackupCmd = "Connect"
 )
 
 // BackupOptions are options used to configure virtual machine backup job
 type BackupOptions struct {
-	BackupName      string       `json:"backupName,omitempty"`
-	Cmd             BackupCmd    `json:"cmd,omitempty"`
-	Mode            BackupMode   `json:"mode,omitempty"`
-	BackupStartTime *metav1.Time `json:"backupStartTime,omitempty"`
-	Incremental     *string      `json:"incremental,omitempty"`
-	PushPath        *string      `json:"pushPath,omitempty"`
-	ScratchPath     *string      `json:"scratchPath,omitempty"`
-	SkipQuiesce     bool         `json:"skipQuiesce,omitempty"`
+	BackupName       string       `json:"backupName,omitempty"`
+	Cmd              BackupCmd    `json:"cmd,omitempty"`
+	Mode             BackupMode   `json:"mode,omitempty"`
+	BackupStartTime  *metav1.Time `json:"backupStartTime,omitempty"`
+	Incremental      *string      `json:"incremental,omitempty"`
+	PushPath         *string      `json:"pushPath,omitempty"`
+	ScratchPath      *string      `json:"scratchPath,omitempty"`
+	SkipQuiesce      bool         `json:"skipQuiesce,omitempty"`
+	BackupServerAddr *string      `json:"backupServerAddr,omitempty"`
+	Token            *string      `json:"token,omitempty"`
 }
 
 // VirtualMachineBackup defines the operation of backing up a VM
