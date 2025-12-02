@@ -10287,6 +10287,27 @@ var CRDsValidation map[string]string = map[string]string{
               description: VirtualMachineExportLink contains a list of volumes available
                 for export, as well as the URLs to obtain these volumes
               properties:
+                backups:
+                  description: Manifests is a list of available manifests for the
+                    export
+                  items:
+                    description: VirtualMachineExportBackup contains the URL and available
+                      formats for the exported backup
+                    properties:
+                      name:
+                        description: Name is the name of the exported volume
+                        type: string
+                      url:
+                        description: Url is the url of the backup endpoint
+                        type: string
+                    required:
+                    - name
+                    - url
+                    type: object
+                  type: array
+                  x-kubernetes-list-map-keys:
+                  - name
+                  x-kubernetes-list-type: map
                 cert:
                   description: Cert is the public CA certificate base64 encoded
                   type: string
@@ -10356,6 +10377,27 @@ var CRDsValidation map[string]string = map[string]string{
               description: VirtualMachineExportLink contains a list of volumes available
                 for export, as well as the URLs to obtain these volumes
               properties:
+                backups:
+                  description: Manifests is a list of available manifests for the
+                    export
+                  items:
+                    description: VirtualMachineExportBackup contains the URL and available
+                      formats for the exported backup
+                    properties:
+                      name:
+                        description: Name is the name of the exported volume
+                        type: string
+                      url:
+                        description: Url is the url of the backup endpoint
+                        type: string
+                    required:
+                    - name
+                    - url
+                    type: object
+                  type: array
+                  x-kubernetes-list-map-keys:
+                  - name
+                  x-kubernetes-list-type: map
                 cert:
                   description: Cert is the public CA certificate base64 encoded
                   type: string
@@ -10439,6 +10481,11 @@ var CRDsValidation map[string]string = map[string]string{
             The time at which the VM Export will be completely removed according to specified TTL
             Formula is CreationTimestamp + TTL
           format: date-time
+          type: string
+        virtualMachineBackupName:
+          description: |-
+            VirtualMachineBackupName shows the name of the source virtual machine backup if the source is a
+            VirtualMachineBackup.
           type: string
         virtualMachineName:
           description: |-

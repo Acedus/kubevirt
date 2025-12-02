@@ -32,7 +32,8 @@ import (
 )
 
 const (
-	listenAddr = ":8443"
+	externalListenAddr = ":8443"
+	InternalListenAddr = ":9090"
 )
 
 func main() {
@@ -41,12 +42,13 @@ func main() {
 
 	certFile, keyFile := getCert()
 	config := exportServer.ExportServerConfig{
-		CertFile:   certFile,
-		KeyFile:    keyFile,
-		Deadline:   getDeadline(),
-		ListenAddr: getListenAddr(),
-		TokenFile:  getTokenFile(),
-		Paths:      export.CreateServerPaths(export.EnvironToMap()),
+		CertFile:           certFile,
+		KeyFile:            keyFile,
+		Deadline:           getDeadline(),
+		InternalListenAddr: getInternalListenAddr(),
+		ExternalListenAddr: getExternalListenAddr(),
+		TokenFile:          getTokenFile(),
+		Paths:              export.CreateServerPaths(export.EnvironToMap()),
 	}
 	server := exportServer.NewExportServer(config)
 	service.Setup(server)
@@ -70,12 +72,20 @@ func getCert() (certFile, keyFile string) {
 	return
 }
 
-func getListenAddr() string {
-	addr := os.Getenv("LISTEN_ADDR")
+func getExternalListenAddr() string {
+	addr := os.Getenv("EXTERNAL_LISTEN_ADDR")
 	if addr != "" {
 		return addr
 	}
-	return listenAddr
+	return externalListenAddr
+}
+
+func getInternalListenAddr() string {
+	addr := os.Getenv("INTERNAL_LISTEN_ADDR")
+	if addr != "" {
+		return addr
+	}
+	return InternalListenAddr
 }
 
 func getDeadline() (result time.Time) {

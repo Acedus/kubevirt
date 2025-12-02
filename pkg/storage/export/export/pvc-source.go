@@ -141,7 +141,7 @@ func (ctrl *VMExportController) updateVMExportPvcStatus(vmExport *exportv1.Virtu
 
 	vmExportCopy := vmExport.DeepCopy()
 
-	if err := ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, exporterPod, service, sourceVolumes, getVolumeName); err != nil {
+	if err := ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, exporterPod, service, sourceVolumes.availableMessage, sourceVolumes.volumes, getVolumeName); err != nil {
 		return requeue, err
 	}
 

@@ -239,7 +239,7 @@ func (ctrl *VMExportController) updateVMExportVMStatus(vmExport *exportv1.Virtua
 
 	vmExportCopy := vmExport.DeepCopy()
 	vmExportCopy.Status.VirtualMachineName = pointer.P(vmExport.Spec.Source.Name)
-	if err := ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, exporterPod, service, sourceVolumes, getVolumeName); err != nil {
+	if err := ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, exporterPod, service, sourceVolumes.availableMessage, sourceVolumes.volumes, getVolumeName); err != nil {
 		return requeue, err
 	}
 	if len(sourceVolumes.volumes) == 0 {

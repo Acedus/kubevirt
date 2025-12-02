@@ -98,6 +98,13 @@ func (ctrl *VMExportController) getLinks(pvcs []*corev1.PersistentVolumeClaim, e
 		})
 	}
 
+	if paths.BackupURI != "" {
+		exportLink.Backups = append(exportLink.Backups, exportv1.VirtualMachineExportBackup{
+			Name: "pull",
+			Url:  scheme + path.Join(hostAndBase, linkType, paths.BackupURI),
+		})
+	}
+
 	for _, pvc := range pvcs {
 		if pvc == nil || exporterPod.Status.Phase != corev1.PodRunning {
 			continue

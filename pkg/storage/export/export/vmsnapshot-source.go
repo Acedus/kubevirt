@@ -191,7 +191,7 @@ func (ctrl *VMExportController) updateVMExportVMSnapshotStatus(vmExport *exportv
 	vmExportCopy := vmExport.DeepCopy()
 	vmExportCopy.Status.VirtualMachineName = pointer.P(ctrl.getVmNameFromVmSnapshot(vmExport))
 
-	if err := ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, exporterPod, service, sourceVolumes, getSnapshotVolumeName); err != nil {
+	if err := ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, exporterPod, service, sourceVolumes.availableMessage, sourceVolumes.volumes, getSnapshotVolumeName); err != nil {
 		return 0, err
 	}
 

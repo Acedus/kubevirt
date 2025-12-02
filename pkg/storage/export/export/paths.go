@@ -40,6 +40,7 @@ type VolumeInfo struct {
 type ServerPaths struct {
 	VMURI     string
 	SecretURI string
+	BackupURI string
 	Volumes   []VolumeInfo
 }
 
@@ -67,6 +68,7 @@ func CreateServerPaths(env map[string]string) *ServerPaths {
 	result := &ServerPaths{
 		VMURI:     env["EXPORT_VM_DEF_URI"],
 		SecretURI: env["EXPORT_SECRET_DEF_URI"],
+		BackupURI: env["EXPORT_BACKUP_DEF_URI"],
 	}
 	for k, v := range env {
 		if strings.HasSuffix(k, "_EXPORT_PATH") {

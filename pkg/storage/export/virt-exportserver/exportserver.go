@@ -23,18 +23,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	goflag "flag"
 	"fmt"
 	"io"
 	golog "log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	gzip "github.com/klauspost/pgzip"
@@ -66,6 +69,9 @@ const (
 
 	external = "/external"
 	internal = "/internal"
+
+	StatusSuccess = 0
+	StatusError   = 1
 )
 
 var excludeMap = map[string]struct{}{
@@ -77,7 +83,8 @@ type TokenGetterFunc func() (string, error)
 type ExportServerConfig struct {
 	Deadline time.Time
 
-	ListenAddr string
+	ExternalListenAddr string
+	InternalListenAddr string
 
 	CertFile, KeyFile string
 
@@ -91,6 +98,7 @@ type ExportServerConfig struct {
 	FileHandler        func(string) http.Handler
 	GzipHandler        func(string) http.Handler
 	VmHandler          func([]export.VolumeInfo, func() (string, error), func() (*corev1.ConfigMap, error)) http.Handler
+	BackupHandler      func() http.Handler
 	TokenSecretHandler func(TokenGetterFunc) http.Handler
 
 	PermissionChecker func(string) bool
@@ -144,6 +152,11 @@ func (s *exportServer) initHandler() {
 		mux.Handle(filepath.Join(internal, s.Paths.SecretURI), tokenChecker(s.TokenGetter, s.TokenSecretHandler(s.TokenGetter)))
 		mux.Handle(filepath.Join(external, s.Paths.SecretURI), tokenChecker(s.TokenGetter, s.TokenSecretHandler(s.TokenGetter)))
 	}
+	if s.Paths.BackupURI != "" {
+		mux.Handle(filepath.Join(internal, s.Paths.BackupURI), tokenChecker(s.TokenGetter, s.BackupHandler()))
+		mux.Handle(filepath.Join(external, s.Paths.BackupURI), tokenChecker(s.TokenGetter, s.BackupHandler()))
+	}
+
 	// Readiness probe
 	mux.HandleFunc(export.ReadinessPath, s.readyHandler)
 
@@ -194,8 +207,19 @@ func (s *exportServer) getHandlerMap(vi export.VolumeInfo) map[string]http.Handl
 func (s *exportServer) Run() {
 	s.initHandler()
 
+	var internalLn net.Listener
+	if s.Paths.BackupURI != "" {
+		internalLn, err := s.setupInternalTLSListener()
+		if err != nil {
+			log.Log.Reason(err).Critical("Failed to initialize internal backup listener")
+			panic(err)
+		}
+
+		go s.serveInternalListener(internalLn)
+	}
+
 	srv := &http.Server{
-		Addr:    s.ListenAddr,
+		Addr:    s.ExternalListenAddr,
 		Handler: s.handler,
 		// Disable HTTP/2
 		// See CVE-2023-44487
@@ -217,11 +241,70 @@ func (s *exportServer) Run() {
 		case <-time.After(time.Until(s.Deadline)):
 			log.Log.Info("Deadline exceeded, shutting down")
 			srv.Shutdown(context.TODO())
+			internalLn.Close()
+			nbdMu.Lock()
+			if nbdClient != nil {
+				nbdClient.conn.Close()
+			}
+			nbdMu.Unlock()
 		}
 	} else {
 		err := <-ch
 		panic(err)
 	}
+}
+
+func (s *exportServer) setupInternalTLSListener() (net.Listener, error) {
+	cer, err := tls.LoadX509KeyPair(s.CertFile, s.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load keys for internal tunnel: %v", err)
+	}
+
+	config := &tls.Config{Certificates: []tls.Certificate{cer}}
+
+	ln, err := tls.Listen("tcp", s.InternalListenAddr, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to bind internal backup tunnel on %s: %v", s.InternalListenAddr, err)
+	}
+
+	log.Log.Infof("Internal Backup Tunnel listening on %s (TLS)", s.InternalListenAddr)
+	return ln, nil
+}
+
+func (s *exportServer) serveInternalListener(ln net.Listener) {
+	defer ln.Close()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			log.Log.Reason(err).Error("Internal tunnel accept error")
+
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		go handleNewTunnel(conn)
+	}
+}
+
+func handleNewTunnel(conn net.Conn) {
+	_, err := conn.Write([]byte("OK\n"))
+	if err != nil {
+		log.Log.Reason(err).Error("Failed to send handshake to new tunnel")
+		conn.Close()
+		return
+	}
+
+	conn.SetDeadline(time.Time{})
+
+	log.Log.Infof("Secure tunnel established from %s", conn.RemoteAddr())
+
+	nbdMu.Lock()
+	if nbdClient != nil {
+		log.Log.Info("Replacing existing tunnel connection")
+		nbdClient.conn.Close()
+	}
+	nbdClient = &NbdClient{conn: conn}
+	nbdMu.Unlock()
 }
 
 func (s *exportServer) AddFlags() {
@@ -249,6 +332,10 @@ func NewExportServer(config ExportServerConfig) service.Service {
 
 	if es.VmHandler == nil {
 		es.VmHandler = vmHandler
+	}
+
+	if es.BackupHandler == nil {
+		es.BackupHandler = backupHandler
 	}
 
 	if es.TokenSecretHandler == nil {
@@ -518,7 +605,6 @@ func checkDirectoryPermissions(filePath string) bool {
 	}
 	defer dir.Close()
 
-	// Read all filenames
 	contents, err := dir.Readdirnames(-1)
 	if err != nil {
 		log.Log.Reason(err).Errorf("failed to read directory contents: %v", err)
@@ -530,7 +616,6 @@ func checkDirectoryPermissions(filePath string) bool {
 			continue
 		}
 		itemPath := filepath.Join(filePath, item)
-		// Check if export server has permissions to manipulate the file
 		file, err := os.Open(itemPath)
 		if err != nil {
 			log.Log.Reason(err).Errorf("%s may lack read permissions", itemPath)
@@ -672,6 +757,128 @@ func vmHandler(vi []export.VolumeInfo, getBasePath func() (string, error), getCm
 		}
 		log.Log.Infof("Wrote %d bytes\n", n)
 	})
+}
+
+var (
+	nbdClient  *NbdClient
+	nbdMu      sync.RWMutex
+	tunnelOnce sync.Once
+)
+
+type NbdClient struct {
+	conn net.Conn
+	mu   sync.Mutex
+}
+
+type TunnelCommand struct {
+	Op     string `json:"op"`
+	Disk   string `json:"disk"`
+	Offset int64  `json:"offset"`
+	Length int    `json:"length"`
+}
+
+func backupHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		parts := strings.Split(strings.Trim(req.URL.Path, "/"), "/")
+		if len(parts) == 0 || parts[0] == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		diskName := parts[0]
+		isMap := false
+		if len(parts) > 1 && parts[1] == "map" {
+			isMap = true
+		}
+
+		nbdMu.RLock()
+		client := nbdClient
+		nbdMu.RUnlock()
+
+		if client == nil {
+			// If virt-launcher hasn't connected or is reconnecting
+			http.Error(w, "Backup source not connected (virt-launcher tunnel missing)", http.StatusServiceUnavailable)
+			return
+		}
+
+		// 5. Dispatch
+		if isMap {
+			serveBackupMap(w, client, diskName)
+		} else {
+			serveBackupData(w, req, client, diskName)
+		}
+	})
+}
+
+func serveBackupMap(w http.ResponseWriter, client *NbdClient, disk string) {
+	resp, err := executeRPC(client, "map", disk, 0, 0)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(resp)
+}
+
+func serveBackupData(w http.ResponseWriter, r *http.Request, client *NbdClient, disk string) {
+	offset := int64(0)
+	length := 512
+	rangeHeader := r.Header.Get("Range")
+
+	if rangeHeader != "" {
+		var start, end int64
+		if n, _ := fmt.Sscanf(strings.ReplaceAll(rangeHeader, "bytes=", ""), "%d-%d", &start, &end); n == 2 {
+			offset = start
+			if end >= start {
+				length = int(end - start + 1)
+			}
+		}
+	}
+
+	resp, err := executeRPC(client, "read", disk, offset, length)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.img"`, disk))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Write(resp)
+}
+
+func executeRPC(client *NbdClient, op, disk string, offset int64, length int) ([]byte, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	cmd := TunnelCommand{Op: op, Disk: disk, Offset: offset, Length: length}
+
+	if err := json.NewEncoder(client.conn).Encode(cmd); err != nil {
+		return nil, fmt.Errorf("tunnel write error: %v", err)
+	}
+
+	header := make([]byte, 9)
+	if _, err := io.ReadFull(client.conn, header); err != nil {
+		return nil, fmt.Errorf("tunnel header read error: %v", err)
+	}
+
+	status := header[0]
+	payloadLen := int64(binary.BigEndian.Uint64(header[1:]))
+
+	payload := make([]byte, payloadLen)
+	if _, err := io.ReadFull(client.conn, payload); err != nil {
+		return nil, fmt.Errorf("tunnel payload read error: %v", err)
+	}
+
+	if status != StatusSuccess {
+		return nil, fmt.Errorf("remote error: %s", string(payload))
+	}
+
+	return payload, nil
 }
 
 func resourceToBytesJson(resources []runtime.Object) ([]byte, error) {

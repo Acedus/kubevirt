@@ -21184,6 +21184,26 @@
      }
     }
    },
+   "v1beta1.VirtualMachineExportBackup": {
+    "description": "VirtualMachineExportBackup contains the URL and available formats for the exported backup",
+    "type": "object",
+    "required": [
+     "name",
+     "url"
+    ],
+    "properties": {
+     "name": {
+      "description": "Name is the name of the exported volume",
+      "type": "string",
+      "default": ""
+     },
+     "url": {
+      "description": "Url is the url of the backup endpoint",
+      "type": "string",
+      "default": ""
+     }
+    }
+   },
    "v1beta1.VirtualMachineExportLink": {
     "description": "VirtualMachineExportLink contains a list of volumes available for export, as well as the URLs to obtain these volumes",
     "type": "object",
@@ -21191,6 +21211,18 @@
      "cert"
     ],
     "properties": {
+     "backups": {
+      "description": "Manifests is a list of available manifests for the export",
+      "type": "array",
+      "items": {
+       "default": {},
+       "$ref": "#/definitions/v1beta1.VirtualMachineExportBackup"
+      },
+      "x-kubernetes-list-map-keys": [
+       "name"
+      ],
+      "x-kubernetes-list-type": "map"
+     },
      "cert": {
       "description": "Cert is the public CA certificate base64 encoded",
       "type": "string",
@@ -21335,6 +21367,10 @@
      "ttlExpirationTime": {
       "description": "The time at which the VM Export will be completely removed according to specified TTL Formula is CreationTimestamp + TTL",
       "$ref": "#/definitions/k8s.io.apimachinery.pkg.apis.meta.v1.Time"
+     },
+     "virtualMachineBackupName": {
+      "description": "VirtualMachineBackupName shows the name of the source virtual machine backup if the source is a VirtualMachineBackup.",
+      "type": "string"
      },
      "virtualMachineName": {
       "description": "VirtualMachineName shows the name of the source virtual machine if the source is either a VirtualMachine or a VirtualMachineSnapshot. This is mainly to easily identify the source VirtualMachine in case of a VirtualMachineSnapshot",

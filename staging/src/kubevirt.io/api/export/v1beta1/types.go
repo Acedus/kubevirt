@@ -111,6 +111,11 @@ type VirtualMachineExportStatus struct {
 	VirtualMachineName *string `json:"virtualMachineName,omitempty"`
 
 	// +optional
+	// VirtualMachineBackupName shows the name of the source virtual machine backup if the source is a
+	// VirtualMachineBackup.
+	VirtualMachineBackupName *string `json:"virtualMachineBackupName,omitempty"`
+
+	// +optional
 	// +listType=atomic
 	Conditions []Condition `json:"conditions,omitempty"`
 }
@@ -133,6 +138,12 @@ type VirtualMachineExportLink struct {
 	// +listMapKey=name
 	// +optional
 	Volumes []VirtualMachineExportVolume `json:"volumes,omitempty"`
+
+	// Manifests is a list of available manifests for the export
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Backups []VirtualMachineExportBackup `json:"backups,omitempty"`
 
 	// Manifests is a list of available manifests for the export
 	// +listType=map
@@ -187,6 +198,14 @@ type VirtualMachineExportVolumeFormat struct {
 	// Format is the format of the image at the specified URL
 	Format ExportVolumeFormat `json:"format"`
 	// Url is the url that contains the volume in the format specified
+	Url string `json:"url"`
+}
+
+// VirtualMachineExportBackup contains the URL and available formats for the exported backup
+type VirtualMachineExportBackup struct {
+	// Name is the name of the exported volume
+	Name string `json:"name"`
+	// Url is the url of the backup endpoint
 	Url string `json:"url"`
 }
 

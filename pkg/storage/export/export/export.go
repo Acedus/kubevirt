@@ -124,6 +124,7 @@ const (
 	manifestData           = "manifest-data"
 	manifestsPath          = "/manifests/all"
 	secretManifestPath     = "/manifests/secret"
+	backupPath             = "/exports"
 	externalHostKey        = "external_host"
 	internalHostKey        = "internal_host"
 	externalCaConfigMapKey = "external_ca_cm"
@@ -298,6 +299,7 @@ type VMExportController struct {
 	PreferenceInformer          cache.SharedIndexInformer
 	ClusterPreferenceInformer   cache.SharedIndexInformer
 	ControllerRevisionInformer  cache.SharedIndexInformer
+	VMBackupInformer            cache.SharedIndexInformer
 
 	Recorder record.EventRecorder
 
@@ -452,6 +454,17 @@ func (ctrl *VMExportController) Init() error {
 		),
 	)
 
+	_, err = ctrl.VMBackupInformer.AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    ctrl.handleVMBackup,
+			UpdateFunc: func(oldObj, newObj interface{}) { ctrl.handleVMBackup(newObj) },
+			DeleteFunc: ctrl.handleVMBackup,
+		},
+	)
+	if err != nil {
+		return err
+	}
+
 	initCert(ctrl)
 	return nil
 }
@@ -485,6 +498,7 @@ func (ctrl *VMExportController) Run(threadiness int, stopCh <-chan struct{}) err
 		ctrl.PreferenceInformer.HasSynced,
 		ctrl.ClusterPreferenceInformer.HasSynced,
 		ctrl.ControllerRevisionInformer.HasSynced,
+		ctrl.VMBackupInformer.HasSynced,
 	) {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
@@ -606,15 +620,24 @@ func (ctrl *VMExportController) updateVMExport(vmExport *exportv1.VirtualMachine
 		vmExport.Annotations = make(map[string]string)
 	}
 
-	sourceVolumes, updateStatusFunc, err := ctrl.newSourceHandlerParameters(vmExport)
-	if err != nil {
-		return 0, err
+	var handler sourceHandler
+	if ctrl.isSourceBackup(&vmExport.Spec) {
+		backup, exists, err := ctrl.getBackup(vmExport.Namespace, vmExport.Spec.Source.Name)
+		if err != nil || !exists {
+			return 0, err
+		}
+		handler = ctrl.newBackupSourceHandler(backup)
+	} else {
+		sourceVolumes, updateStatusFunc, err := ctrl.newSourceHandlerParameters(vmExport)
+		if err != nil {
+			return 0, err
+		}
+		if sourceVolumes == nil || updateStatusFunc == nil {
+			log.Log.Warningf("could not initialize source handler for %s/%s, ignoring item", vmExport.Namespace, vmExport.Name)
+			return 0, nil
+		}
+		handler = ctrl.newVolumeSourceHandler(vmExport, sourceVolumes, updateStatusFunc)
 	}
-	if sourceVolumes == nil || updateStatusFunc == nil {
-		log.Log.Warningf("could not initialize source handler for %s/%s, ignoring item", vmExport.Namespace, vmExport.Name)
-		return 0, nil
-	}
-	handler := ctrl.newVolumeSourceHandler(vmExport, sourceVolumes, updateStatusFunc)
 	return ctrl.handleSource(vmExport, handler)
 }
 
@@ -1308,23 +1331,23 @@ func (ctrl *VMExportController) isKubevirtContentType(pvc *corev1.PersistentVolu
 	return isKubevirt
 }
 
-func (ctrl *VMExportController) updateCommonVMExportStatusFields(vmExport, vmExportCopy *exportv1.VirtualMachineExport, exporterPod *corev1.Pod, service *corev1.Service, sourceVolumes *sourceVolumes, getVolumeName getExportVolumeName) error {
+func (ctrl *VMExportController) updateCommonVMExportStatusFields(vmExport, vmExportCopy *exportv1.VirtualMachineExport, exporterPod *corev1.Pod, service *corev1.Service, availableMessage string, volumes []*corev1.PersistentVolumeClaim, getVolumeName getExportVolumeName) error {
 	var err error
 
 	vmExportCopy.Status.ServiceName = service.Name
 	vmExportCopy.Status.Links = &exportv1.VirtualMachineExportLinks{}
 	if exporterPod == nil {
-		vmExportCopy.Status.Conditions = updateCondition(vmExportCopy.Status.Conditions, newReadyCondition(corev1.ConditionFalse, inUseReason, sourceVolumes.availableMessage))
+		vmExportCopy.Status.Conditions = updateCondition(vmExportCopy.Status.Conditions, newReadyCondition(corev1.ConditionFalse, inUseReason, availableMessage))
 		vmExportCopy.Status.Phase = exportv1.Pending
 	} else {
 		if optutil.PodIsReady(exporterPod) {
 			vmExportCopy.Status.Conditions = updateCondition(vmExportCopy.Status.Conditions, newReadyCondition(corev1.ConditionTrue, podReadyReason, ""))
 			vmExportCopy.Status.Phase = exportv1.Ready
-			vmExportCopy.Status.Links.Internal, err = ctrl.getInteralLinks(sourceVolumes.volumes, exporterPod, service, getVolumeName, vmExport)
+			vmExportCopy.Status.Links.Internal, err = ctrl.getInteralLinks(volumes, exporterPod, service, getVolumeName, vmExport)
 			if err != nil {
 				return err
 			}
-			vmExportCopy.Status.Links.External, err = ctrl.getExternalLinks(sourceVolumes.volumes, exporterPod, getVolumeName, vmExport)
+			vmExportCopy.Status.Links.External, err = ctrl.getExternalLinks(volumes, exporterPod, getVolumeName, vmExport)
 			if err != nil {
 				return err
 			}
