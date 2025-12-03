@@ -95,10 +95,10 @@ func (m *StorageManager) BackupConnect(vmi *v1.VirtualMachineInstance, backupOpt
 	log.Log.Object(vmi).Infof("establishing backup tunnel for pull-mode backup job")
 	if backupOptions.BackupServerAddr == nil {
 		return fmt.Errorf("cannot establish tunnel, no backup server address provided")
-	} else if backupOptions.Token == nil {
+	} else if backupOptions.CACert == nil {
 		return fmt.Errorf("cannot establish tunnel, no backup server token provided")
 	}
-	m.backupTunnelCtrl.StartOrUpdate(*backupOptions.BackupServerAddr, *backupOptions.Token)
+	m.backupTunnelCtrl.StartOrUpdate(*backupOptions.BackupServerAddr, *backupOptions.CACert)
 
 	return nil
 }
@@ -257,6 +257,10 @@ func generateDomainBackup(disks []api.Disk, backupOptions *backupv1.BackupOption
 				backupDisk.Scratch = &api.BackupScratch{
 					File: targetScratchFile(backupPath, backupOptions.BackupName, volumeName),
 				}
+			}
+			if backupOptions.Mode == backupv1.PullMode {
+				backupDisk.ExportName = volumeName
+				backupDisk.ExportBitmap = volumeName
 			}
 			checkpointDisk.Checkpoint = "bitmap"
 		} else {

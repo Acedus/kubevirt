@@ -985,7 +985,7 @@ func (vca *VirtControllerApp) initBackupController() {
 	var err error
 	recorder := vca.newRecorder(k8sv1.NamespaceAll, "backup-controller")
 	vca.vmBackupController, err = backup.NewVMBackupController(
-		vca.clientSet, vca.vmBackupInformer, vca.vmInformer, vca.vmiInformer, vca.persistentVolumeClaimInformer, recorder,
+		vca.clientSet, vca.vmBackupInformer, vca.vmInformer, vca.vmiInformer, vca.persistentVolumeClaimInformer, vca.unmanagedSecretInformer, vca.vmExportInformer, vca.caExportConfigMapInformer, recorder, vca.kubevirtNamespace,
 	)
 	if err != nil {
 		panic(err)

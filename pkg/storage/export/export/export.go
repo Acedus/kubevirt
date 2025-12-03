@@ -124,7 +124,7 @@ const (
 	manifestData           = "manifest-data"
 	manifestsPath          = "/manifests/all"
 	secretManifestPath     = "/manifests/secret"
-	backupPath             = "/exports"
+	backupsBasePath        = "/exports"
 	externalHostKey        = "external_host"
 	internalHostKey        = "internal_host"
 	externalCaConfigMapKey = "external_ca_cm"
@@ -166,6 +166,14 @@ func archiveURI(pvc *corev1.PersistentVolumeClaim) string {
 
 func dirURI(pvc *corev1.PersistentVolumeClaim) string {
 	return path.Join(fmt.Sprintf("%s/%s/dir", urlBasePath, pvc.Name)) + "/"
+}
+
+func backupMapURI(volumeName string) string {
+	return path.Join(fmt.Sprintf("%s/%s/map", backupsBasePath, volumeName))
+}
+
+func backupDataURI(volumeName string) string {
+	return path.Join(fmt.Sprintf("%s/%s/data", backupsBasePath, volumeName))
 }
 
 type sourceVolumes struct {
@@ -228,7 +236,10 @@ type sourceHandler interface {
 	Ports() []corev1.ServicePort
 	ConfigurePodManifest(pod *corev1.Pod)
 	AvailableMessage() string
-	UpdateStatus(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, svc *corev1.Service) (time.Duration, error)
+	UpdateStatus(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, svc *corev1.Service, internalCert, externalCert, externalLinkHost string) (time.Duration, error)
+	GetLinks(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, hostAndBase, linkType, cert string) (*exportv1.VirtualMachineExportLink, error)
+	GetExternalLinks(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, externalLinkHost, cert string) (*exportv1.VirtualMachineExportLink, error)
+	GetInteralLinks(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, svc *corev1.Service, internalCert string) (*exportv1.VirtualMachineExportLink, error)
 }
 
 type volumeSourceHandler struct {
@@ -267,8 +278,18 @@ func (h *volumeSourceHandler) AvailableMessage() string {
 	return h.availableMessage
 }
 
-func (h *volumeSourceHandler) UpdateStatus(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, svc *corev1.Service) (time.Duration, error) {
-	return h.updateStatus(vmExport, pod, svc, h.sourceVolumes)
+func (h *volumeSourceHandler) UpdateStatus(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, svc *corev1.Service, internalCert, externalCert, externalLinkHost string) (time.Duration, error) {
+	internalLinks, err := h.GetInteralLinks(vmExport, pod, svc, internalCert)
+	if err != nil {
+		return 0, err
+	}
+
+	externalLinks, err := h.GetExternalLinks(vmExport, pod, externalLinkHost, externalCert)
+	if err != nil {
+		return 0, err
+	}
+
+	return h.updateStatus(vmExport, pod, svc, h.sourceVolumes, internalLinks, externalLinks)
 }
 
 // VMExportController is resonsible for exporting VMs
@@ -660,7 +681,7 @@ func (ctrl *VMExportController) newSourceHandlerParameters(vmExport *exportv1.Vi
 	return sourceVolumes, updateStatusFunc, err
 }
 
-type updateVMExportStatusFunc func(*exportv1.VirtualMachineExport, *corev1.Pod, *corev1.Service, *sourceVolumes) (time.Duration, error)
+type updateVMExportStatusFunc func(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, svc *corev1.Service, sourceVolumes *sourceVolumes, internalLinks, externalLinks *exportv1.VirtualMachineExportLink) (time.Duration, error)
 
 func (ctrl *VMExportController) handleSource(vmExport *exportv1.VirtualMachineExport, handler sourceHandler) (time.Duration, error) {
 	service, err := ctrl.getOrCreateExportService(vmExport, handler)
@@ -681,7 +702,13 @@ func (ctrl *VMExportController) handleSource(vmExport *exportv1.VirtualMachineEx
 		return 0, err
 	}
 
-	return handler.UpdateStatus(vmExport, pod, service)
+	internalCert, err := ctrl.internalExportCa()
+	if err != nil {
+		return 0, err
+	}
+	externalHostLink, externalCert := ctrl.getExternalLinkHostAndCert()
+
+	return handler.UpdateStatus(vmExport, pod, service, internalCert, externalCert, externalHostLink)
 }
 
 func (ctrl *VMExportController) manageExporterPod(vmExport *exportv1.VirtualMachineExport, service *corev1.Service, handler sourceHandler) (*corev1.Pod, error) {
@@ -1331,9 +1358,7 @@ func (ctrl *VMExportController) isKubevirtContentType(pvc *corev1.PersistentVolu
 	return isKubevirt
 }
 
-func (ctrl *VMExportController) updateCommonVMExportStatusFields(vmExport, vmExportCopy *exportv1.VirtualMachineExport, exporterPod *corev1.Pod, service *corev1.Service, availableMessage string, volumes []*corev1.PersistentVolumeClaim, getVolumeName getExportVolumeName) error {
-	var err error
-
+func (ctrl *VMExportController) updateCommonVMExportStatusFields(vmExport, vmExportCopy *exportv1.VirtualMachineExport, exporterPod *corev1.Pod, service *corev1.Service, availableMessage string, internalLinks, externalLinks *exportv1.VirtualMachineExportLink) {
 	vmExportCopy.Status.ServiceName = service.Name
 	vmExportCopy.Status.Links = &exportv1.VirtualMachineExportLinks{}
 	if exporterPod == nil {
@@ -1343,14 +1368,8 @@ func (ctrl *VMExportController) updateCommonVMExportStatusFields(vmExport, vmExp
 		if optutil.PodIsReady(exporterPod) {
 			vmExportCopy.Status.Conditions = updateCondition(vmExportCopy.Status.Conditions, newReadyCondition(corev1.ConditionTrue, podReadyReason, ""))
 			vmExportCopy.Status.Phase = exportv1.Ready
-			vmExportCopy.Status.Links.Internal, err = ctrl.getInteralLinks(volumes, exporterPod, service, getVolumeName, vmExport)
-			if err != nil {
-				return err
-			}
-			vmExportCopy.Status.Links.External, err = ctrl.getExternalLinks(volumes, exporterPod, getVolumeName, vmExport)
-			if err != nil {
-				return err
-			}
+			vmExportCopy.Status.Links.Internal = internalLinks
+			vmExportCopy.Status.Links.External = externalLinks
 		} else if exporterPod.Status.Phase == corev1.PodSucceeded {
 			vmExportCopy.Status.Conditions = updateCondition(vmExportCopy.Status.Conditions, newReadyCondition(corev1.ConditionFalse, podCompletedReason, ""))
 			vmExportCopy.Status.Phase = exportv1.Terminated
@@ -1362,8 +1381,6 @@ func (ctrl *VMExportController) updateCommonVMExportStatusFields(vmExport, vmExp
 			vmExportCopy.Status.Phase = exportv1.Pending
 		}
 	}
-
-	return nil
 }
 
 func (ctrl *VMExportController) updateVMExportStatus(vmExport, vmExportCopy *exportv1.VirtualMachineExport) error {

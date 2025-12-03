@@ -131,7 +131,7 @@ func (ctrl *VMExportController) isPVCInUse(vmExport *exportv1.VirtualMachineExpo
 	}
 }
 
-func (ctrl *VMExportController) updateVMExportPvcStatus(vmExport *exportv1.VirtualMachineExport, exporterPod *corev1.Pod, service *corev1.Service, sourceVolumes *sourceVolumes) (time.Duration, error) {
+func (ctrl *VMExportController) updateVMExportPvcStatus(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, svc *corev1.Service, sourceVolumes *sourceVolumes, internalLinks, externalLinks *exportv1.VirtualMachineExportLink) (time.Duration, error) {
 	var requeue time.Duration
 
 	if !sourceVolumes.isSourceAvailable() && len(sourceVolumes.volumes) > 0 {
@@ -141,10 +141,7 @@ func (ctrl *VMExportController) updateVMExportPvcStatus(vmExport *exportv1.Virtu
 
 	vmExportCopy := vmExport.DeepCopy()
 
-	if err := ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, exporterPod, service, sourceVolumes.availableMessage, sourceVolumes.volumes, getVolumeName); err != nil {
-		return requeue, err
-	}
-
+	ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, pod, svc, sourceVolumes.availableMessage, internalLinks, externalLinks)
 	if len(sourceVolumes.volumes) == 0 {
 		log.Log.V(3).Info("PVC(s) not found, updating status to not found")
 		updateCondition(vmExportCopy.Status.Conditions, newPvcCondition(corev1.ConditionFalse, pvcNotFoundReason, sourceVolumes.availableMessage))

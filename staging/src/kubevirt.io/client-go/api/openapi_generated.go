@@ -618,6 +618,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"kubevirt.io/api/export/v1beta1.Condition":                                                        schema_kubevirtio_api_export_v1beta1_Condition(ref),
 		"kubevirt.io/api/export/v1beta1.VirtualMachineExport":                                             schema_kubevirtio_api_export_v1beta1_VirtualMachineExport(ref),
 		"kubevirt.io/api/export/v1beta1.VirtualMachineExportBackup":                                       schema_kubevirtio_api_export_v1beta1_VirtualMachineExportBackup(ref),
+		"kubevirt.io/api/export/v1beta1.VirtualMachineExportBackupEndpoint":                               schema_kubevirtio_api_export_v1beta1_VirtualMachineExportBackupEndpoint(ref),
 		"kubevirt.io/api/export/v1beta1.VirtualMachineExportLink":                                         schema_kubevirtio_api_export_v1beta1_VirtualMachineExportLink(ref),
 		"kubevirt.io/api/export/v1beta1.VirtualMachineExportLinks":                                        schema_kubevirtio_api_export_v1beta1_VirtualMachineExportLinks(ref),
 		"kubevirt.io/api/export/v1beta1.VirtualMachineExportList":                                         schema_kubevirtio_api_export_v1beta1_VirtualMachineExportList(ref),
@@ -16949,7 +16950,7 @@ func schema_kubevirtio_api_backup_v1alpha1_BackupOptions(ref common.ReferenceCal
 							Format: "",
 						},
 					},
-					"token": {
+					"caCert": {
 						SchemaProps: spec.SchemaProps{
 							Type:   []string{"string"},
 							Format: "",
@@ -17234,11 +17235,24 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupStatus(ref common
 							},
 						},
 					},
-					"serviceName": {
+					"includedVolumes": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
 						SchemaProps: spec.SchemaProps{
-							Description: "ServiceName is the name of the service created associated with the Virtual Machine backup. It will be used to create the internal URLs for interacting with the backup endpoints",
-							Type:        []string{"string"},
-							Format:      "",
+							Description: "IncludedVolumes is the list of volume names that were eligible for backup and have been included as part of the backup job.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
 						},
 					},
 				},
@@ -30082,16 +30096,61 @@ func schema_kubevirtio_api_export_v1beta1_VirtualMachineExportBackup(ref common.
 							Format:      "",
 						},
 					},
+					"endpoints": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"endpoint",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("kubevirt.io/api/export/v1beta1.VirtualMachineExportBackupEndpoint"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		Dependencies: []string{
+			"kubevirt.io/api/export/v1beta1.VirtualMachineExportBackupEndpoint"},
+	}
+}
+
+func schema_kubevirtio_api_export_v1beta1_VirtualMachineExportBackupEndpoint(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VirtualMachineExportVolumeFormat contains the format type and URL to get the volume in that format",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"endpoint": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Format is the format of the image at the specified URL",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"url": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Url is the url of the backup endpoint",
+							Description: "Url is the url that contains the volume in the format specified",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 				},
-				Required: []string{"name", "url"},
+				Required: []string{"endpoint", "url"},
 			},
 		},
 	}

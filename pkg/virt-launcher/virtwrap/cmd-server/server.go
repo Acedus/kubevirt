@@ -830,8 +830,8 @@ func getBackupOptionsFromRequest(request *cmdv1.BackupRequest) (*backupv1.Backup
 		if options.BackupServerAddr == nil {
 			return nil, fmt.Errorf("backup connect failed - backup server address wasn't provided")
 		}
-		if options.Token == nil {
-			return nil, fmt.Errorf("backup connect failed - token wasn't provided")
+		if options.CACert == nil {
+			return nil, fmt.Errorf("backup connect failed - cacert wasn't provided")
 		}
 		return options, nil
 	}

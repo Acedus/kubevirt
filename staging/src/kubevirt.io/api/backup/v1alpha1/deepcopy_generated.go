@@ -55,8 +55,8 @@ func (in *BackupOptions) DeepCopyInto(out *BackupOptions) {
 		*out = new(string)
 		**out = **in
 	}
-	if in.Token != nil {
-		in, out := &in.Token, &out.Token
+	if in.CACert != nil {
+		in, out := &in.CACert, &out.CACert
 		*out = new(string)
 		**out = **in
 	}
@@ -217,6 +217,11 @@ func (in *VirtualMachineBackupStatus) DeepCopyInto(out *VirtualMachineBackupStat
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
+	}
+	if in.IncludedVolumes != nil {
+		in, out := &in.IncludedVolumes, &out.IncludedVolumes
+		*out = make([]string, len(*in))
+		copy(*out, *in)
 	}
 	return
 }

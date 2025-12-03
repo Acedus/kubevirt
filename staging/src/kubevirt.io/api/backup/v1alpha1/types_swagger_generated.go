@@ -36,10 +36,10 @@ func (VirtualMachineBackupSpec) SwaggerDoc() map[string]string {
 
 func (VirtualMachineBackupStatus) SwaggerDoc() map[string]string {
 	return map[string]string{
-		"":            "VirtualMachineBackupStatus is the status for a VirtualMachineBackup resource",
-		"type":        "+optional\nType indicates if the backup was full or incremental",
-		"conditions":  "+optional\n+listType=atomic",
-		"serviceName": "+optional\nServiceName is the name of the service created associated with the Virtual Machine backup. It will be used to\ncreate the internal URLs for interacting with the backup endpoints",
+		"":                "VirtualMachineBackupStatus is the status for a VirtualMachineBackup resource",
+		"type":            "+optional\nType indicates if the backup was full or incremental",
+		"conditions":      "+optional\n+listType=atomic",
+		"includedVolumes": "+optional\n+listType=atomic\nIncludedVolumes is the list of volume names that were eligible for backup and have been included as part\nof the backup job.",
 	}
 }
 

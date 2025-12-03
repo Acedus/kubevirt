@@ -19729,6 +19729,9 @@
      "backupStartTime": {
       "$ref": "#/definitions/k8s.io.apimachinery.pkg.apis.meta.v1.Time"
      },
+     "caCert": {
+      "type": "string"
+     },
      "cmd": {
       "type": "string"
      },
@@ -19746,9 +19749,6 @@
      },
      "skipQuiesce": {
       "type": "boolean"
-     },
-     "token": {
-      "type": "string"
      }
     }
    },
@@ -19997,9 +19997,14 @@
       },
       "x-kubernetes-list-type": "atomic"
      },
-     "serviceName": {
-      "description": "ServiceName is the name of the service created associated with the Virtual Machine backup. It will be used to create the internal URLs for interacting with the backup endpoints",
-      "type": "string"
+     "includedVolumes": {
+      "description": "IncludedVolumes is the list of volume names that were eligible for backup and have been included as part of the backup job.",
+      "type": "array",
+      "items": {
+       "type": "string",
+       "default": ""
+      },
+      "x-kubernetes-list-type": "atomic"
      },
      "type": {
       "description": "Type indicates if the backup was full or incremental",
@@ -21188,17 +21193,42 @@
     "description": "VirtualMachineExportBackup contains the URL and available formats for the exported backup",
     "type": "object",
     "required": [
-     "name",
-     "url"
+     "name"
     ],
     "properties": {
+     "endpoints": {
+      "type": "array",
+      "items": {
+       "default": {},
+       "$ref": "#/definitions/v1beta1.VirtualMachineExportBackupEndpoint"
+      },
+      "x-kubernetes-list-map-keys": [
+       "endpoint"
+      ],
+      "x-kubernetes-list-type": "map"
+     },
      "name": {
       "description": "Name is the name of the exported volume",
       "type": "string",
       "default": ""
+     }
+    }
+   },
+   "v1beta1.VirtualMachineExportBackupEndpoint": {
+    "description": "VirtualMachineExportVolumeFormat contains the format type and URL to get the volume in that format",
+    "type": "object",
+    "required": [
+     "endpoint",
+     "url"
+    ],
+    "properties": {
+     "endpoint": {
+      "description": "Format is the format of the image at the specified URL",
+      "type": "string",
+      "default": ""
      },
      "url": {
-      "description": "Url is the url of the backup endpoint",
+      "description": "Url is the url that contains the volume in the format specified",
       "type": "string",
       "default": ""
      }

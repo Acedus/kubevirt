@@ -205,7 +205,26 @@ type VirtualMachineExportVolumeFormat struct {
 type VirtualMachineExportBackup struct {
 	// Name is the name of the exported volume
 	Name string `json:"name"`
-	// Url is the url of the backup endpoint
+	// +listType=map
+	// +listMapKey=endpoint
+	// +optional
+	Endpoints []VirtualMachineExportBackupEndpoint `json:"endpoints,omitempty"`
+}
+
+type ExportBackupEndpoint string
+
+const (
+	// Map is the dirty bitmap endpoint of the backup
+	Map ExportBackupEndpoint = "map"
+	// Data is the dtata endpoint of the backup
+	Data ExportBackupEndpoint = "data"
+)
+
+// VirtualMachineExportVolumeFormat contains the format type and URL to get the volume in that format
+type VirtualMachineExportBackupEndpoint struct {
+	// Format is the format of the image at the specified URL
+	Endpoint ExportBackupEndpoint `json:"endpoint"`
+	// Url is the url that contains the volume in the format specified
 	Url string `json:"url"`
 }
 

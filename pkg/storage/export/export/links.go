@@ -55,58 +55,34 @@ const (
 	external              = "external"
 )
 
-func (ctrl *VMExportController) getInteralLinks(pvcs []*corev1.PersistentVolumeClaim, exporterPod *corev1.Pod, service *corev1.Service, getVolumeName getExportVolumeName, export *exportv1.VirtualMachineExport) (*exportv1.VirtualMachineExportLink, error) {
-	internalCert, err := ctrl.internalExportCa()
-	if err != nil {
-		return nil, err
-	}
-	host := fmt.Sprintf("%s.%s.svc", service.Name, service.Namespace)
-	return ctrl.getLinks(pvcs, exporterPod, export, host, internal, internalCert, getVolumeName)
-}
-
-func (ctrl *VMExportController) getExternalLinks(pvcs []*corev1.PersistentVolumeClaim, exporterPod *corev1.Pod, getVolumeName getExportVolumeName, export *exportv1.VirtualMachineExport) (*exportv1.VirtualMachineExportLink, error) {
-	urlPath := fmt.Sprintf(externalUrlLinkFormat, export.Namespace, export.Name)
-	externalLinkHost, cert := ctrl.getExternalLinkHostAndCert()
+func (h *volumeSourceHandler) GetExternalLinks(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, externalLinkHost, cert string) (*exportv1.VirtualMachineExportLink, error) {
+	urlPath := fmt.Sprintf(externalUrlLinkFormat, vmExport.Namespace, vmExport.Name)
 	if externalLinkHost != "" {
 		hostAndBase := path.Join(externalLinkHost, urlPath)
-		return ctrl.getLinks(pvcs, exporterPod, export, hostAndBase, external, cert, getVolumeName)
+		return h.GetLinks(vmExport, pod, hostAndBase, external, cert)
 	}
 	return nil, nil
 }
 
-func (ctrl *VMExportController) getLinks(pvcs []*corev1.PersistentVolumeClaim, exporterPod *corev1.Pod, export *exportv1.VirtualMachineExport, hostAndBase, linkType, cert string, getVolumeName getExportVolumeName) (*exportv1.VirtualMachineExportLink, error) {
+func (h *volumeSourceHandler) GetInteralLinks(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, svc *corev1.Service, internalCert string) (*exportv1.VirtualMachineExportLink, error) {
+	host := fmt.Sprintf("%s.%s.svc", svc.Name, svc.Namespace)
+	return h.GetLinks(vmExport, pod, host, internal, internalCert)
+}
+
+func (h *volumeSourceHandler) GetLinks(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, hostAndBase, linkType, cert string) (*exportv1.VirtualMachineExportLink, error) {
 	const scheme = "https://"
-	if exporterPod == nil {
+	if pod == nil {
 		return nil, nil
 	}
 
-	paths := CreateServerPaths(ContainerEnvToMap(exporterPod.Spec.Containers[0].Env))
-	exportLink := &exportv1.VirtualMachineExportLink{
-		Cert: cert,
+	paths := CreateServerPaths(ContainerEnvToMap(pod.Spec.Containers[0].Env))
+	exportLink, err := getLinks(paths, scheme, pod, vmExport, hostAndBase, linkType, cert)
+	if err != nil {
+		return nil, err
 	}
 
-	if paths.VMURI != "" {
-		exportLink.Manifests = append(exportLink.Manifests, exportv1.VirtualMachineExportManifest{
-			Type: exportv1.AllManifests,
-			Url:  scheme + path.Join(hostAndBase, linkType, paths.VMURI),
-		})
-	}
-	if paths.SecretURI != "" {
-		exportLink.Manifests = append(exportLink.Manifests, exportv1.VirtualMachineExportManifest{
-			Type: exportv1.AuthHeader,
-			Url:  scheme + path.Join(hostAndBase, linkType, paths.SecretURI),
-		})
-	}
-
-	if paths.BackupURI != "" {
-		exportLink.Backups = append(exportLink.Backups, exportv1.VirtualMachineExportBackup{
-			Name: "pull",
-			Url:  scheme + path.Join(hostAndBase, linkType, paths.BackupURI),
-		})
-	}
-
-	for _, pvc := range pvcs {
-		if pvc == nil || exporterPod.Status.Phase != corev1.PodRunning {
+	for _, pvc := range h.sourceVolumes.volumes {
+		if pvc == nil || pod.Status.Phase != corev1.PodRunning {
 			continue
 		}
 
@@ -117,7 +93,7 @@ func (ctrl *VMExportController) getLinks(pvcs []*corev1.PersistentVolumeClaim, e
 		}
 
 		ev := exportv1.VirtualMachineExportVolume{
-			Name: getVolumeName(pvc, export),
+			Name: getVolumeName(pvc, vmExport),
 		}
 
 		if volumeInfo.RawURI != "" {
@@ -152,7 +128,26 @@ func (ctrl *VMExportController) getLinks(pvcs []*corev1.PersistentVolumeClaim, e
 
 		exportLink.Volumes = append(exportLink.Volumes, ev)
 	}
+	return exportLink, nil
+}
 
+func getLinks(paths *ServerPaths, scheme string, exporterPod *corev1.Pod, export *exportv1.VirtualMachineExport, hostAndBase, linkType, cert string) (*exportv1.VirtualMachineExportLink, error) {
+	exportLink := &exportv1.VirtualMachineExportLink{
+		Cert: cert,
+	}
+
+	if paths.VMURI != "" {
+		exportLink.Manifests = append(exportLink.Manifests, exportv1.VirtualMachineExportManifest{
+			Type: exportv1.AllManifests,
+			Url:  scheme + path.Join(hostAndBase, linkType, paths.VMURI),
+		})
+	}
+	if paths.SecretURI != "" {
+		exportLink.Manifests = append(exportLink.Manifests, exportv1.VirtualMachineExportManifest{
+			Type: exportv1.AuthHeader,
+			Url:  scheme + path.Join(hostAndBase, linkType, paths.SecretURI),
+		})
+	}
 	return exportLink, nil
 }
 

@@ -38,8 +38,12 @@ import (
 
 	backupv1 "kubevirt.io/api/backup/v1alpha1"
 	v1 "kubevirt.io/api/core/v1"
+	exportv1 "kubevirt.io/api/export/v1beta1"
 	"kubevirt.io/client-go/kubecli"
 	"kubevirt.io/client-go/log"
+
+	"kubevirt.io/kubevirt/pkg/util"
+	kvtls "kubevirt.io/kubevirt/pkg/util/tls"
 
 	"kubevirt.io/kubevirt/pkg/apimachinery/patch"
 	"kubevirt.io/kubevirt/pkg/controller"
@@ -48,6 +52,12 @@ import (
 )
 
 const (
+	backupExportPrefix             = "backup-export"
+	failedExportSecretCreate       = "failed to create backup export secret: %w"
+	failedExportCreate             = "failed to create backup export: %w"
+	secretExistsWithDifferentOwner = "Secret %s already exists but is not owned by backup %s"
+	exportExistsWithDifferentOwner = "VMExport %s already exists but is not owned by backup %s"
+
 	vmBackupFinalizer = "backup.kubevirt.io/vmbackup-protection"
 
 	backupInitiatedEvent            = "VirtualMachineBackupInitiated"
@@ -81,14 +91,19 @@ var (
 )
 
 type VMBackupController struct {
-	client         kubecli.KubevirtClient
-	backupInformer cache.SharedIndexInformer
-	vmStore        cache.Store
-	vmiStore       cache.Store
-	pvcStore       cache.Store
-	recorder       record.EventRecorder
-	backupQueue    workqueue.TypedRateLimitingInterface[string]
-	hasSynced      func() bool
+	client            kubecli.KubevirtClient
+	backupInformer    cache.SharedIndexInformer
+	vmStore           cache.Store
+	vmiStore          cache.Store
+	pvcStore          cache.Store
+	secretStore       cache.Store
+	vmExportStore     cache.Store
+	cmStore           cache.Store
+	caManager         kvtls.ClientCAManager
+	kubevirtNamespace string
+	recorder          record.EventRecorder
+	backupQueue       workqueue.TypedRateLimitingInterface[string]
+	hasSynced         func() bool
 }
 
 func NewVMBackupController(client kubecli.KubevirtClient,
@@ -96,19 +111,27 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 	vmInformer cache.SharedIndexInformer,
 	vmiInformer cache.SharedIndexInformer,
 	pvcInformer cache.SharedIndexInformer,
+	secretInformer cache.SharedIndexInformer,
+	vmExportInformer cache.SharedIndexInformer,
+	configMapInformer cache.SharedIndexInformer,
 	recorder record.EventRecorder,
+	kubevirtNamespace string,
 ) (*VMBackupController, error) {
 	c := &VMBackupController{
 		backupQueue: workqueue.NewTypedRateLimitingQueueWithConfig[string](
 			workqueue.DefaultTypedControllerRateLimiter[string](),
 			workqueue.TypedRateLimitingQueueConfig[string]{Name: "virt-controller-vmbackup"},
 		),
-		backupInformer: backupInformer,
-		vmStore:        vmInformer.GetStore(),
-		vmiStore:       vmiInformer.GetStore(),
-		pvcStore:       pvcInformer.GetStore(),
-		recorder:       recorder,
-		client:         client,
+		backupInformer:    backupInformer,
+		vmStore:           vmInformer.GetStore(),
+		vmiStore:          vmiInformer.GetStore(),
+		pvcStore:          pvcInformer.GetStore(),
+		secretStore:       secretInformer.GetStore(),
+		vmExportStore:     vmExportInformer.GetStore(),
+		cmStore:           configMapInformer.GetStore(),
+		recorder:          recorder,
+		client:            client,
+		kubevirtNamespace: kubevirtNamespace,
 	}
 
 	c.hasSynced = func() bool {
@@ -196,6 +219,8 @@ func (ctrl *VMBackupController) Run(threadiness int, stopCh <-chan struct{}) err
 	) {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
+
+	ctrl.caManager = kvtls.NewCAManager(ctrl.cmStore, ctrl.kubevirtNamespace, "kubevirt-export-ca")
 
 	for range threadiness {
 		go wait.Until(ctrl.runWorker, time.Second, stopCh)
@@ -386,6 +411,9 @@ func (ctrl *VMBackupController) updateStatus(backup *backupv1.VirtualMachineBack
 			removeBackupCondition(backupOut, backupv1.ConditionInitializing)
 			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionTrue, syncInfo.reason))
 			updateBackupCondition(backupOut, newDoneCondition(corev1.ConditionFalse, syncInfo.reason))
+			if err := ctrl.updateVolumesStatus(backupOut); err != nil {
+				return err
+			}
 		case backupReadyEvent:
 			log.Log.Infof("backup updateStatus Ready")
 			updateBackupCondition(backupOut, newReadyCondition(corev1.ConditionTrue, syncInfo.reason))
@@ -420,6 +448,24 @@ func (ctrl *VMBackupController) updateStatus(backup *backupv1.VirtualMachineBack
 			return err
 		}
 	}
+	return nil
+}
+
+func (ctrl *VMBackupController) updateVolumesStatus(backup *backupv1.VirtualMachineBackup) error {
+	vmi, exists, err := ctrl.getVMI(backup)
+	if err != nil || !exists {
+		log.Log.Info("VMI doesn't exist!")
+		return err
+	}
+
+	includedVolumes := make([]string, 0)
+	for _, volume := range vmi.Spec.Volumes {
+		if volume.PersistentVolumeClaim != nil || volume.DataVolume != nil || volume.HostDisk != nil {
+			includedVolumes = append(includedVolumes, volume.Name)
+		}
+	}
+	backup.Status.IncludedVolumes = includedVolumes
+	log.Log.Infof("Included volumes: %+v", includedVolumes)
 	return nil
 }
 
@@ -714,16 +760,126 @@ func (ctrl *VMBackupController) cleanup(backup *backupv1.VirtualMachineBackup, v
 	return true, nil
 }
 
+func (ctrl *VMBackupController) getOrCreateBackupExport(vmi *v1.VirtualMachineInstance, backup *backupv1.VirtualMachineBackup) *SyncInfo {
+	exportName := fmt.Sprintf("%s-%s", backupExportPrefix, backup.Name)
+	objKey := cacheKeyFunc(backup.Namespace, exportName)
+	obj, exists, err := ctrl.vmExportStore.GetByKey(objKey)
+	if err != nil {
+		err = fmt.Errorf("error getting VMExport from store: %w", err)
+		log.Log.Error(err.Error())
+		return syncInfoError(err)
+	}
+	if exists {
+		export := obj.(*exportv1.VirtualMachineExport)
+		if !metav1.IsControlledBy(export, backup) {
+			return syncInfoError(fmt.Errorf(exportExistsWithDifferentOwner, export.Name, backup.Name))
+		}
+		return nil
+	}
+
+	return ctrl.createBackupExport(backup, exportName, vmi)
+}
+
+func (ctrl *VMBackupController) createBackupExport(backup *backupv1.VirtualMachineBackup, exportName string, vmi *v1.VirtualMachineInstance) *SyncInfo {
+	secret, syncInfo := ctrl.getOrCreateBackupExportSecret(vmi, backup)
+	if syncInfo != nil {
+		return syncInfo
+	}
+
+	vmExport := &exportv1.VirtualMachineExport{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exportName,
+			Namespace: backup.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(backup, backupv1.SchemeGroupVersion.WithKind("VirtualMachineBackup")),
+			},
+		},
+		Spec: exportv1.VirtualMachineExportSpec{
+			TokenSecretRef: pointer.P(secret.Name),
+			Source: corev1.TypedLocalObjectReference{
+				APIGroup: &backupv1.SchemeGroupVersion.Group,
+				Kind:     "VirtualMachineBackup",
+				Name:     backup.Name,
+			},
+		},
+	}
+
+	_, err := ctrl.client.VirtualMachineExport(backup.Namespace).Create(context.Background(), vmExport, metav1.CreateOptions{})
+	if err != nil {
+		return syncInfoError(fmt.Errorf(failedExportCreate, err))
+	}
+
+	return nil
+}
+
+func (ctrl *VMBackupController) getOrCreateBackupExportSecret(vmi *v1.VirtualMachineInstance, backup *backupv1.VirtualMachineBackup) (*corev1.Secret, *SyncInfo) {
+	secretName := fmt.Sprintf("%s-%s", backupExportPrefix, backup.Name)
+	objKey := cacheKeyFunc(backup.Namespace, secretName)
+	obj, exists, err := ctrl.secretStore.GetByKey(objKey)
+	if err != nil {
+		err = fmt.Errorf("error getting Secret from store: %w", err)
+		log.Log.Error(err.Error())
+		return nil, syncInfoError(err)
+	}
+
+	if exists {
+		secret := obj.(*corev1.Secret)
+		if !metav1.IsControlledBy(secret, backup) {
+			return nil, syncInfoError(fmt.Errorf(secretExistsWithDifferentOwner, secret.Name, backup.Name))
+		}
+		return secret, nil
+	}
+
+	return ctrl.createBackupExportSecret(backup, secretName, vmi)
+}
+
+func (ctrl *VMBackupController) createBackupExportSecret(backup *backupv1.VirtualMachineBackup, secretName string, vmi *v1.VirtualMachineInstance) (*corev1.Secret, *SyncInfo) {
+	token, err := util.GenerateVMExportToken()
+	if err != nil {
+		return nil, syncInfoError(fmt.Errorf(failedExportSecretCreate, err))
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: backup.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(backup, backupv1.SchemeGroupVersion.WithKind("VirtualMachineBackup")),
+			},
+		},
+		StringData: map[string]string{
+			"token": token,
+		},
+	}
+
+	secret, err = ctrl.client.CoreV1().Secrets(backup.Namespace).Create(context.Background(), secret, metav1.CreateOptions{})
+	if err != nil {
+		return nil, syncInfoError(fmt.Errorf(failedExportSecretCreate, err))
+	}
+
+	return secret, nil
+}
+
 func (ctrl *VMBackupController) connectToBackupServer(vmi *v1.VirtualMachineInstance, backup *backupv1.VirtualMachineBackup) *SyncInfo {
+	syncInfo := ctrl.getOrCreateBackupExport(vmi, backup)
+	if syncInfo != nil {
+		return syncInfo
+	}
+
+	ca, err := ctrl.caManager.GetCurrentRaw()
+	if err != nil {
+		return syncInfoError(err)
+	}
+
 	backupOptions := &backupv1.BackupOptions{
 		BackupName:       backup.Name,
 		BackupStartTime:  &backup.CreationTimestamp,
 		Cmd:              backupv1.Connect,
-		BackupServerAddr: pointer.P(getBackupServerAddress()),
-		Token:            pointer.P(getGeneratedToken()),
+		BackupServerAddr: pointer.P(getBackupServerAddress(backup)),
 		Mode:             backupv1.PullMode,
+		CACert:           pointer.P(string(ca)),
 	}
-	err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions)
+
+	err = ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions)
 	if err != nil {
 		return syncInfoError(fmt.Errorf("failed to establish backup server tunnel: %w", err))
 	}
@@ -733,12 +889,8 @@ func (ctrl *VMBackupController) connectToBackupServer(vmi *v1.VirtualMachineInst
 	}
 }
 
-func getBackupServerAddress() string {
-	return "backup-server-internal.default.svc:9090"
-}
-
-func getGeneratedToken() string {
-	return "my-super-secret-token"
+func getBackupServerAddress(backup *backupv1.VirtualMachineBackup) string {
+	return fmt.Sprintf("virt-export-%s-%s.%s.svc:9090", backupExportPrefix, backup.Name, backup.Namespace)
 }
 
 func isBackupInitializing(status *backupv1.VirtualMachineBackupStatus) bool {

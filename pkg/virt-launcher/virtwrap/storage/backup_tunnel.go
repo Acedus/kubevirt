@@ -1,15 +1,15 @@
 package storage
 
 import (
-	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 
@@ -24,8 +24,8 @@ const (
 // --- PROTOCOL STRUCTS ---
 
 type TunnelCommand struct {
-	Op     string `json:"op"`     // "read" or "map"
-	Disk   string `json:"disk"`   // Export name (e.g., "vda")
+	Op     string `json:"op"`     // "info", "map", "read"
+	Disk   string `json:"disk"`   // Export name
 	Offset int64  `json:"offset"` // For read
 	Length int    `json:"length"` // For read
 }
@@ -35,37 +35,37 @@ const (
 	StatusError   = 1
 )
 
-// --- CONTROLLER (Lifecycle) ---
+// --- CONTROLLER ---
 
 type BackupTunnelController struct {
 	tunLock       sync.Mutex
 	activeTunnel  *BackupTunnelManager
 	currentTarget string
-	currentToken  string
+	currentCA     string
 }
 
 func NewBackupTunnelController() *BackupTunnelController {
 	return &BackupTunnelController{}
 }
 
-func (btc *BackupTunnelController) StartOrUpdate(targetAddr, token string) {
+func (btc *BackupTunnelController) StartOrUpdate(targetAddr, cacert string) {
 	btc.tunLock.Lock()
 	defer btc.tunLock.Unlock()
 
 	if btc.activeTunnel != nil {
-		if btc.currentTarget == targetAddr && btc.currentToken == token {
-			return // Idempotent
+		if btc.currentTarget == targetAddr && btc.currentCA == cacert {
+			return
 		}
 		log.Log.Infof("Stopping stale backup tunnel to %s", btc.currentTarget)
 		btc.activeTunnel.Stop()
 	}
 
 	log.Log.Infof("Starting new backup tunnel to %s", targetAddr)
-	btm := StartTunnel(targetAddr, token)
+	btm := StartTunnel(targetAddr, cacert)
 
 	btc.activeTunnel = btm
 	btc.currentTarget = targetAddr
-	btc.currentToken = token
+	btc.currentCA = cacert
 }
 
 func (btc *BackupTunnelController) Stop() {
@@ -79,22 +79,22 @@ func (btc *BackupTunnelController) Stop() {
 	}
 }
 
-// --- MANAGER (Retry Loop) ---
+// --- MANAGER ---
 
 type BackupTunnelManager struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	targetAddr string
-	token      string
+	cacert     string
 }
 
-func StartTunnel(targetAddr, token string) *BackupTunnelManager {
+func StartTunnel(targetAddr, cacert string) *BackupTunnelManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	btm := &BackupTunnelManager{
 		ctx:        ctx,
 		cancel:     cancel,
 		targetAddr: targetAddr,
-		token:      token,
+		cacert:     cacert,
 	}
 	go btm.run()
 	return btm
@@ -129,35 +129,35 @@ func (btm *BackupTunnelManager) run() {
 }
 
 func (btm *BackupTunnelManager) establishSession() error {
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM([]byte(btm.cacert)) {
+		return fmt.Errorf("failed to parse CA certificate")
+	}
+
+	tlsConfig := &tls.Config{
+		RootCAs:    caCertPool,
+		MinVersion: tls.VersionTLS12,
+	}
+
 	dialer := net.Dialer{
 		Timeout:   dialTimeout,
 		KeepAlive: keepalive,
 	}
 
-	conn, err := dialer.DialContext(btm.ctx, "tcp", btm.targetAddr)
+	conn, err := tls.DialWithDialer(&dialer, "tcp", btm.targetAddr, tlsConfig)
 	if err != nil {
-		return fmt.Errorf("dial failed: %w", err)
+		return fmt.Errorf("tls dial failed: %w", err)
 	}
 	defer conn.Close()
 
-	if err := performHandshake(conn, btm.token); err != nil {
+	if err := performHandshake(conn); err != nil {
 		return fmt.Errorf("handshake failed: %w", err)
 	}
 
-	// Enter the Command Processing Loop
-	// This blocks until the connection dies or context is canceled
 	return btm.processCommands(conn)
 }
 
-func performHandshake(conn net.Conn, token string) error {
-	cleanToken := strings.TrimSpace(token)
-	payload := fmt.Sprintf("%s\n", cleanToken)
-
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if _, err := conn.Write([]byte(payload)); err != nil {
-		return err
-	}
-
+func performHandshake(conn net.Conn) error {
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 3)
 	if _, err := io.ReadFull(conn, buf); err != nil {
@@ -166,84 +166,97 @@ func performHandshake(conn net.Conn, token string) error {
 	if string(buf) != "OK\n" {
 		return fmt.Errorf("invalid handshake: %s", string(buf))
 	}
-
-	conn.SetDeadline(time.Time{}) // Clear deadlines for long-lived connection
+	conn.SetDeadline(time.Time{})
 	return nil
 }
 
-// --- WORKER LOGIC (The meat of the changes) ---
+// --- WORKER LOGIC ---
 
 func (btm *BackupTunnelManager) processCommands(conn net.Conn) error {
-	scanner := bufio.NewScanner(conn)
-	// Header buffer: [Status 1][Length 8]
-	headerBuf := make([]byte, 9)
+	decoder := json.NewDecoder(conn)
+	headerBuf := make([]byte, 9) // [Status 1][Len 8]
 
-	for scanner.Scan() {
-		// 1. Read Command JSON
+	// Cache local NBD connections (DiskName -> *NBDClient)
+	nbdClients := make(map[string]*NBDClient)
+	defer func() {
+		for _, c := range nbdClients {
+			c.Close()
+		}
+	}()
+
+	for {
 		var cmd TunnelCommand
-		if err := json.Unmarshal(scanner.Bytes(), &cmd); err != nil {
-			log.Log.Reason(err).Error("Failed to unmarshal backup command")
-			sendResponse(conn, headerBuf, StatusError, []byte(err.Error()))
-			continue
+		if err := decoder.Decode(&cmd); err != nil {
+			if err == io.EOF {
+				return fmt.Errorf("server closed connection")
+			}
+			log.Log.Reason(err).Error("Failed to decode command")
+			sendResponse(conn, headerBuf, StatusError, []byte("Invalid JSON"))
+			return err
 		}
 
-		// 2. Execute Command
-		out, err := btm.executeQemuImg(cmd)
+		switch cmd.Op {
+		case "map", "info":
+			// Fallback to qemu-img for metadata operations (JSON output is complex to replicate)
+			out, err := btm.executeQemuImgMeta(cmd)
+			if err != nil {
+				sendResponse(conn, headerBuf, StatusError, []byte(err.Error()))
+			} else {
+				sendResponse(conn, headerBuf, StatusSuccess, out)
+			}
 
-		// 3. Send Response
-		if err != nil {
-			sendResponse(conn, headerBuf, StatusError, []byte(err.Error()))
-		} else {
-			sendResponse(conn, headerBuf, StatusSuccess, out)
+		case "read":
+			// Use Native Go NBD Client for data path
+			client, ok := nbdClients[cmd.Disk]
+			if !ok {
+				var err error
+				client, err = NewNBDClient(pullBackupSocket, cmd.Disk)
+				if err != nil {
+					log.Log.Reason(err).Errorf("Failed to connect to NBD socket for disk %s", cmd.Disk)
+					sendResponse(conn, headerBuf, StatusError, []byte(err.Error()))
+					continue
+				}
+				nbdClients[cmd.Disk] = client
+			}
+
+			// Perform Read
+			// 1. Seek
+			if _, err := client.Seek(cmd.Offset, io.SeekStart); err != nil {
+				sendResponse(conn, headerBuf, StatusError, []byte(fmt.Sprintf("seek failed: %v", err)))
+				continue
+			}
+
+			// 2. Read into buffer
+			// Note: We allocate buffer here. For high perf, consider a sync.Pool.
+			buf := make([]byte, cmd.Length)
+			n, err := io.ReadFull(client, buf)
+			if err != nil && err != io.EOF {
+				sendResponse(conn, headerBuf, StatusError, []byte(fmt.Sprintf("read failed: %v", err)))
+				continue
+			}
+
+			// 3. Send Success
+			sendResponse(conn, headerBuf, StatusSuccess, buf[:n])
+
+		default:
+			sendResponse(conn, headerBuf, StatusError, []byte("unknown op"))
 		}
 	}
-	return scanner.Err()
 }
 
-func (btm *BackupTunnelManager) executeQemuImg(cmd TunnelCommand) ([]byte, error) {
-	// We use the NBD socket exposed by QEMU in the Pod
-	// URI format: nbd+unix://<export>?socket=<path>
-	// BUT qemu-img expects --image-opts for granular control
-
-	imgOpts := fmt.Sprintf("driver=nbd,server.type=unix,server.path=%s,export=%s", pullBackupSocket, cmd.Disk)
-
-	var args []string
-
-	switch cmd.Op {
-	case "read":
-		// qemu-img dd -f raw --image-opts ... bs=1 skip=X count=Y
-		args = []string{
-			"dd", "-f", "raw",
-			"--image-opts", imgOpts,
-			"bs=1",
-			fmt.Sprintf("skip=%d", cmd.Offset),
-			fmt.Sprintf("count=%d", cmd.Length),
-		}
-	case "map":
-		// qemu-img map --output=json --image-opts ...
-		args = []string{
-			"map", "--output=json",
-			"--image-opts", imgOpts,
-		}
-	default:
-		return nil, fmt.Errorf("unknown op: %s", cmd.Op)
-	}
-
-	// Run command
-	// Note: This captures stdout into memory. For very large chunks (>10MB),
-	// this might be memory intensive, but standard backup chunks are usually 1MB.
+func (btm *BackupTunnelManager) executeQemuImgMeta(cmd TunnelCommand) ([]byte, error) {
+	nbdURI := fmt.Sprintf("nbd+unix:///%s?socket=%s", cmd.Disk, pullBackupSocket)
+	args := []string{cmd.Op, "--output=json", nbdURI}
 	c := exec.CommandContext(btm.ctx, "qemu-img", args...)
-	return c.Output()
+	return c.CombinedOutput()
 }
 
 func sendResponse(conn net.Conn, headerBuf []byte, status byte, data []byte) {
-	// Header: [Status 1][Length 8]
 	headerBuf[0] = status
 	binary.BigEndian.PutUint64(headerBuf[1:], uint64(len(data)))
 
-	// We must write Header + Data atomically to the TCP stream
-	// (Though strictly speaking, TCP is a stream, so sequential writes are fine
-	// as long as we are single-threaded here)
+	// Atomic-ish write: Header then Data
 	conn.Write(headerBuf)
 	conn.Write(data)
 }
+

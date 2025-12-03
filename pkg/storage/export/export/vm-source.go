@@ -234,14 +234,12 @@ func (ctrl *VMExportController) getPVCsFromVM(vmNamespace, vmName string) ([]*co
 	return pvcs, allPopulated, nil
 }
 
-func (ctrl *VMExportController) updateVMExportVMStatus(vmExport *exportv1.VirtualMachineExport, exporterPod *corev1.Pod, service *corev1.Service, sourceVolumes *sourceVolumes) (time.Duration, error) {
+func (ctrl *VMExportController) updateVMExportVMStatus(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, svc *corev1.Service, sourceVolumes *sourceVolumes, internalLinks, externalLinks *exportv1.VirtualMachineExportLink) (time.Duration, error) {
 	var requeue time.Duration
 
 	vmExportCopy := vmExport.DeepCopy()
 	vmExportCopy.Status.VirtualMachineName = pointer.P(vmExport.Spec.Source.Name)
-	if err := ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, exporterPod, service, sourceVolumes.availableMessage, sourceVolumes.volumes, getVolumeName); err != nil {
-		return requeue, err
-	}
+	ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, pod, svc, sourceVolumes.availableMessage, internalLinks, externalLinks)
 	if len(sourceVolumes.volumes) == 0 {
 		vmExportCopy.Status.Conditions = updateCondition(vmExportCopy.Status.Conditions, newReadyCondition(corev1.ConditionFalse, noVolumeVMReason, sourceVolumes.availableMessage))
 		vmExportCopy.Status.Phase = exportv1.Skipped

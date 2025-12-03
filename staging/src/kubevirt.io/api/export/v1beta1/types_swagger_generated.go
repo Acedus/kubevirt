@@ -82,9 +82,17 @@ func (VirtualMachineExportVolumeFormat) SwaggerDoc() map[string]string {
 
 func (VirtualMachineExportBackup) SwaggerDoc() map[string]string {
 	return map[string]string{
-		"":     "VirtualMachineExportBackup contains the URL and available formats for the exported backup",
-		"name": "Name is the name of the exported volume",
-		"url":  "Url is the url of the backup endpoint",
+		"":          "VirtualMachineExportBackup contains the URL and available formats for the exported backup",
+		"name":      "Name is the name of the exported volume",
+		"endpoints": "+listType=map\n+listMapKey=endpoint\n+optional",
+	}
+}
+
+func (VirtualMachineExportBackupEndpoint) SwaggerDoc() map[string]string {
+	return map[string]string{
+		"":         "VirtualMachineExportVolumeFormat contains the format type and URL to get the volume in that format",
+		"endpoint": "Format is the format of the image at the specified URL",
+		"url":      "Url is the url that contains the volume in the format specified",
 	}
 }
 

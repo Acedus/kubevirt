@@ -9034,11 +9034,14 @@ var CRDsValidation map[string]string = map[string]string{
             type: object
           type: array
           x-kubernetes-list-type: atomic
-        serviceName:
+        includedVolumes:
           description: |-
-            ServiceName is the name of the service created associated with the Virtual Machine backup. It will be used to
-            create the internal URLs for interacting with the backup endpoints
-          type: string
+            IncludedVolumes is the list of volume names that were eligible for backup and have been included as part
+            of the backup job.
+          items:
+            type: string
+          type: array
+          x-kubernetes-list-type: atomic
         type:
           description: Type indicates if the backup was full or incremental
           type: string
@@ -10294,15 +10297,32 @@ var CRDsValidation map[string]string = map[string]string{
                     description: VirtualMachineExportBackup contains the URL and available
                       formats for the exported backup
                     properties:
+                      endpoints:
+                        items:
+                          description: VirtualMachineExportVolumeFormat contains the
+                            format type and URL to get the volume in that format
+                          properties:
+                            endpoint:
+                              description: Format is the format of the image at the
+                                specified URL
+                              type: string
+                            url:
+                              description: Url is the url that contains the volume
+                                in the format specified
+                              type: string
+                          required:
+                          - endpoint
+                          - url
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - endpoint
+                        x-kubernetes-list-type: map
                       name:
                         description: Name is the name of the exported volume
                         type: string
-                      url:
-                        description: Url is the url of the backup endpoint
-                        type: string
                     required:
                     - name
-                    - url
                     type: object
                   type: array
                   x-kubernetes-list-map-keys:
@@ -10384,15 +10404,32 @@ var CRDsValidation map[string]string = map[string]string{
                     description: VirtualMachineExportBackup contains the URL and available
                       formats for the exported backup
                     properties:
+                      endpoints:
+                        items:
+                          description: VirtualMachineExportVolumeFormat contains the
+                            format type and URL to get the volume in that format
+                          properties:
+                            endpoint:
+                              description: Format is the format of the image at the
+                                specified URL
+                              type: string
+                            url:
+                              description: Url is the url that contains the volume
+                                in the format specified
+                              type: string
+                          required:
+                          - endpoint
+                          - url
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - endpoint
+                        x-kubernetes-list-type: map
                       name:
                         description: Name is the name of the exported volume
                         type: string
-                      url:
-                        description: Url is the url of the backup endpoint
-                        type: string
                     required:
                     - name
-                    - url
                     type: object
                   type: array
                   x-kubernetes-list-map-keys:

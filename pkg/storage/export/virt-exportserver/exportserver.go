@@ -98,8 +98,9 @@ type ExportServerConfig struct {
 	FileHandler        func(string) http.Handler
 	GzipHandler        func(string) http.Handler
 	VmHandler          func([]export.VolumeInfo, func() (string, error), func() (*corev1.ConfigMap, error)) http.Handler
-	BackupHandler      func() http.Handler
 	TokenSecretHandler func(TokenGetterFunc) http.Handler
+	BackupDataHandler  func(exportName string) http.Handler
+	BackupMapHandler   func(exportName string) http.Handler
 
 	PermissionChecker func(string) bool
 
@@ -139,7 +140,13 @@ func (s *exportServer) initHandler() {
 		if hasPermissions := s.PermissionChecker(vi.Path); !hasPermissions {
 			golog.Fatalf("unable to manipulate %s's contents, exiting", vi.Path)
 		}
-		for path, handler := range s.getHandlerMap(vi) {
+		for path, handler := range s.getVolumeHandlerMap(vi) {
+			log.Log.Infof("Handling path %s\n", path)
+			mux.Handle(path, tokenChecker(s.TokenGetter, handler))
+		}
+	}
+	for _, bi := range s.Paths.Backups {
+		for path, handler := range s.getBackupHandlerMap(bi) {
 			log.Log.Infof("Handling path %s\n", path)
 			mux.Handle(path, tokenChecker(s.TokenGetter, handler))
 		}
@@ -151,10 +158,6 @@ func (s *exportServer) initHandler() {
 	if s.Paths.SecretURI != "" {
 		mux.Handle(filepath.Join(internal, s.Paths.SecretURI), tokenChecker(s.TokenGetter, s.TokenSecretHandler(s.TokenGetter)))
 		mux.Handle(filepath.Join(external, s.Paths.SecretURI), tokenChecker(s.TokenGetter, s.TokenSecretHandler(s.TokenGetter)))
-	}
-	if s.Paths.BackupURI != "" {
-		mux.Handle(filepath.Join(internal, s.Paths.BackupURI), tokenChecker(s.TokenGetter, s.BackupHandler()))
-		mux.Handle(filepath.Join(external, s.Paths.BackupURI), tokenChecker(s.TokenGetter, s.BackupHandler()))
 	}
 
 	// Readiness probe
@@ -171,7 +174,7 @@ func getExternalCAConfigMap() (*corev1.ConfigMap, error) {
 	return getCAConfigMap(externalCaConfigMapPath)
 }
 
-func (s *exportServer) getHandlerMap(vi export.VolumeInfo) map[string]http.Handler {
+func (s *exportServer) getVolumeHandlerMap(vi export.VolumeInfo) map[string]http.Handler {
 	fi, err := os.Stat(vi.Path)
 	if err != nil {
 		log.Log.Reason(err).Errorf("error statting %s", vi.Path)
@@ -204,12 +207,27 @@ func (s *exportServer) getHandlerMap(vi export.VolumeInfo) map[string]http.Handl
 	return result
 }
 
+func (s *exportServer) getBackupHandlerMap(bi export.BackupInfo) map[string]http.Handler {
+	result := make(map[string]http.Handler)
+
+	if bi.DataURI != "" {
+		result[bi.DataURI] = s.BackupDataHandler(bi.Path)
+	}
+
+	if bi.MapURI != "" {
+		result[bi.MapURI] = s.BackupMapHandler(bi.Path)
+	}
+
+	return result
+}
+
 func (s *exportServer) Run() {
 	s.initHandler()
 
 	var internalLn net.Listener
-	if s.Paths.BackupURI != "" {
-		internalLn, err := s.setupInternalTLSListener()
+	var err error
+	if s.Paths.Backups != nil {
+		internalLn, err = s.setupInternalTLSListener()
 		if err != nil {
 			log.Log.Reason(err).Critical("Failed to initialize internal backup listener")
 			panic(err)
@@ -334,8 +352,11 @@ func NewExportServer(config ExportServerConfig) service.Service {
 		es.VmHandler = vmHandler
 	}
 
-	if es.BackupHandler == nil {
-		es.BackupHandler = backupHandler
+	if es.BackupDataHandler == nil {
+		es.BackupDataHandler = backupDataHandler
+	}
+	if es.BackupMapHandler == nil {
+		es.BackupMapHandler = backupMapHandler
 	}
 
 	if es.TokenSecretHandler == nil {
@@ -760,9 +781,8 @@ func vmHandler(vi []export.VolumeInfo, getBasePath func() (string, error), getCm
 }
 
 var (
-	nbdClient  *NbdClient
-	nbdMu      sync.RWMutex
-	tunnelOnce sync.Once
+	nbdClient *NbdClient
+	nbdMu     sync.RWMutex
 )
 
 type NbdClient struct {
@@ -777,23 +797,63 @@ type TunnelCommand struct {
 	Length int    `json:"length"`
 }
 
-func backupHandler() http.Handler {
+// DiskReader adapts the NBD Tunnel to io.ReadSeeker for http.ServeContent
+type DiskReader struct {
+	client *NbdClient
+	disk   string
+	offset int64
+	size   int64
+}
+
+func (d *DiskReader) Seek(offset int64, whence int) (int64, error) {
+	var newOffset int64
+	switch whence {
+	case io.SeekStart:
+		newOffset = offset
+	case io.SeekCurrent:
+		newOffset = d.offset + offset
+	case io.SeekEnd:
+		newOffset = d.size + offset
+	default:
+		return 0, errors.New("invalid whence")
+	}
+
+	if newOffset < 0 {
+		return 0, errors.New("seek position cannot be negative")
+	}
+	d.offset = newOffset
+	return newOffset, nil
+}
+
+func (d *DiskReader) Read(p []byte) (n int, err error) {
+	if d.offset >= d.size {
+		return 0, io.EOF
+	}
+
+	readLen := len(p)
+	if d.offset+int64(readLen) > d.size {
+		readLen = int(d.size - d.offset)
+	}
+
+	// Execute RPC over the tunnel
+	// Note: executeRPC locks the client internally
+	data, err := executeRPC(d.client, "read", d.disk, d.offset, readLen)
+	if err != nil {
+		return 0, err
+	}
+
+	n = copy(p, data)
+	d.offset += int64(n)
+	return n, nil
+}
+
+// backupDataHandler handles GET /exports/<diskName>
+// It uses http.ServeContent for native Range support.
+func backupDataHandler(exportName string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet {
 			w.WriteHeader(http.StatusBadRequest)
 			return
-		}
-
-		parts := strings.Split(strings.Trim(req.URL.Path, "/"), "/")
-		if len(parts) == 0 || parts[0] == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-
-		diskName := parts[0]
-		isMap := false
-		if len(parts) > 1 && parts[1] == "map" {
-			isMap = true
 		}
 
 		nbdMu.RLock()
@@ -801,66 +861,90 @@ func backupHandler() http.Handler {
 		nbdMu.RUnlock()
 
 		if client == nil {
-			// If virt-launcher hasn't connected or is reconnecting
-			http.Error(w, "Backup source not connected (virt-launcher tunnel missing)", http.StatusServiceUnavailable)
+			http.Error(w, "Backup source not connected", http.StatusServiceUnavailable)
 			return
 		}
 
-		// 5. Dispatch
-		if isMap {
-			serveBackupMap(w, client, diskName)
-		} else {
-			serveBackupData(w, req, client, diskName)
+		// 1. Get Disk Size (Needed for Range calculation)
+		size, err := getDiskSize(client, exportName)
+		if err != nil {
+			log.Log.Reason(err).Errorf("Failed to get size for disk %s", exportName)
+			http.Error(w, "Failed to retrieve disk info", http.StatusBadGateway)
+			return
 		}
+
+		// 2. Create Reader
+		reader := &DiskReader{
+			client: client,
+			disk:   exportName,
+			size:   size,
+			offset: 0,
+		}
+
+		// 3. Serve Content
+		http.ServeContent(w, req, exportName, time.Time{}, reader)
 	})
 }
 
-func serveBackupMap(w http.ResponseWriter, client *NbdClient, disk string) {
-	resp, err := executeRPC(client, "map", disk, 0, 0)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(resp)
-}
-
-func serveBackupData(w http.ResponseWriter, r *http.Request, client *NbdClient, disk string) {
-	offset := int64(0)
-	length := 512
-	rangeHeader := r.Header.Get("Range")
-
-	if rangeHeader != "" {
-		var start, end int64
-		if n, _ := fmt.Sscanf(strings.ReplaceAll(rangeHeader, "bytes=", ""), "%d-%d", &start, &end); n == 2 {
-			offset = start
-			if end >= start {
-				length = int(end - start + 1)
-			}
+// backupMapHandler handles GET /exports/<diskName>/map
+func backupMapHandler(exportName string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
-	}
 
-	resp, err := executeRPC(client, "read", disk, offset, length)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
+		nbdMu.RLock()
+		client := nbdClient
+		nbdMu.RUnlock()
 
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.img"`, disk))
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Write(resp)
+		if client == nil {
+			http.Error(w, "Backup source not connected", http.StatusServiceUnavailable)
+			return
+		}
+
+		resp, err := executeRPC(client, "map", exportName, 0, 0)
+		if err != nil {
+			log.Log.Reason(err).Errorf("Error executing map RPC for disk %s", exportName)
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(resp)
+	})
 }
 
+// Helper to get size via RPC
+func getDiskSize(client *NbdClient, disk string) (int64, error) {
+	// We use the "info" op which executes qemu-img info --output=json on the client
+	resp, err := executeRPC(client, "info", disk, 0, 0)
+	if err != nil {
+		return 0, err
+	}
+
+	var info struct {
+		VirtualSize int64 `json:"virtual-size"`
+	}
+	if err := json.Unmarshal(resp, &info); err != nil {
+		return 0, fmt.Errorf("invalid json from info: %v", err)
+	}
+	return info.VirtualSize, nil
+}
+
+// executeRPC sends the JSON command and waits for the binary response
 func executeRPC(client *NbdClient, op, disk string, offset int64, length int) ([]byte, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
 	cmd := TunnelCommand{Op: op, Disk: disk, Offset: offset, Length: length}
 
+	// 1. Send JSON Command
 	if err := json.NewEncoder(client.conn).Encode(cmd); err != nil {
 		return nil, fmt.Errorf("tunnel write error: %v", err)
 	}
 
+	// 2. Read Binary Header: [Status 1][Len 8]
 	header := make([]byte, 9)
 	if _, err := io.ReadFull(client.conn, header); err != nil {
 		return nil, fmt.Errorf("tunnel header read error: %v", err)
@@ -869,6 +953,7 @@ func executeRPC(client *NbdClient, op, disk string, offset int64, length int) ([
 	status := header[0]
 	payloadLen := int64(binary.BigEndian.Uint64(header[1:]))
 
+	// 3. Read Payload
 	payload := make([]byte, payloadLen)
 	if _, err := io.ReadFull(client.conn, payload); err != nil {
 		return nil, fmt.Errorf("tunnel payload read error: %v", err)

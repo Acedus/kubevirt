@@ -9,6 +9,7 @@ go_library(
         "fsfreeze.go",
         "manager.go",
         "memoryDump.go",
+        "nbd_client.go",
     ],
     importpath = "kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/storage",
     visibility = ["//visibility:public"],

@@ -64,7 +64,7 @@ type BackupOptions struct {
 	ScratchPath      *string      `json:"scratchPath,omitempty"`
 	SkipQuiesce      bool         `json:"skipQuiesce,omitempty"`
 	BackupServerAddr *string      `json:"backupServerAddr,omitempty"`
-	Token            *string      `json:"token,omitempty"`
+	CACert           *string      `json:"caCert,omitempty"`
 }
 
 // VirtualMachineBackup defines the operation of backing up a VM
@@ -123,9 +123,10 @@ type VirtualMachineBackupStatus struct {
 	// +listType=atomic
 	Conditions []Condition `json:"conditions,omitempty"`
 	// +optional
-	// ServiceName is the name of the service created associated with the Virtual Machine backup. It will be used to
-	// create the internal URLs for interacting with the backup endpoints
-	ServiceName string `json:"serviceName,omitempty"`
+	// +listType=atomic
+	// IncludedVolumes is the list of volume names that were eligible for backup and have been included as part
+	// of the backup job.
+	IncludedVolumes []string `json:"includedVolumes,omitempty"`
 }
 
 // VirtualMachineBackupEndpoint contains the backup interactable endpoint
