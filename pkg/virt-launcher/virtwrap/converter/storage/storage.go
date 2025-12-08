@@ -26,8 +26,9 @@ import (
 )
 
 type DomainConfigurator struct {
-	vcpus    uint
-	useBlkMQ bool
+	diskConfigurator DiskConfiguratorInterface
+	vcpus            uint
+	useBlkMQ         bool
 }
 
 type option func(*DomainConfigurator)
@@ -43,7 +44,34 @@ func NewDomainConfigurator(options ...option) DomainConfigurator {
 }
 
 func (d DomainConfigurator) Configure(vmi *v1.VirtualMachineInstance, domain *api.Domain) error {
+	volumeIndices := map[string]int{}
+	volumes := map[string]*v1.Volume{}
+	for i, volume := range vmi.Spec.Volumes {
+		volumes[volume.Name] = volume.DeepCopy()
+		volumeIndices[volume.Name] = i
+	}
+
+	volumeStatusMap := make(map[string]v1.VolumeStatus)
+	for _, volumeStatus := range vmi.Status.VolumeStatus {
+		volumeStatusMap[volumeStatus.Name] = volumeStatus
+	}
+
+	prefixMap := newDeviceNamer(vmi.Status.VolumeStatus, vmi.Spec.Domain.Devices.Disks)
+	for _, disk := range vmi.Spec.Domain.Devices.Disks {
+		newDisk := api.Disk{}
+
+		if err := d.diskConfigurator.Configure(&disk, &newDisk, prefixMap, d.numBlkQueues(), volumeStatusMap); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+func WithDiskConfigurator(diskConfigurator DiskConfiguratorInterface) option {
+	return func(d *DomainConfigurator) {
+		d.diskConfigurator = diskConfigurator
+	}
 }
 
 func WithUseBlkMQ(useBlkMQ bool) option {
@@ -59,4 +87,18 @@ func WithVcpus(count uint) option {
 			d.vcpus = 1
 		}
 	}
+}
+
+func (d *DomainConfigurator) numBlkQueues() *uint {
+	if !d.useBlkMQ {
+		return nil
+	}
+	return &d.vcpus
+}
+
+func toApiReadOnly(src bool) *api.ReadOnly {
+	if src {
+		return &api.ReadOnly{}
+	}
+	return nil
 }
