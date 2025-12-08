@@ -1,4 +1,4 @@
-package converter
+package storage
 
 import (
 	v1 "kubevirt.io/api/core/v1"

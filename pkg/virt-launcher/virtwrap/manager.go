@@ -92,6 +92,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/cli"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/arch"
+	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/storage"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/vcpu"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/device/hostdevice"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/device/hostdevice/generic"
@@ -1062,12 +1063,17 @@ func (l *LibvirtDomainManager) generateConverterContext(vmi *v1.VirtualMachineIn
 		}
 	}
 
+	cpuTopology := vcpu.GetCPUTopology(vmi)
+
+	virtioBlkMQRequested := (vmi.Spec.Domain.Devices.BlockMultiQueue != nil) && (*vmi.Spec.Domain.Devices.BlockMultiQueue)
+
 	// Map the VirtualMachineInstance to the Domain
 	c := &converter.ConverterContext{
 		Architecture:          arch.NewConverter(runtime.GOARCH),
 		VirtualMachine:        vmi,
 		AllowEmulation:        allowEmulation,
 		CPUSet:                podCPUSet,
+		CPUTopology:           cpuTopology,
 		IsBlockPVC:            isBlockPVCMap,
 		IsBlockDV:             isBlockDVMap,
 		EFIConfiguration:      efiConf,
@@ -1079,6 +1085,7 @@ func (l *LibvirtDomainManager) generateConverterContext(vmi *v1.VirtualMachineIn
 		UseLaunchSecurityPV:   kutil.IsSecureExecutionVMI(vmi),
 		FreePageReporting:     isFreePageReportingEnabled(false, vmi),
 		SerialConsoleLog:      isSerialConsoleLogEnabled(false, vmi),
+		UseBlkMQ:              virtioBlkMQRequested,
 	}
 
 	if options != nil {
@@ -1334,10 +1341,10 @@ func applyChangedBlockTracking(vmi *v1.VirtualMachineInstance, c *converter.Conv
 		var imagePath string
 		blockDev := false
 		if c.IsBlockPVC[volumeName] || c.IsBlockDV[volumeName] {
-			imagePath = converter.GetBlockDeviceVolumePath(volumeName)
+			imagePath = storage.GetBlockDeviceVolumePath(volumeName)
 			blockDev = true
 		} else {
-			imagePath = converter.GetFilesystemVolumePath(volumeName)
+			imagePath = storage.GetFilesystemVolumePath(volumeName)
 		}
 
 		err := createQCOW2Overlay(overlayPath, imagePath, blockDev)
@@ -1675,7 +1682,7 @@ func getUpdatedDisks(oldDisks, newDisks []api.Disk) []api.Disk {
 var isHotplugBlockDeviceVolume = isHotplugBlockDeviceVolumeFunc
 
 func isHotplugBlockDeviceVolumeFunc(volumeName string) bool {
-	path := converter.GetHotplugBlockDeviceVolumePath(volumeName)
+	path := storage.GetHotplugBlockDeviceVolumePath(volumeName)
 	fileInfo, err := os.Stat(path)
 	if err == nil {
 		if (fileInfo.Mode() & os.ModeDevice) != 0 {
@@ -1689,7 +1696,7 @@ func isHotplugBlockDeviceVolumeFunc(volumeName string) bool {
 var isBlockDeviceVolume = isBlockDeviceVolumeFunc
 
 func isBlockDeviceVolumeFunc(volumeName string) (bool, error) {
-	path := converter.GetBlockDeviceVolumePath(volumeName)
+	path := storage.GetBlockDeviceVolumePath(volumeName)
 	fileInfo, err := os.Stat(path)
 	if err == nil {
 		if (fileInfo.Mode() & os.ModeDevice) != 0 {
@@ -1699,7 +1706,7 @@ func isBlockDeviceVolumeFunc(volumeName string) (bool, error) {
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		// cross check: is it a filesystem volume
-		path = converter.GetFilesystemVolumePath(volumeName)
+		path = storage.GetFilesystemVolumePath(volumeName)
 		fileInfo, err := os.Stat(path)
 		if err == nil {
 			if fileInfo.Mode().IsRegular() {
