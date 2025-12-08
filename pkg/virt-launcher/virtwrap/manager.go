@@ -1068,6 +1068,7 @@ func (l *LibvirtDomainManager) generateConverterContext(vmi *v1.VirtualMachineIn
 		VirtualMachine:        vmi,
 		AllowEmulation:        allowEmulation,
 		CPUSet:                podCPUSet,
+		CPUTopology:           vcpu.GetCPUTopology(vmi),
 		IsBlockPVC:            isBlockPVCMap,
 		IsBlockDV:             isBlockDVMap,
 		EFIConfiguration:      efiConf,
@@ -1079,6 +1080,7 @@ func (l *LibvirtDomainManager) generateConverterContext(vmi *v1.VirtualMachineIn
 		UseLaunchSecurityPV:   kutil.IsSecureExecutionVMI(vmi),
 		FreePageReporting:     isFreePageReportingEnabled(false, vmi),
 		SerialConsoleLog:      isSerialConsoleLogEnabled(false, vmi),
+		UseBlkMQ:              vmi.Spec.Domain.Devices.BlockMultiQueue != nil && *vmi.Spec.Domain.Devices.BlockMultiQueue,
 	}
 
 	if options != nil {

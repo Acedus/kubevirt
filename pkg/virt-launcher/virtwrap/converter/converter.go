@@ -63,6 +63,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/compute"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/metadata"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/network"
+	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/storage"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/vcpu"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/virtio"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/device"
@@ -92,6 +93,7 @@ type ConverterContext struct {
 	Secrets                         map[string]*k8sv1.Secret
 	VirtualMachine                  *v1.VirtualMachineInstance
 	CPUSet                          []int
+	CPUTopology                     *api.CPUTopology
 	IsBlockPVC                      map[string]bool
 	IsBlockDV                       map[string]bool
 	ApplyCBT                        map[string]string
@@ -117,6 +119,7 @@ type ConverterContext struct {
 	BochsForEFIGuests               bool
 	SerialConsoleLog                bool
 	DomainAttachmentByInterfaceName map[string]string
+	UseBlkMQ                        bool
 }
 
 func assignDiskToSCSIController(disk *api.Disk, unit int) {
@@ -1410,6 +1413,7 @@ func Convert_v1_VirtualMachineInstance_To_api_Domain(vmi *v1.VirtualMachineInsta
 	precond.MustNotBeNil(c)
 
 	architecture := c.Architecture.GetArchitecture()
+	cpuCount := vcpu.CalculateRequestedVCPUs(c.CPUTopology)
 
 	builder := NewDomainBuilder(
 		metadata.DomainConfigurator{},
@@ -1447,6 +1451,10 @@ func Convert_v1_VirtualMachineInstance_To_api_Domain(vmi *v1.VirtualMachineInsta
 		),
 		compute.NewWatchdogDomainConfigurator(architecture),
 		compute.NewConsoleDomainConfigurator(c.SerialConsoleLog),
+		storage.NewDomainConfigurator(
+			storage.WithUseBlkMQ(c.UseBlkMQ),
+			storage.WithVcpus(uint(cpuCount)),
+		),
 	)
 	if err := builder.Build(vmi, domain); err != nil {
 		return err
@@ -1456,10 +1464,8 @@ func Convert_v1_VirtualMachineInstance_To_api_Domain(vmi *v1.VirtualMachineInsta
 	// CPU topology will be created everytime, because user can specify
 	// number of cores in vmi.Spec.Domain.Resources.Requests/Limits, not only
 	// in vmi.Spec.Domain.CPU
-	cpuTopology := vcpu.GetCPUTopology(vmi)
-	cpuCount := vcpu.CalculateRequestedVCPUs(cpuTopology)
 
-	domain.Spec.CPU.Topology = cpuTopology
+	domain.Spec.CPU.Topology = c.CPUTopology
 	domain.Spec.VCPU = &api.VCPU{
 		Placement: "static",
 		CPUs:      cpuCount,
