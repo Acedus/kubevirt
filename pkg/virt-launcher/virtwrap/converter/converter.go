@@ -1454,6 +1454,15 @@ func Convert_v1_VirtualMachineInstance_To_api_Domain(vmi *v1.VirtualMachineInsta
 		storage.NewDomainConfigurator(
 			storage.WithUseBlkMQ(c.UseBlkMQ),
 			storage.WithVcpus(uint(cpuCount)),
+			storage.WithDiskConfigurator(
+				storage.NewDiskConfigurator(
+					storage.WithDiskArchitecture(architecture),
+					storage.WithDiskUseLaunchSecurityPV(c.UseLaunchSecurityPV),
+					storage.WithDiskUseLaunchSecuritySEV(c.UseLaunchSecuritySEV),
+					storage.WithDiskExpandDisksEnabled(c.ExpandDisksEnabled),
+					storage.WithDiskVolumesDiscardIgnore(c.VolumesDiscardIgnore),
+				),
+			),
 		),
 	)
 	if err := builder.Build(vmi, domain); err != nil {

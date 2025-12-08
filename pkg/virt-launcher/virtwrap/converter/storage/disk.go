@@ -30,14 +30,14 @@ type DiskConfigurator struct {
 
 type diskOption func(*DiskConfigurator)
 
-func NewDiskConfigurator(options ...diskOption) DiskConfigurator {
+func NewDiskConfigurator(options ...diskOption) *DiskConfigurator {
 	var configurator DiskConfigurator
 
 	for _, f := range options {
 		f(&configurator)
 	}
 
-	return configurator
+	return &configurator
 }
 
 func (d *DiskConfigurator) Configure(diskDevice *v1.Disk, disk *api.Disk, prefixMap map[string]deviceNamer, numQueues *uint, volumeStatusMap map[string]v1.VolumeStatus) error {
