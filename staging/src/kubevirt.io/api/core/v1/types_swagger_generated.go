@@ -530,6 +530,8 @@ func (VirtualMachineInstanceBackupStatus) SwaggerDoc() map[string]string {
 		"completed":      "Completed indicates the backup completed",
 		"backupMsg":      "BackupMsg resturns any relevant information like failure reason\nunfreeze failed etc...\n+optional",
 		"checkpointName": "CheckpointName is the name of the checkpoint created for the backup\n+optional",
+		"failed":         "Failed",
+		"abortStatus":    "AbortStatus",
 	}
 }
 

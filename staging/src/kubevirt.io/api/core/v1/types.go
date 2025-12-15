@@ -2199,7 +2199,22 @@ type VirtualMachineInstanceBackupStatus struct {
 	// CheckpointName is the name of the checkpoint created for the backup
 	// +optional
 	CheckpointName *string `json:"checkpointName,omitempty"`
+	// Failed
+	Failed bool `json:"failed,omitempty"`
+	// AbortStatus
+	AbortStatus BackupAbortStatus `json:"abortStatus,omitempty"`
 }
+
+type BackupAbortStatus string
+
+const (
+	// BackupAbortSucceeded means that the VirtualMachineInstance live migration has been aborted
+	BackupAbortSucceeded BackupAbortStatus = "Succeeded"
+	// BackupAbortFailed means that the vmi live migration has failed to be abort
+	BackupAbortFailed BackupAbortStatus = "Failed"
+	// BackupAbortInProgress mean that the vmi live migration is aborting
+	BackupAbortInProgress BackupAbortStatus = "Aborting"
+)
 
 // ChangedBlockTrackingStatus represents the status of ChangedBlockTracking for a VM
 // +k8s:openapi-gen=true

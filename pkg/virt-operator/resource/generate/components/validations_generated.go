@@ -8325,6 +8325,9 @@ var CRDsValidation map[string]string = map[string]string{
               description: BackupStatus represents the status of vmi backup
               nullable: true
               properties:
+                abortStatus:
+                  description: AbortStatus
+                  type: string
                 backupMsg:
                   description: |-
                     BackupMsg resturns any relevant information like failure reason
@@ -8344,6 +8347,9 @@ var CRDsValidation map[string]string = map[string]string{
                   description: EndTimestamp is the timestamp when the backup ended
                   format: date-time
                   type: string
+                failed:
+                  description: Failed
+                  type: boolean
                 startTimestamp:
                   description: StartTimestamp is the timestamp when the backup started
                   format: date-time
@@ -14063,6 +14069,9 @@ var CRDsValidation map[string]string = map[string]string{
               description: BackupStatus represents the status of vmi backup
               nullable: true
               properties:
+                abortStatus:
+                  description: AbortStatus
+                  type: string
                 backupMsg:
                   description: |-
                     BackupMsg resturns any relevant information like failure reason
@@ -14082,6 +14091,9 @@ var CRDsValidation map[string]string = map[string]string{
                   description: EndTimestamp is the timestamp when the backup ended
                   format: date-time
                   type: string
+                failed:
+                  description: Failed
+                  type: boolean
                 startTimestamp:
                   description: StartTimestamp is the timestamp when the backup started
                   format: date-time
@@ -30847,6 +30859,9 @@ var CRDsValidation map[string]string = map[string]string{
                           description: BackupStatus represents the status of vmi backup
                           nullable: true
                           properties:
+                            abortStatus:
+                              description: AbortStatus
+                              type: string
                             backupMsg:
                               description: |-
                                 BackupMsg resturns any relevant information like failure reason
@@ -30868,6 +30883,9 @@ var CRDsValidation map[string]string = map[string]string{
                                 backup ended
                               format: date-time
                               type: string
+                            failed:
+                              description: Failed
+                              type: boolean
                             startTimestamp:
                               description: StartTimestamp is the timestamp when the
                                 backup started

@@ -26603,6 +26603,20 @@ func schema_kubevirtio_api_core_v1_VirtualMachineInstanceBackupStatus(ref common
 							Format:      "",
 						},
 					},
+					"failed": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Failed",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"abortStatus": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AbortStatus",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},

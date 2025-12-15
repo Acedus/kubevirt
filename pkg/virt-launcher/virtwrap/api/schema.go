@@ -425,6 +425,8 @@ type BackupMetadata struct {
 	Completed      bool         `xml:"completed,omitempty"`
 	BackupMsg      string       `xml:"backupMsg,omitempty"`
 	CheckpointName string       `xml:"checkpointName,omitempty"`
+	Failed         bool         `xml:"bool,omitempty"`
+	AbortStatus    string       `xml:"abortStatus,omitempty"`
 }
 
 type GracePeriodMetadata struct {
