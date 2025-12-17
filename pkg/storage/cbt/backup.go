@@ -792,20 +792,43 @@ func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *b
 }
 
 func (ctrl *VMBackupController) deletionCleanup(backup *backupv1.VirtualMachineBackup, sourceName string) *SyncInfo {
-	vmi, _, err := ctrl.getVMI(backup.Namespace, sourceName)
+	vmi, exists, err := ctrl.getVMI(backup.Namespace, sourceName)
 	if err != nil {
 		err = fmt.Errorf("failed to get VMI during deletion cleanup: %w", err)
 		log.Log.With("VirtualMachineBackup", backup.Name).Error(err.Error())
 		return syncInfoError(err)
 	}
 
-	vmiBackupInProgress := hasVMIBackupStatus(vmi) &&
-		vmi.Status.ChangedBlockTracking.BackupStatus.BackupName == backup.Name &&
-		!vmi.Status.ChangedBlockTracking.BackupStatus.Completed
+	// If no matching VMI was found and the backup is still ongoing, proceed to cleanup.
+	vmiBackupInProgress := false
+	if exists {
+		vmiBackupInProgress = hasVMIBackupStatus(vmi) &&
+			vmi.Status.ChangedBlockTracking.BackupStatus.BackupName == backup.Name &&
+			!vmi.Status.ChangedBlockTracking.BackupStatus.Completed
+	}
 
 	if vmiBackupInProgress {
+		abortStatus := vmi.Status.ChangedBlockTracking.BackupStatus.AbortStatus
+		if abortStatus == v1.BackupAbortInProgress || abortStatus == v1.BackupAbortSucceeded {
+			// Noop, we're waiting on the abort to finalize the backup job
+			return nil
+		}
+
+		backupOptions := &backupv1.BackupOptions{
+			BackupName:      backup.Name,
+			Cmd:             backupv1.Abort,
+			Mode:            *backup.Spec.Mode,
+			BackupStartTime: &backup.CreationTimestamp,
+		}
+		if err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions); err != nil {
+			if err.Error() == AbortBackupFailedNoBackupErr {
+				// If backup didn't even start there is no need to cancel it
+				log.Log.Object(vmi).Infof("skipping backup cancellation since vmi is not undergoing backup")
+			}
+			return syncInfoError(err)
+		}
+
 		log.Log.With("VirtualMachineBackup", backup.Name).V(3).Info(backupDeletingBeforeVMICompletionMsg)
-		// TODO: abort running backup on deletion instead of waiting for completion
 		return nil
 	}
 

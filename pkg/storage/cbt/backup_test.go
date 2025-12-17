@@ -547,7 +547,7 @@ var _ = Describe("Backup Controller", func() {
 	})
 
 	Context("Backup deletion cleanup", func() {
-		It("should wait when backup deleted but still in progress on VMI", func() {
+		It("should issue an abort request when backup is deleting but still in progress on VMI", func() {
 			backup := createBackup(backupName, vmName, pvcName)
 			backup.Finalizers = []string{vmBackupFinalizer}
 			backup.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
@@ -573,8 +573,30 @@ var _ = Describe("Backup Controller", func() {
 				Patch(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 				Times(0)
 
+			By("Aborting the backup since it is still progressing")
+			vmiInterface.EXPECT().Backup(gomock.Any(), gomock.Any(), gomock.Any()).Do(func(_ context.Context, _ string, opts *backupv1.BackupOptions) {
+				Expect(opts.Cmd).To(Equal(backupv1.Abort))
+				vmi.Status.ChangedBlockTracking.BackupStatus.AbortStatus = v1.BackupAbortInProgress
+				// Simulate abort request start
+				Expect(controller.vmiStore.Update(vmi)).To(Succeed())
+			}).Return(nil).Times(1)
+
 			syncInfo := controller.sync(backup)
 			// Returns nil - waiting for completion
+			Expect(syncInfo).To(BeNil())
+
+			vmi, exists, err := controller.getVMI(vmi.Namespace, vmi.Name)
+
+			// Expect progressing abort
+			Expect(err).ToNot(HaveOccurred())
+			Expect(exists).To(BeTrue())
+			Expect(vmi.Status.ChangedBlockTracking.BackupStatus.AbortStatus).To(Equal(v1.BackupAbortInProgress))
+
+			By("Syncing again: Expect Controller to wait (do nothing) while InProgress")
+
+			vmiInterface.EXPECT().Backup(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+			syncInfo = controller.sync(backup)
 			Expect(syncInfo).To(BeNil())
 		})
 
@@ -609,6 +631,27 @@ var _ = Describe("Backup Controller", func() {
 				Return(vmi, nil)
 
 			// Expect patch to remove finalizer
+			finalizerPatched := false
+			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackups", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+				finalizerPatched = true
+				updatedBackup := backup.DeepCopy()
+				updatedBackup.Finalizers = []string{}
+				return true, updatedBackup, nil
+			})
+
+			syncInfo := controller.sync(backup)
+			Expect(syncInfo).To(BeNil())
+			Expect(finalizerPatched).To(BeTrue())
+		})
+
+		It("should immediately remove finalizer if VMI does not exist", func() {
+			backup := createBackup(backupName, vmName, pvcName)
+			backup.Finalizers = []string{vmBackupFinalizer}
+			backup.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
+
+			By("Verifying controller skips abort logic and removes finalizer")
+
+			// Expectation: Remove Finalizer immediately
 			finalizerPatched := false
 			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackups", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
 				finalizerPatched = true
