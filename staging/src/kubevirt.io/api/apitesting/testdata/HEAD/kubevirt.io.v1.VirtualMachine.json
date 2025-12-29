@@ -1336,7 +1336,13 @@
         "failed": true,
         "abortStatus": "abortStatusValue",
         "backupMsg": "backupMsgValue",
-        "checkpointName": "checkpointNameValue"
+        "checkpointName": "checkpointNameValue",
+        "volumes": [
+          {
+            "volumeName": "volumeNameValue",
+            "diskTarget": "diskTargetValue"
+          }
+        ]
       }
     },
     "instancetypeRef": {

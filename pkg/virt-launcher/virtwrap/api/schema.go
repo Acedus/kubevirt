@@ -428,6 +428,7 @@ type BackupMetadata struct {
 	AbortStatus    string       `xml:"abortStatus,omitempty"`
 	BackupMsg      string       `xml:"backupMsg,omitempty"`
 	CheckpointName string       `xml:"checkpointName,omitempty"`
+	Volumes        string       `xml:"volumes,omitempty"`
 }
 
 type GracePeriodMetadata struct {
@@ -462,7 +463,7 @@ type BackupTarget struct {
 // DomainCheckpoint mirroring libvirt XML under https://libvirt.org/formatcheckpoint.html#checkpoint-xml
 type DomainCheckpoint struct {
 	XMLName         xml.Name          `xml:"domaincheckpoint"`
-	Name            string            `xml:"Name"`
+	Name            string            `xml:"name"`
 	CheckpointDisks *CheckpointDisks  `xml:"disks"`
 	CreationTime    *uint64           `xml:"creationTime"`
 	Parent          *CheckpointParent `xml:"parent"`

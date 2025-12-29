@@ -222,7 +222,9 @@ var _ = Describe("Backup", func() {
 				<devices>
 					<disk type='file' device='disk'>
 						<driver name='qemu' type='qcow2'/>
-						<source file='/path/to/disk.qcow2'/>
+						<source file='/path/to/disk.qcow2'>
+							<dataStore type='file'/>
+						</source>
 						<target dev='vda' bus='virtio'/>
 						<alias name='ua-disk0'/>
 					</disk>
@@ -249,6 +251,9 @@ var _ = Describe("Backup", func() {
 				Expect(backupMetadata.StartTimestamp).To(Equal(backupOptions.BackupStartTime))
 				Expect(backupMetadata.CheckpointName).ToNot(BeEmpty())
 				Expect(backupMetadata.CheckpointName).To(ContainSubstring("test-backup"))
+				Expect(backupMetadata.Volumes).ToNot(BeEmpty())
+				Expect(backupMetadata.Volumes).To(ContainSubstring("disk0"))
+				Expect(backupMetadata.Volumes).To(ContainSubstring("vda"))
 			})
 		})
 
@@ -343,7 +348,7 @@ var _ = Describe("Backup", func() {
 				},
 			}
 
-			domainBackup, domainCheckpoint := generateDomainBackup(disks, backupOptions, tempDir)
+			domainBackup, domainCheckpoint, volumesInfo := generateDomainBackup(disks, backupOptions, tempDir)
 
 			Expect(domainBackup).ToNot(BeNil())
 			Expect(domainBackup.Mode).To(Equal(string(backupv1.PushMode)))
@@ -359,6 +364,9 @@ var _ = Describe("Backup", func() {
 			Expect(domainCheckpoint.CheckpointDisks).ToNot(BeNil())
 			Expect(domainCheckpoint.CheckpointDisks.Disks).To(HaveLen(1))
 			Expect(domainCheckpoint.CheckpointDisks.Disks[0].Checkpoint).To(Equal("bitmap"))
+			Expect(volumesInfo).To(HaveLen(1))
+			Expect(volumesInfo[0].VolumeName).To(Equal("disk0"))
+			Expect(volumesInfo[0].DiskTarget).To(Equal("vda"))
 		})
 
 		It("should skip disks without DataStore", func() {
@@ -374,11 +382,12 @@ var _ = Describe("Backup", func() {
 				},
 			}
 
-			domainBackup, domainCheckpoint := generateDomainBackup(disks, backupOptions, tempDir)
+			domainBackup, domainCheckpoint, volumesInfo := generateDomainBackup(disks, backupOptions, tempDir)
 
 			Expect(domainBackup.BackupDisks.Disks).To(HaveLen(1))
 			Expect(domainBackup.BackupDisks.Disks[0].Backup).To(Equal("no"))
 			Expect(domainCheckpoint.CheckpointDisks.Disks[0].Checkpoint).To(Equal("no"))
+			Expect(volumesInfo).To(BeEmpty())
 		})
 		It("should handle incremental backups", func() {
 			incremental := "previous-checkpoint"
@@ -392,7 +401,7 @@ var _ = Describe("Backup", func() {
 				},
 			}
 
-			domainBackup, _ := generateDomainBackup(disks, backupOptions, tempDir)
+			domainBackup, _, _ := generateDomainBackup(disks, backupOptions, tempDir)
 
 			Expect(domainBackup.Incremental).ToNot(BeNil())
 			Expect(*domainBackup.Incremental).To(Equal("previous-checkpoint"))
@@ -409,9 +418,39 @@ var _ = Describe("Backup", func() {
 				},
 			}
 
-			domainBackup, _ := generateDomainBackup(disks, backupOptions, tempDir)
+			domainBackup, _, _ := generateDomainBackup(disks, backupOptions, tempDir)
 
 			Expect(domainBackup.Incremental).To(BeNil())
+		})
+
+		It("should return volumes info for multiple disks with DataStore", func() {
+			disks := []api.Disk{
+				{
+					Target: api.DiskTarget{Device: "vda"},
+					Source: api.DiskSource{DataStore: &api.DataStore{}},
+					Alias:  api.NewUserDefinedAlias("rootdisk"),
+				},
+				{
+					Target: api.DiskTarget{Device: "vdb"},
+					Source: api.DiskSource{DataStore: &api.DataStore{}},
+					Alias:  api.NewUserDefinedAlias("datadisk"),
+				},
+				{
+					Target: api.DiskTarget{Device: "sda"},
+					Source: api.DiskSource{
+						// No DataStore - should be skipped
+					},
+					Alias: api.NewUserDefinedAlias("cdrom"),
+				},
+			}
+
+			_, _, volumesInfo := generateDomainBackup(disks, backupOptions, tempDir)
+
+			Expect(volumesInfo).To(HaveLen(2))
+			Expect(volumesInfo[0].VolumeName).To(Equal("rootdisk"))
+			Expect(volumesInfo[0].DiskTarget).To(Equal("vda"))
+			Expect(volumesInfo[1].VolumeName).To(Equal("datadisk"))
+			Expect(volumesInfo[1].DiskTarget).To(Equal("vdb"))
 		})
 	})
 

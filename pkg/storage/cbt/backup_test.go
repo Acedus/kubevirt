@@ -152,8 +152,9 @@ var _ = Describe("Backup Controller", func() {
 			},
 		}
 		vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
-			BackupName: backupName,
-			Completed:  false,
+			BackupName:     backupName,
+			Completed:      false,
+			CheckpointName: pointer.P(checkpointName),
 		}
 		vmi.Status.VolumeStatus = []v1.VolumeStatus{
 			{
@@ -692,8 +693,9 @@ var _ = Describe("Backup Controller", func() {
 			// VMI with backup completed and PVC already detached
 			vmi := createVMI()
 			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
-				BackupName: backupName,
-				Completed:  true,
+				BackupName:     backupName,
+				Completed:      true,
+				CheckpointName: pointer.P(checkpointName),
 			}
 			controller.vmiStore.Add(vmi)
 
@@ -1028,8 +1030,9 @@ var _ = Describe("Backup Controller", func() {
 		It("should fail when another backup is already in progress", func() {
 			vmi := createVMI()
 			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
-				BackupName: "other-backup",
-				Completed:  false,
+				BackupName:     "other-backup",
+				Completed:      false,
+				CheckpointName: pointer.P("other-checkpoint"),
 			}
 
 			err := controller.updateSourceBackupInProgress(vmi, backupName, metav1.Now())
@@ -1061,8 +1064,9 @@ var _ = Describe("Backup Controller", func() {
 		It("should return nil when same backup already in progress", func() {
 			vmi := createVMI()
 			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
-				BackupName: backupName,
-				Completed:  false,
+				BackupName:     backupName,
+				Completed:      false,
+				CheckpointName: pointer.P(checkpointName),
 			}
 
 			vmiInterface.EXPECT().
@@ -1083,8 +1087,9 @@ var _ = Describe("Backup Controller", func() {
 
 		vmi := createVMI()
 		vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
-			BackupName: backupName,
-			Completed:  false,
+			BackupName:     backupName,
+			Completed:      false,
+			CheckpointName: pointer.P(checkpointName),
 		}
 		controller.vmiStore.Add(vmi)
 
@@ -1312,8 +1317,9 @@ var _ = Describe("Backup Controller", func() {
 		// VMI with backup completed and PVC already detached
 		vmi := createVMI()
 		vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
-			BackupName: backupName,
-			Completed:  true,
+			BackupName:     backupName,
+			Completed:      true,
+			CheckpointName: pointer.P(checkpointName),
 		}
 		controller.vmiStore.Add(vmi)
 
@@ -1337,9 +1343,11 @@ var _ = Describe("Backup Controller", func() {
 		Expect(syncInfo.event).To(Equal(backupCompletedEvent))
 		Expect(syncInfo.reason).To(Equal(backupCompleted))
 		Expect(patchCalled).To(BeTrue())
+		// checkpointName should NOT be populated since there's no BackupTracker
+		Expect(syncInfo.checkpointName).To(BeNil())
 	})
 
-	DescribeTable("should update backupTracker with checkpoint when backup completes",
+	DescribeTable("should update backupTracker with checkpoint and volumes info when backup completes",
 		func(existingCheckpoint string, expectedOp string) {
 			backupTracker := createBackupTracker(backupTrackerName, vmName, existingCheckpoint)
 			controller.backupTrackerInformer.GetStore().Add(backupTracker)
@@ -1356,13 +1364,17 @@ var _ = Describe("Backup Controller", func() {
 			vm := createVM(vmName)
 			controller.vmStore.Add(vm)
 
-			// VMI with backup completed and checkpoint name
-			newCheckpointName := "new-checkpoint-1"
+			// VMI with backup completed, checkpoint name, and volumes info
+			volumesInfo := []backupv1.BackupVolumeInfo{
+				{VolumeName: "rootdisk", DiskTarget: "vda"},
+				{VolumeName: "datadisk", DiskTarget: "vdb"},
+			}
 			vmi := createVMI()
 			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
 				BackupName:     backupName,
 				Completed:      true,
-				CheckpointName: &newCheckpointName,
+				CheckpointName: pointer.P(checkpointName),
+				Volumes:        volumesInfo,
 			}
 			controller.vmiStore.Add(vmi)
 
@@ -1374,7 +1386,7 @@ var _ = Describe("Backup Controller", func() {
 				Patch(gomock.Any(), vmName, k8stypes.JSONPatchType, gomock.Any(), gomock.Any()).
 				Return(vmi, nil)
 
-			// Expect patch to update backupTracker with checkpoint
+			// Expect patch to update backupTracker with checkpoint and volumes info
 			trackerPatched := false
 			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
 				patchAction := action.(testing.PatchAction)
@@ -1385,13 +1397,19 @@ var _ = Describe("Backup Controller", func() {
 				trackerPatched = true
 				Expect(string(patchBytes)).To(ContainSubstring(expectedOp))
 				Expect(string(patchBytes)).To(ContainSubstring("latestCheckpoint"))
-				Expect(string(patchBytes)).To(ContainSubstring(newCheckpointName))
+				Expect(string(patchBytes)).To(ContainSubstring(checkpointName))
+				Expect(string(patchBytes)).To(ContainSubstring("volumes"))
+				Expect(string(patchBytes)).To(ContainSubstring("rootdisk"))
+				Expect(string(patchBytes)).To(ContainSubstring("vda"))
+				Expect(string(patchBytes)).To(ContainSubstring("datadisk"))
+				Expect(string(patchBytes)).To(ContainSubstring("vdb"))
 
 				updatedTracker := backupTracker.DeepCopy()
 				updatedTracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
 					LatestCheckpoint: &backupv1.BackupCheckpoint{
-						Name:         newCheckpointName,
+						Name:         checkpointName,
 						CreationTime: &metav1.Time{Time: metav1.Now().Time},
+						Volumes:      volumesInfo,
 					},
 				}
 				return true, updatedTracker, nil
@@ -1406,6 +1424,11 @@ var _ = Describe("Backup Controller", func() {
 			Expect(syncInfo.event).To(Equal(backupCompletedEvent))
 			Expect(syncInfo.reason).To(Equal(backupCompleted))
 			Expect(trackerPatched).To(BeTrue())
+			Expect(syncInfo.includedVolumes).To(HaveLen(2))
+			Expect(syncInfo.includedVolumes[0].VolumeName).To(Equal("rootdisk"))
+			Expect(syncInfo.includedVolumes[0].DiskTarget).To(Equal("vda"))
+			Expect(syncInfo.includedVolumes[1].VolumeName).To(Equal("datadisk"))
+			Expect(syncInfo.includedVolumes[1].DiskTarget).To(Equal("vdb"))
 		},
 		Entry("when tracker has no previous checkpoint", "", "\"op\":\"add\""),
 		Entry("when tracker already has a checkpoint", "old-checkpoint", "\"op\":\"replace\""),
@@ -1428,10 +1451,8 @@ var _ = Describe("Backup Controller", func() {
 		controller.vmStore.Add(vm)
 
 		// VMI with backup completed but PVC still attached (cleanup will return early)
-		newCheckpointName := "new-checkpoint-1"
 		vmi := createInitializedVMI()
 		vmi.Status.ChangedBlockTracking.BackupStatus.Completed = true
-		vmi.Status.ChangedBlockTracking.BackupStatus.CheckpointName = &newCheckpointName
 		controller.vmiStore.Add(vmi)
 
 		pvc := createPVC(pvcName)
