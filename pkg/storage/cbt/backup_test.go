@@ -134,6 +134,7 @@ var _ = Describe("Backup Controller", func() {
 				ChangedBlockTracking: &v1.ChangedBlockTrackingStatus{
 					State: v1.ChangedBlockTrackingEnabled,
 				},
+				Phase: v1.Running,
 			},
 		}
 	}
@@ -582,8 +583,9 @@ var _ = Describe("Backup Controller", func() {
 			}).Return(nil).Times(1)
 
 			syncInfo := controller.sync(backup)
-			// Returns nil - waiting for completion
-			Expect(syncInfo).To(BeNil())
+			Expect(syncInfo).ToNot(BeNil())
+			Expect(syncInfo.event).To(Equal(backupAbortingEvent))
+			Expect(syncInfo.reason).To(Equal(backupAborting))
 
 			vmi, exists, err := controller.getVMI(vmi.Namespace, vmi.Name)
 
@@ -598,6 +600,150 @@ var _ = Describe("Backup Controller", func() {
 
 			syncInfo = controller.sync(backup)
 			Expect(syncInfo).To(BeNil())
+
+			vmi, exists, err = controller.getVMI(vmi.Namespace, vmi.Name)
+
+			// Expect progressing abort
+			Expect(err).ToNot(HaveOccurred())
+			Expect(exists).To(BeTrue())
+			Expect(vmi.Status.ChangedBlockTracking.BackupStatus.AbortStatus).To(Equal(v1.BackupAbortInProgress))
+
+			By("Syncing again: Expect Controller to wait (do nothing) while InProgress")
+
+			vmiInterface.EXPECT().Backup(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+			syncInfo = controller.sync(backup)
+			Expect(syncInfo).To(BeNil())
+		})
+
+		It("should proceed with cleanup when backup deleting and initializing", func() {
+			backup := createBackup(backupName, vmName, pvcName)
+			backup.Finalizers = []string{vmBackupFinalizer}
+			backup.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
+			backup.Status = &backupv1.VirtualMachineBackupStatus{
+				Conditions: []backupv1.Condition{
+					{Type: backupv1.ConditionInitializing, Status: corev1.ConditionTrue},
+					{Type: backupv1.ConditionProgressing, Status: corev1.ConditionFalse},
+				},
+			}
+
+			vm := createVM(vmName)
+			controller.vmStore.Add(vm)
+
+			// VMI with backup completed and PVC already detached
+			vmi := createVMI()
+			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
+				BackupName: backupName,
+			}
+			controller.vmiStore.Add(vmi)
+
+			pvc := createPVC(pvcName)
+			controller.pvcStore.Add(pvc)
+
+			// Expect patch to remove backup status
+			vmiInterface.EXPECT().
+				Patch(gomock.Any(), vmName, k8stypes.JSONPatchType, gomock.Any(), gomock.Any()).
+				Return(vmi, nil)
+
+			// Expect patch to remove finalizer
+			finalizerPatched := false
+			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackups", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+				finalizerPatched = true
+				updatedBackup := backup.DeepCopy()
+				updatedBackup.Finalizers = []string{}
+				return true, updatedBackup, nil
+			})
+
+			syncInfo := controller.sync(backup)
+			Expect(syncInfo).To(BeNil())
+			Expect(finalizerPatched).To(BeTrue())
+		})
+
+		It("should gracefully handle abort request when backup is already gone from VMI and error out", func() {
+			backup := createBackup(backupName, vmName, pvcName)
+			backup.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
+			backup.Status = &backupv1.VirtualMachineBackupStatus{
+				Conditions: []backupv1.Condition{{Type: backupv1.ConditionProgressing, Status: corev1.ConditionTrue}},
+			}
+
+			vm := createVM(vmName)
+			controller.vmStore.Add(vm)
+
+			vmi := createInitializedVMI()
+			vmi.Status.ChangedBlockTracking.BackupStatus.Completed = false
+			controller.vmiStore.Add(vmi)
+
+			vmiInterface.EXPECT().Backup(gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(fmt.Errorf(AbortBackupFailedNoBackupErr)).Times(1)
+
+			syncInfo := controller.sync(backup)
+			Expect(syncInfo).ToNot(BeNil())
+			Expect(syncInfo.err).To(MatchError(ContainSubstring(AbortBackupFailedNoBackupErr)))
+		})
+
+		It("should proceed with cleanup when backup deleting and initializing", func() {
+			backup := createBackup(backupName, vmName, pvcName)
+			backup.Finalizers = []string{vmBackupFinalizer}
+			backup.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
+			backup.Status = &backupv1.VirtualMachineBackupStatus{
+				Conditions: []backupv1.Condition{
+					{Type: backupv1.ConditionInitializing, Status: corev1.ConditionTrue},
+					{Type: backupv1.ConditionProgressing, Status: corev1.ConditionFalse},
+				},
+			}
+
+			vm := createVM(vmName)
+			controller.vmStore.Add(vm)
+
+			// VMI with backup completed and PVC already detached
+			vmi := createVMI()
+			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
+				BackupName: backupName,
+			}
+			controller.vmiStore.Add(vmi)
+
+			pvc := createPVC(pvcName)
+			controller.pvcStore.Add(pvc)
+
+			// Expect patch to remove backup status
+			vmiInterface.EXPECT().
+				Patch(gomock.Any(), vmName, k8stypes.JSONPatchType, gomock.Any(), gomock.Any()).
+				Return(vmi, nil)
+
+			// Expect patch to remove finalizer
+			finalizerPatched := false
+			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackups", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+				finalizerPatched = true
+				updatedBackup := backup.DeepCopy()
+				updatedBackup.Finalizers = []string{}
+				return true, updatedBackup, nil
+			})
+
+			syncInfo := controller.sync(backup)
+			Expect(syncInfo).To(BeNil())
+			Expect(finalizerPatched).To(BeTrue())
+		})
+
+		It("should gracefully handle abort request when backup is already gone from VMI and error out", func() {
+			backup := createBackup(backupName, vmName, pvcName)
+			backup.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
+			backup.Status = &backupv1.VirtualMachineBackupStatus{
+				Conditions: []backupv1.Condition{{Type: backupv1.ConditionProgressing, Status: corev1.ConditionTrue}},
+			}
+
+			vm := createVM(vmName)
+			controller.vmStore.Add(vm)
+
+			vmi := createInitializedVMI()
+			vmi.Status.ChangedBlockTracking.BackupStatus.Completed = false
+			controller.vmiStore.Add(vmi)
+
+			vmiInterface.EXPECT().Backup(gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(fmt.Errorf(AbortBackupFailedNoBackupErr)).Times(1)
+
+			syncInfo := controller.sync(backup)
+			Expect(syncInfo).ToNot(BeNil())
+			Expect(syncInfo.err).To(MatchError(ContainSubstring(AbortBackupFailedNoBackupErr)))
 		})
 
 		It("should proceed with cleanup when backup deleting and completed", func() {
@@ -1306,5 +1452,47 @@ var _ = Describe("Backup Controller", func() {
 		Expect(syncInfo.reason).To(ContainSubstring("detaching"))
 		// But backupTracker was still updated before cleanup
 		Expect(trackerPatched).To(BeTrue())
+	})
+
+	It("should not update the backupTracker checkpoint if the backup failed", func() {
+		backupTracker := createBackupTracker(backupTrackerName, vmName, "checkpoint")
+		controller.backupTrackerInformer.GetStore().Add(backupTracker)
+
+		backup := createBackupWithTracker(backupName, vmName, pvcName)
+		backup.Finalizers = []string{vmBackupFinalizer}
+		backup.Status = &backupv1.VirtualMachineBackupStatus{
+			Conditions: []backupv1.Condition{
+				{Type: backupv1.ConditionProgressing, Status: corev1.ConditionTrue},
+			},
+		}
+		addBackup(backup)
+
+		vm := createVM(vmName)
+		controller.vmStore.Add(vm)
+
+		vmi := createVMI()
+		vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
+			BackupName: backupName,
+			Completed:  true,
+			Failed:     true,
+		}
+		controller.vmiStore.Add(vmi)
+
+		pvc := createPVC(pvcName)
+		controller.pvcStore.Add(pvc)
+
+		vmiInterface.EXPECT().
+			Patch(gomock.Any(), vmName, k8stypes.JSONPatchType, gomock.Any(), gomock.Any()).
+			Return(vmi, nil).Times(1)
+
+		kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			Fail("BackupTracker should not be updated on failed backups")
+			return true, nil, nil
+		})
+
+		syncInfo := controller.sync(backup)
+		Expect(syncInfo).ToNot(BeNil())
+		Expect(syncInfo.event).To(Equal(backupFailedEvent))
+		Expect(syncInfo.reason).To(ContainSubstring(backupFailed))
 	})
 })

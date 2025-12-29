@@ -363,7 +363,6 @@ func (m *StorageManager) asyncBackupAbort(vmi *v1.VirtualMachineInstance, backup
 func (m *StorageManager) setBackupResultHelper(failed bool, reason string, abortStatus v1.BackupAbortStatus) error {
 	backupMetadata, exists := m.metadataCache.Backup.Load()
 	if !exists {
-		// nothing to report if backup metadata is empty
 		return nil
 	}
 
@@ -381,7 +380,6 @@ func (m *StorageManager) setBackupResultHelper(failed bool, reason string, abort
 	}
 
 	if backupMetadata.EndTimestamp != nil {
-		// the backup result has already been reported and should not be overwritten
 		return nil
 	}
 
@@ -394,8 +392,6 @@ func (m *StorageManager) setBackupResultHelper(failed bool, reason string, abort
 		backupMetadata.AbortStatus = string(abortStatus)
 
 		if abortStatus == "" || abortStatus == v1.BackupAbortSucceeded {
-			// only mark the backup as complete if there was no abortion or
-			// the abortion succeeded
 			backupMetadata.EndTimestamp = pointer.P(metav1.Now())
 			backupMetadata.Completed = true
 		}
