@@ -828,11 +828,15 @@ func getBackupOptionsFromRequest(request *cmdv1.BackupRequest) (*backupv1.Backup
 
 	switch options.Mode {
 	case backupv1.PushMode:
-		if options.PushPath == nil {
-			return nil, fmt.Errorf("backup with push mode - pushPath wasn't provided")
+		if options.TargetPath == nil {
+			return nil, fmt.Errorf("backup with push mode - targetPath (push path) wasn't provided")
+		}
+	case backupv1.PullMode:
+		if options.TargetPath == nil {
+			return nil, fmt.Errorf("backup with pull mode - targetPath (scratch space) wasn't provided")
 		}
 	default:
-		return nil, fmt.Errorf("currently only backup in push mode is supported")
+		return nil, fmt.Errorf("unknown backup mode: only push and pull are supported")
 	}
 
 	return options, nil

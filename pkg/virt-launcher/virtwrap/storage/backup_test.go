@@ -27,6 +27,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/types"
 	"go.uber.org/mock/gomock"
 	"libvirt.org/go/libvirt"
 
@@ -78,7 +79,7 @@ var _ = Describe("Backup", func() {
 			BackupName:      "test-backup",
 			BackupStartTime: &now,
 			Mode:            backupv1.PushMode,
-			PushPath:        pointer.P(tempDir),
+			TargetPath:      pointer.P(tempDir),
 			SkipQuiesce:     true,
 		}
 	})
@@ -210,6 +211,24 @@ var _ = Describe("Backup", func() {
 			Expect(exists).To(BeTrue())
 			Expect(backupMetadata.CheckpointName).ToNot(BeEmpty())
 			Expect(backupMetadata.CheckpointName).To(ContainSubstring("test-backup"))
+		})
+
+		It("should successfully initiate a pull mode backup", func() {
+			backupOptions.Mode = backupv1.PullMode
+			domainXML := `<domain><devices><disk type='file'><source file='/tmp/foo'/><target dev='vda'/><alias name='disk0'/></disk></devices></domain>`
+
+			mockConn.EXPECT().LookupDomainByName(gomock.Any()).Return(mockDomain, nil)
+			mockDomain.EXPECT().GetXMLDesc(gomock.Any()).Return(domainXML, nil)
+
+			mockDomain.EXPECT().BackupBegin(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+			mockDomain.EXPECT().Free().Return(nil)
+
+			err := manager.BackupVirtualMachine(vmi, backupOptions)
+			Expect(err).ToNot(HaveOccurred())
+
+			backupMetadata, exists := metadataCache.Backup.Load()
+			Expect(exists).To(BeTrue())
+			Expect(backupMetadata.Mode).To(Equal(string(backupv1.PullMode)))
 		})
 	})
 
@@ -637,7 +656,7 @@ var _ = Describe("Backup", func() {
 				// Use a path where a file exists as parent - mkdir will fail
 				// because you can't create a directory inside a file
 				invalidBackupOptions := backupOptions.DeepCopy()
-				invalidBackupOptions.PushPath = pointer.P("/dev/null/subdir")
+				invalidBackupOptions.TargetPath = pointer.P("/dev/null/subdir")
 
 				mockConn.EXPECT().LookupDomainByName(gomock.Any()).Return(mockDomain, nil)
 				mockDomain.EXPECT().GetXMLDesc(gomock.Any()).Return(`<domain/>`, nil)
@@ -673,12 +692,12 @@ var _ = Describe("Backup", func() {
 	})
 
 	Context("abort backup", func() {
-		It("should successfully abort an ongoing backup and update the status", func() {
+		DescribeTable("should successfully abort an ongoing backup and update the status", func(backupMode backupv1.BackupMode, failed types.GomegaMatcher) {
 			abortSignal := make(chan struct{})
 
 			backupMetadata := api.BackupMetadata{
 				Name:           "test-backup",
-				Mode:           string(backupv1.PushMode),
+				Mode:           string(backupMode),
 				StartTimestamp: pointer.P(metav1.Now()),
 			}
 			metadataCache.Backup.Store(backupMetadata)
@@ -714,8 +733,11 @@ var _ = Describe("Backup", func() {
 
 			newMetadata, exists := metadataCache.Backup.Load()
 			Expect(exists).To(BeTrue())
-			Expect(newMetadata.Failed).To(BeTrue())
-		})
+			Expect(newMetadata.Failed).To(failed)
+		},
+			Entry("marking the backup as failed for push mode", backupv1.PushMode, BeTrue()),
+			Entry("marking the backup as succeeded for pull mode", backupv1.PullMode, BeFalse()),
+		)
 
 		It("should not abort a completed backup and return no-backup error", func() {
 			backupMetadata := api.BackupMetadata{

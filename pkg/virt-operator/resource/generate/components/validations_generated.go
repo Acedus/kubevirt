@@ -9009,6 +9009,7 @@ var CRDsValidation map[string]string = map[string]string{
           description: Mode specifies the way the backup output will be recieved
           enum:
           - Push
+          - Pull
           type: string
         pvcName:
           description: |-
@@ -9063,9 +9064,8 @@ var CRDsValidation map[string]string = map[string]string{
       x-kubernetes-validations:
       - message: spec is immutable after creation
         rule: self == oldSelf
-      - message: pvcName must be provided when mode is unset or Push
-        rule: (has(self.mode) && self.mode != 'Push') || (has(self.pvcName) && self.pvcName
-          != "")
+      - message: pvcName is required
+        rule: has(self.pvcName) && self.pvcName != ""
     status:
       description: VirtualMachineBackupStatus is the status for a VirtualMachineBackup
         resource
