@@ -737,7 +737,12 @@ func (ctrl *VMBackupController) checkBackupCompletion(backup *backupv1.VirtualMa
 
 	backupStatus := vmi.Status.ChangedBlockTracking.BackupStatus
 	if !backupStatus.Completed && !backupStatus.Failed {
-		return nil
+		return &SyncInfo{
+			event:           backupInitiatedEvent,
+			reason:          backupInProgress,
+			backupType:      backupv1.Full,
+			includedVolumes: vmi.Status.ChangedBlockTracking.BackupStatus.Volumes,
+		}
 	}
 
 	// Update BackupTracker with the new checkpoint if applicable, don't update checkpoint if backup failed
