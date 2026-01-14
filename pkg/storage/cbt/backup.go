@@ -405,21 +405,34 @@ func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) *Syn
 	if backup.Spec.Mode == nil {
 		backup.Spec.Mode = pointer.P(backupv1.PushMode)
 	}
-	switch *backup.Spec.Mode {
-	case backupv1.PushMode, backupv1.PullMode:
-		pvcName := backup.Spec.PvcName
-		syncInfo = ctrl.verifyBackupTargetPVC(pvcName, backup.Namespace)
-		if syncInfo != nil {
-			return syncInfo
-		}
 
-		volumeName := backupTargetVolumeName(backup.Name)
-		attached := ctrl.backupTargetPVCAttached(vmi, volumeName)
-		if !attached {
-			return ctrl.attachBackupTargetPVC(vmi, *pvcName, volumeName)
+	pvcName := backup.Spec.PvcName
+	syncInfo = ctrl.verifyBackupTargetPVC(pvcName, backup.Namespace)
+	if syncInfo != nil {
+		return syncInfo
+	}
+
+	volumeName := backupTargetVolumeName(backup.Name)
+	attached := ctrl.backupTargetPVCAttached(vmi, volumeName)
+	if !attached {
+		return ctrl.attachBackupTargetPVC(vmi, *pvcName, volumeName)
+	}
+	backupOptions.Mode = *backup.Spec.Mode
+	backupOptions.TargetPath = pointer.P(hotplugdisk.GetVolumeMountDir(volumeName))
+
+	switch *backup.Spec.Mode {
+	case backupv1.PushMode:
+	case backupv1.PullMode:
+		key, err := backupPrivateKey()
+		if err != nil {
+			return syncInfoError(fmt.Errorf("failed to get JWT signer private key for pull mode backup: %s", err))
 		}
-		backupOptions.Mode = *backup.Spec.Mode
-		backupOptions.TargetPath = pointer.P(hotplugdisk.GetVolumeMountDir(volumeName))
+		tokenGen := NewTokenGenerator(key)
+		token, err := tokenGen.Generate(string(backup.UID))
+		if err != nil {
+			return syncInfoError(fmt.Errorf("failed to generate JWT token for pull mode backup: %s", err))
+		}
+		logger.Infof("The token for this backup is: %s", token)
 	default:
 		logger.Errorf(invalidBackupModeMsg, *backup.Spec.Mode)
 		return syncInfoError(fmt.Errorf(invalidBackupModeMsg, *backup.Spec.Mode))
@@ -478,6 +491,9 @@ func (ctrl *VMBackupController) updateStatus(backup *backupv1.VirtualMachineBack
 			updateBackupCondition(backupOut, newDoneCondition(corev1.ConditionFalse, syncInfo.reason))
 			if syncInfo.backupType != "" {
 				backupOut.Status.Type = syncInfo.backupType
+			}
+			if syncInfo.includedVolumes != nil {
+				backupOut.Status.IncludedVolumes = syncInfo.includedVolumes
 			}
 		case backupAbortingEvent:
 			updateBackupCondition(backupOut, newAbortingCondition(corev1.ConditionTrue, syncInfo.reason))

@@ -20,25 +20,32 @@
 package virtexportserver
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	goflag "flag"
 	"fmt"
 	"io"
 	golog "log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	gzip "github.com/klauspost/pgzip"
 	flag "github.com/spf13/pflag"
+	"gopkg.in/go-jose/go-jose.v2/jwt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -77,11 +84,16 @@ type TokenGetterFunc func() (string, error)
 type ExportServerConfig struct {
 	Deadline time.Time
 
-	ListenAddr string
+	ExportListenAddr       string
+	BackupTunnelListenAddr string
 
 	CertFile, KeyFile string
 
 	TokenFile string
+
+	BackupPublicKey string
+
+	BackupUID string
 
 	Paths *export.ServerPaths
 
@@ -194,8 +206,18 @@ func (s *exportServer) getHandlerMap(vi export.VolumeInfo) map[string]http.Handl
 func (s *exportServer) Run() {
 	s.initHandler()
 
+	if s.BackupUID != "" {
+		backupTunnelLn, err := s.setupBackupTunnelListener()
+		if err != nil {
+			log.Log.Reason(err).Critical("Failed to initialize internal backup listener")
+			panic(err)
+		}
+
+		go s.serveBackupTunnelListener(backupTunnelLn)
+	}
+
 	srv := &http.Server{
-		Addr:    s.ListenAddr,
+		Addr:    s.ExportListenAddr,
 		Handler: s.handler,
 		// Disable HTTP/2
 		// See CVE-2023-44487
@@ -217,6 +239,11 @@ func (s *exportServer) Run() {
 		case <-time.After(time.Until(s.Deadline)):
 			log.Log.Info("Deadline exceeded, shutting down")
 			srv.Shutdown(context.TODO())
+			nbdMu.Lock()
+			if nbdClient != nil {
+				nbdClient.conn.Close()
+			}
+			nbdMu.Unlock()
 		}
 	} else {
 		err := <-ch
@@ -784,4 +811,134 @@ func secretHandler(tokenGetter TokenGetterFunc) http.Handler {
 
 func (s *exportServer) readyHandler(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "OK")
+}
+
+type NbdClient struct {
+	conn net.Conn
+	mu   sync.Mutex
+}
+
+var (
+	nbdClient  *NbdClient
+	nbdMu      sync.RWMutex
+	tunnelOnce sync.Once
+)
+
+func (s *exportServer) setupBackupTunnelListener() (net.Listener, error) {
+	cer, err := tls.LoadX509KeyPair(s.CertFile, s.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load keys for internal backup tunnel: %v", err)
+	}
+
+	config := &tls.Config{Certificates: []tls.Certificate{cer}}
+
+	ln, err := tls.Listen("tcp", s.BackupTunnelListenAddr, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to bind internal backup tunnel on %s: %v", s.BackupTunnelListenAddr, err)
+	}
+
+	log.Log.Infof("Internal Backup Tunnel listening on %s (TLS)", s.BackupTunnelListenAddr)
+	return ln, nil
+}
+
+func (s *exportServer) serveBackupTunnelListener(ln net.Listener) {
+	defer ln.Close()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			log.Log.Reason(err).Error("Internal backup tunnel accept error")
+
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		go s.handleNewBackupTunnel(conn)
+	}
+}
+
+func (s *exportServer) handleNewBackupTunnel(conn net.Conn) {
+	authenticated := false
+	defer func() {
+		if !authenticated && conn != nil {
+			conn.Close()
+		}
+	}()
+
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	reader := bufio.NewReader(conn)
+	tokenStr, err := reader.ReadString('\n')
+	if err != nil {
+		log.Log.Reason(err).Error("Failed to read JWT from backup tunnel")
+		return
+	}
+	tokenStr = strings.TrimSpace(tokenStr)
+
+	if err := s.verifyBackupToken(tokenStr); err != nil {
+		log.Log.Reason(err).Error("JWT verification failed for backup tunnel")
+		conn.Write([]byte("ERROR: Unauthorized\n"))
+		return
+	}
+
+	if _, err := conn.Write([]byte("OK\n")); err != nil {
+		log.Log.Reason(err).Error("Failed to send handshake OK")
+		return
+	}
+
+	nbdMu.Lock()
+	defer nbdMu.Unlock()
+	if nbdClient != nil {
+		nbdClient.conn.Close()
+	}
+	nbdClient = &NbdClient{conn: conn}
+	authenticated = true
+}
+
+func (s *exportServer) verifyBackupToken(tokenStr string) error {
+	if s.BackupPublicKey == "" {
+		return fmt.Errorf("no backup public key configured")
+	}
+
+	publicKeyPEM, err := parsePublicKeyPEM(s.BackupPublicKey)
+	if err != nil {
+		return err
+	}
+
+	tok, err := jwt.ParseSigned(tokenStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse token: %v", err)
+	}
+
+	claims := jwt.Claims{}
+	if err := tok.Claims(publicKeyPEM, &claims); err != nil {
+		return fmt.Errorf("invalid signature: %v", err)
+	}
+
+	return claims.Validate(jwt.Expected{
+		Issuer:   "kubevirt-backup-controller",
+		Audience: jwt.Audience{s.BackupUID},
+		Time:     time.Now(),
+	})
+}
+
+func parsePublicKeyPEM(pemData string) (*ecdsa.PublicKey, error) {
+	if pemData == "" {
+		return nil, fmt.Errorf("public key PEM is empty")
+	}
+
+	block, _ := pem.Decode([]byte(pemData))
+	if block == nil || block.Type != "PUBLIC KEY" {
+		return nil, fmt.Errorf("failed to decode PEM block or block type is not PUBLIC KEY")
+	}
+
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse PKIX public key: %w", err)
+	}
+
+	ecdsaPub, ok := pub.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("parsed key is not of type ECDSA")
+	}
+
+	return ecdsaPub, nil
 }

@@ -20,15 +20,23 @@
 package virtexportserver
 
 import (
+	"bufio"
+	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"gopkg.in/go-jose/go-jose.v2"
+	"gopkg.in/go-jose/go-jose.v2/jwt"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +46,7 @@ import (
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	"sigs.k8s.io/yaml"
 
+	"kubevirt.io/kubevirt/pkg/certificates/triple"
 	"kubevirt.io/kubevirt/pkg/storage/export/export"
 )
 
@@ -770,4 +779,93 @@ var _ = Describe("exportserver", func() {
 			verifySecret(string(list.Items[0].Raw))
 		})
 	})
+
+	Context("Backup tunnel authentication", func() {
+		var (
+			clientConn net.Conn
+			serverConn net.Conn
+			server     *exportServer
+			token      string
+		)
+		BeforeEach(func() {
+			serverConn, clientConn = net.Pipe()
+			caKeyPair, _ := triple.NewCA("kubevirt.io", time.Hour*24*7)
+			keyPair, _ := triple.NewServerKeyPair(
+				caKeyPair,
+				"loaded.certificate.kubevirt.io",
+				"test",
+				"backup tunnel",
+				"cluster.local",
+				nil,
+				nil,
+				time.Hour*24,
+			)
+			var err error
+			backupUID := "test-backup"
+			token, err = generateToken(keyPair.Key, "kubevirt-backup-controller", backupUID)
+			Expect(err).ToNot(HaveOccurred())
+			pubDer, err := x509.MarshalPKIXPublicKey(keyPair.Cert.PublicKey)
+			Expect(err).ToNot(HaveOccurred())
+
+			pubBlock := &pem.Block{
+				Type:  "PUBLIC KEY",
+				Bytes: pubDer,
+			}
+
+			server = newTestServer("")
+			server.BackupUID = backupUID
+			server.BackupPublicKey = string(pem.EncodeToMemory(pubBlock))
+		})
+
+		AfterEach(func() {
+			clientConn.Close()
+			serverConn.Close()
+		})
+
+		It("should authenticate and update the global nbdClient", func() {
+			go server.handleNewBackupTunnel(serverConn)
+
+			fmt.Fprintln(clientConn, token)
+
+			reader := bufio.NewReader(clientConn)
+			line, err := reader.ReadString('\n')
+			Expect(err).ToNot(HaveOccurred())
+			Expect(strings.TrimSpace(line)).To(Equal("OK"))
+		})
+
+		It("should return an error and close the connection", func() {
+			go server.handleNewBackupTunnel(serverConn)
+
+			fmt.Fprintln(clientConn, "invalid-token")
+
+			reader := bufio.NewReader(clientConn)
+			line, err := reader.ReadString('\n')
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(line).To(ContainSubstring("ERROR: Unauthorized"))
+
+			Eventually(func() error {
+				_, err := reader.ReadByte()
+				return err
+			}).Should(Equal(io.EOF))
+		})
+	})
 })
+
+func generateToken(privKey *ecdsa.PrivateKey, issuer string, audience string) (string, error) {
+	sig, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: privKey},
+		(&jose.SignerOptions{}).WithHeader("typ", "JWT"),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	cl := jwt.Claims{
+		Issuer:   issuer,
+		Audience: jwt.Audience{audience},
+		Expiry:   jwt.NewNumericDate(time.Now().Add(10 * time.Minute)),
+	}
+
+	return jwt.Signed(sig).Claims(cl).CompactSerialize()
+}

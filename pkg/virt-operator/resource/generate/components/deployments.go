@@ -467,6 +467,7 @@ func NewControllerDeployment(namespace, repository, imagePrefix, controllerVersi
 	}
 
 	attachCertificateSecret(pod, VirtControllerCertSecretName, "/etc/virt-controller/certificates")
+	attachCertificateSecret(pod, VirtControllerBackupCertSecretName, "/etc/virt-controller/backupcertificates")
 	attachCertificateSecret(pod, KubeVirtExportCASecretName, "/etc/virt-controller/exportca")
 	attachProfileVolume(pod)
 

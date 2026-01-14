@@ -1219,6 +1219,10 @@ func (r *Reconciler) exportProxyEnabled() bool {
 	return r.isFeatureGateEnabled(featuregate.VMExportGate)
 }
 
+func (r *Reconciler) incrementalBackupEnabled() bool {
+	return r.isFeatureGateEnabled(featuregate.IncrementalBackupGate)
+}
+
 func (r *Reconciler) commonInstancetypesDeploymentEnabled() bool {
 	config := r.kv.Spec.Configuration.CommonInstancetypesDeployment
 	if config != nil && config.Enabled != nil {
