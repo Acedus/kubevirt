@@ -33,6 +33,8 @@ import (
 	exportv1 "kubevirt.io/api/export/v1beta1"
 	"kubevirt.io/api/snapshot"
 
+	"kubevirt.io/api/backup"
+
 	webhookutils "kubevirt.io/kubevirt/pkg/util/webhooks"
 	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
 )
@@ -41,6 +43,7 @@ const (
 	pvc            = "PersistentVolumeClaim"
 	vmSnapshotKind = "VirtualMachineSnapshot"
 	vmKind         = "VirtualMachine"
+	vmBackupKind   = "VirtualMachineBackup"
 )
 
 // VMExportAdmitter validates VirtualMachineExports
@@ -89,6 +92,9 @@ func (admitter *VMExportAdmitter) Admit(_ context.Context, ar *admissionv1.Admis
 		case vmKind:
 			causes = append(causes, admitter.validateVMName(sourceField.Child("name"), vmExport.Spec.Source.Name)...)
 			causes = append(causes, admitter.validateVMApiGroup(sourceField.Child("APIGroup"), vmExport.Spec.Source.APIGroup)...)
+		case vmBackupKind:
+			causes = append(causes, admitter.validateVMBackupName(sourceField.Child("name"), vmExport.Spec.Source.Name)...)
+			causes = append(causes, admitter.validateVMBackupApiGroup(sourceField.Child("APIGroup"), vmExport.Spec.Source.APIGroup)...)
 		default:
 			causes = []metav1.StatusCause{
 				{
@@ -205,6 +211,34 @@ func (admitter *VMExportAdmitter) validateVMApiGroup(field *k8sfield.Path, apigr
 			{
 				Type:    metav1.CauseTypeFieldValueInvalid,
 				Message: "VM API group must be " + virt.GroupName,
+				Field:   field.String(),
+			},
+		}
+	}
+
+	return []metav1.StatusCause{}
+}
+
+func (admitter *VMExportAdmitter) validateVMBackupName(field *k8sfield.Path, name string) []metav1.StatusCause {
+	if name == "" {
+		return []metav1.StatusCause{
+			{
+				Type:    metav1.CauseTypeFieldValueInvalid,
+				Message: "VirtualMachineBackup name must not be empty",
+				Field:   field.String(),
+			},
+		}
+	}
+
+	return []metav1.StatusCause{}
+}
+
+func (admitter *VMExportAdmitter) validateVMBackupApiGroup(field *k8sfield.Path, apigroup *string) []metav1.StatusCause {
+	if apigroup == nil || *apigroup != backup.GroupName {
+		return []metav1.StatusCause{
+			{
+				Type:    metav1.CauseTypeFieldValueInvalid,
+				Message: "VirtualMachineBackup API group must be " + backup.GroupName,
 				Field:   field.String(),
 			},
 		}

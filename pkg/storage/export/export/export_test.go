@@ -64,6 +64,8 @@ import (
 	apiinstancetype "kubevirt.io/api/instancetype"
 	instancetypev1beta1 "kubevirt.io/api/instancetype/v1beta1"
 
+	backupv1 "kubevirt.io/api/backup/v1alpha1"
+
 	"kubevirt.io/kubevirt/pkg/certificates/triple"
 	"kubevirt.io/kubevirt/pkg/certificates/triple/cert"
 	certutil "kubevirt.io/kubevirt/pkg/certificates/triple/cert"
@@ -128,6 +130,7 @@ var _ = Describe("Export controller", func() {
 		preferenceInformer          cache.SharedIndexInformer
 		clusterPreferenceInformer   cache.SharedIndexInformer
 		controllerRevisionInformer  cache.SharedIndexInformer
+		vmBackupInformer            cache.SharedIndexInformer
 		rqInformer                  cache.SharedIndexInformer
 		nsInformer                  cache.SharedIndexInformer
 		k8sClient                   *k8sfake.Clientset
@@ -160,6 +163,7 @@ var _ = Describe("Export controller", func() {
 		go preferenceInformer.Run(stop)
 		go clusterPreferenceInformer.Run(stop)
 		go controllerRevisionInformer.Run(stop)
+		go vmBackupInformer.Run(stop)
 		go rqInformer.Run(stop)
 		go nsInformer.Run(stop)
 		Expect(cache.WaitForCacheSync(
@@ -182,6 +186,7 @@ var _ = Describe("Export controller", func() {
 			preferenceInformer.HasSynced,
 			clusterPreferenceInformer.HasSynced,
 			controllerRevisionInformer.HasSynced,
+			vmBackupInformer.HasSynced,
 			rqInformer.HasSynced,
 			nsInformer.HasSynced,
 		)).To(BeTrue())
@@ -213,6 +218,7 @@ var _ = Describe("Export controller", func() {
 		preferenceInformer, _ = testutils.NewFakeInformerFor(&instancetypev1beta1.VirtualMachinePreference{})
 		clusterPreferenceInformer, _ = testutils.NewFakeInformerFor(&instancetypev1beta1.VirtualMachineClusterPreference{})
 		controllerRevisionInformer, _ = testutils.NewFakeInformerFor(&appsv1.ControllerRevision{})
+		vmBackupInformer, _ = testutils.NewFakeInformerFor(&backupv1.VirtualMachineBackup{})
 		rqInformer, _ = testutils.NewFakeInformerFor(&k8sv1.ResourceQuota{})
 		nsInformer, _ = testutils.NewFakeInformerFor(&k8sv1.Namespace{})
 		fakeVolumeSnapshotProvider = &MockVolumeSnapshotProvider{
@@ -257,6 +263,7 @@ var _ = Describe("Export controller", func() {
 			PreferenceInformer:          preferenceInformer,
 			ClusterPreferenceInformer:   clusterPreferenceInformer,
 			ControllerRevisionInformer:  controllerRevisionInformer,
+			VMBackupInformer:            vmBackupInformer,
 		}
 		initCert = func(ctrl *VMExportController) {
 			ctrl.caCertManager.Start()

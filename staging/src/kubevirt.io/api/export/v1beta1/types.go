@@ -136,6 +136,12 @@ type VirtualMachineExportLink struct {
 
 	// Manifests is a list of available manifests for the export
 	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Backups []VirtualMachineExportBackup `json:"backups,omitempty"`
+
+	// Manifests is a list of available manifests for the export
+	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Manifests []VirtualMachineExportManifest `json:"manifests,omitempty"`
@@ -186,6 +192,33 @@ const (
 type VirtualMachineExportVolumeFormat struct {
 	// Format is the format of the image at the specified URL
 	Format ExportVolumeFormat `json:"format"`
+	// Url is the url that contains the volume in the format specified
+	Url string `json:"url"`
+}
+
+// VirtualMachineExportBackup contains the URL and available formats for the exported backup
+type VirtualMachineExportBackup struct {
+	// Name is the name of the exported volume
+	Name string `json:"name"`
+	// +listType=map
+	// +listMapKey=endpoint
+	// +optional
+	Endpoints []VirtualMachineExportBackupEndpoint `json:"endpoints,omitempty"`
+}
+
+type ExportBackupEndpoint string
+
+const (
+	// Map is the dirty bitmap endpoint of the backup
+	Map ExportBackupEndpoint = "map"
+	// Data is the dtata endpoint of the backup
+	Data ExportBackupEndpoint = "data"
+)
+
+// VirtualMachineExportVolumeFormat contains the format type and URL to get the volume in that format
+type VirtualMachineExportBackupEndpoint struct {
+	// Format is the format of the image at the specified URL
+	Endpoint ExportBackupEndpoint `json:"endpoint"`
 	// Url is the url that contains the volume in the format specified
 	Url string `json:"url"`
 }
