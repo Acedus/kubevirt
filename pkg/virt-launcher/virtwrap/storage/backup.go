@@ -136,7 +136,7 @@ func (m *StorageManager) backup(vmi *v1.VirtualMachineInstance, backupOptions *b
 	}
 
 	var backupPath string
-	if backupOptions.PushPath != nil {
+	if backupOptions.TargetPath != nil {
 		backupPath = getBackupPath(backupOptions, vmi.Name)
 		if err := kutil.MkdirAllWithNosec(backupPath); err != nil {
 			logger.Reason(err).Error("error creating dir for backup")
@@ -227,7 +227,7 @@ func generateDomainBackup(disks []api.Disk, backupOptions *backupv1.BackupOption
 		if disk.Source.DataStore != nil {
 			backupDisk.Backup = "yes"
 			backupDisk.Type = "file"
-			if backupOptions.PushPath != nil {
+			if backupOptions.TargetPath != nil {
 				backupDisk.Target = &api.BackupTarget{
 					File: targetQCOW2File(backupPath, backupOptions.BackupName, volumeName),
 				}
@@ -258,7 +258,7 @@ func generateDomainBackup(disks []api.Disk, backupOptions *backupv1.BackupOption
 func getBackupPath(backupOptions *backupv1.BackupOptions, vmiName string) string {
 	backupTime := backupTimeFormatted(backupOptions.BackupStartTime)
 	backupNameWithTime := fmt.Sprintf("%s-%s", backupOptions.BackupName, backupTime)
-	return filepath.Join(*backupOptions.PushPath, vmiName, backupNameWithTime)
+	return filepath.Join(*backupOptions.TargetPath, vmiName, backupNameWithTime)
 }
 
 func targetQCOW2File(pushPath, backupName, volumeName string) string {

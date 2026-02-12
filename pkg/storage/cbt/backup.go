@@ -504,7 +504,7 @@ func (ctrl *VMBackupController) handleBackupInitiation(backup *backupv1.VirtualM
 			return ctrl.attachBackupTargetPVC(vmi, *pvcName, volumeName)
 		}
 		backupOptions.Mode = backupv1.PushMode
-		backupOptions.PushPath = pointer.P(hotplugdisk.GetVolumeMountDir(volumeName))
+		backupOptions.TargetPath = pointer.P(hotplugdisk.GetVolumeMountDir(volumeName))
 	default:
 		logger.Errorf(invalidBackupModeMsg, *backup.Spec.Mode)
 		return syncInfoError(fmt.Errorf(invalidBackupModeMsg, *backup.Spec.Mode))

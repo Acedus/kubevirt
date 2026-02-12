@@ -80,7 +80,7 @@ var _ = Describe("Backup", func() {
 			BackupName:      backupName,
 			BackupStartTime: &now,
 			Mode:            backupv1.PushMode,
-			PushPath:        pointer.P(tempDir),
+			TargetPath:      pointer.P(tempDir),
 			SkipQuiesce:     true,
 		}
 	})
@@ -775,7 +775,7 @@ var _ = Describe("Backup", func() {
 				// Use a path where a file exists as parent - mkdir will fail
 				// because you can't create a directory inside a file
 				invalidBackupOptions := backupOptions.DeepCopy()
-				invalidBackupOptions.PushPath = pointer.P("/dev/null/subdir")
+				invalidBackupOptions.TargetPath = pointer.P("/dev/null/subdir")
 
 				mockConn.EXPECT().LookupDomainByName(gomock.Any()).Return(mockDomain, nil)
 				mockDomain.EXPECT().GetXMLDesc(gomock.Any()).Return(`<domain/>`, nil)
