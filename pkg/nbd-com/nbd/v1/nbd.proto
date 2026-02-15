@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package kubevirt.nbd;
+option go_package = "v1";
+
+service NBD {
+    // Returns metadata (size + JSON info) about the disk export
+    rpc GetExportInfo(ExportInfoRequest) returns (ExportInfoResponse) {}
+
+    // Returns the list of dirty regions for incremental backup
+    rpc GetDirtyBitmap(MapRequest) returns (MapResponse) {}
+
+    // High-performance data path for reading specific dirty regions
+    rpc Read(ReadRequest) returns (stream DataChunk) {}
+}
+
+message ExportInfoRequest {
+    string exportName = 1;
+}
+
+message ExportInfoResponse {
+    int64 size = 1;
+    bytes exportJson = 2; 
+}
+
+message MapRequest {
+    string exportName = 1;
+    string bitmapName = 2;
+}
+
+message MapResponse {
+    repeated DirtyRegion regions = 1;
+}
+
+message DirtyRegion {
+    int64 offset = 1;
+    int64 length = 2;
+}
+
+message ReadRequest {
+    string exportName = 1;
+    int64 offset = 2;
+    int64 length = 3;
+}
+
+message DataChunk {
+    bytes data = 1;
+}

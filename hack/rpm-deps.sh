@@ -20,7 +20,7 @@ BASESYSTEM=${BASESYSTEM:-"centos-stream-release"}
 
 bazeldnf_repos="--repofile rpm/repo.yaml"
 if [ "${CUSTOM_REPO}" ]; then
-    bazeldnf_repos="--repofile ${CUSTOM_REPO} ${bazeldnf_repos}"
+  bazeldnf_repos="--repofile ${CUSTOM_REPO} ${bazeldnf_repos}"
 fi
 
 # Packages that we want to be included in all container images.
@@ -122,6 +122,7 @@ launcherbase_extra="
   tar
   virtiofsd-${VIRTIOFSD_VERSION}
   xorriso
+  libnbd
 "
 
 handlerbase_main="
@@ -172,400 +173,400 @@ sidecar_shim="
 
 # get latest repo data from repo.yaml
 bazel run \
-    --config=${ARCHITECTURE} \
-    //:bazeldnf -- fetch \
-    ${bazeldnf_repos}
+  --config=${ARCHITECTURE} \
+  //:bazeldnf -- fetch \
+  ${bazeldnf_repos}
 
 if [ -z "${SINGLE_ARCH}" ] || [ "${SINGLE_ARCH}" == "x86_64" ]; then
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name testimage_x86_64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $testimage_main
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name testimage_x86_64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $testimage_main
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name libvirt-devel_x86_64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $libvirtdevel_main \
-        $libvirtdevel_extra
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name libvirt-devel_x86_64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $libvirtdevel_main \
+    $libvirtdevel_extra
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name sandboxroot_x86_64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $sandboxroot_main
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name sandboxroot_x86_64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $sandboxroot_main
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name launcherbase_x86_64 \
-        --basesystem ${BASESYSTEM} \
-        --force-ignore-with-dependencies '^mozjs60' \
-        --force-ignore-with-dependencies 'python' \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $launcherbase_main \
-        $launcherbase_x86_64 \
-        $launcherbase_extra
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name launcherbase_x86_64 \
+    --basesystem ${BASESYSTEM} \
+    --force-ignore-with-dependencies '^mozjs60' \
+    --force-ignore-with-dependencies 'python' \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $launcherbase_main \
+    $launcherbase_x86_64 \
+    $launcherbase_extra
 
-    # create a rpmtree for virt-handler
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name handlerbase_x86_64 \
-        --basesystem ${BASESYSTEM} \
-        --force-ignore-with-dependencies 'python' \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $handlerbase_main \
-        $handlerbase_extra
+  # create a rpmtree for virt-handler
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name handlerbase_x86_64 \
+    --basesystem ${BASESYSTEM} \
+    --force-ignore-with-dependencies 'python' \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $handlerbase_main \
+    $handlerbase_extra
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name passt_tree_x86_64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        passt-${PASST_VERSION}
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name passt_tree_x86_64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    passt-${PASST_VERSION}
 
-    bazel run \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name libguestfs-tools_x86_64 \
-        --basesystem ${BASESYSTEM} \
-        $centos_main \
-        $centos_extra \
-        $libguestfstools_main \
-        $libguestfstools_x86_64 \
-        $libguestfstools_extra \
-        ${bazeldnf_repos} \
-        --force-ignore-with-dependencies '^(kernel-|linux-firmware)' \
-        --force-ignore-with-dependencies '^(python[3]{0,1}-)' \
-        --force-ignore-with-dependencies '^mozjs60' \
-        --force-ignore-with-dependencies '^(libvirt-daemon-kvm|swtpm)' \
-        --force-ignore-with-dependencies '^(man-db|mandoc)' \
-        --force-ignore-with-dependencies '^dbus'
+  bazel run \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name libguestfs-tools_x86_64 \
+    --basesystem ${BASESYSTEM} \
+    $centos_main \
+    $centos_extra \
+    $libguestfstools_main \
+    $libguestfstools_x86_64 \
+    $libguestfstools_extra \
+    ${bazeldnf_repos} \
+    --force-ignore-with-dependencies '^(kernel-|linux-firmware)' \
+    --force-ignore-with-dependencies '^(python[3]{0,1}-)' \
+    --force-ignore-with-dependencies '^mozjs60' \
+    --force-ignore-with-dependencies '^(libvirt-daemon-kvm|swtpm)' \
+    --force-ignore-with-dependencies '^(man-db|mandoc)' \
+    --force-ignore-with-dependencies '^dbus'
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name exportserverbase_x86_64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $exportserverbase_main
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name exportserverbase_x86_64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $exportserverbase_main
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name pr-helper_x86_64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $pr_helper
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name pr-helper_x86_64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $pr_helper
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name sidecar-shim_x86_64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $sidecar_shim
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name sidecar-shim_x86_64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $sidecar_shim
 
-    # remove all RPMs which are no longer referenced by a rpmtree
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- prune
+  # remove all RPMs which are no longer referenced by a rpmtree
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- prune
 
-    # update tar2files targets which act as an adapter between rpms
-    # and cc_library which we need for virt-launcher and virt-handler
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //rpm:ldd_x86_64
+  # update tar2files targets which act as an adapter between rpms
+  # and cc_library which we need for virt-launcher and virt-handler
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //rpm:ldd_x86_64
 
-    # regenerate sandboxes
-    rm ${SANDBOX_DIR} -rf
-    kubevirt::bootstrap::regenerate x86_64
+  # regenerate sandboxes
+  rm ${SANDBOX_DIR} -rf
+  kubevirt::bootstrap::regenerate x86_64
 fi
 
 if [ -z "${SINGLE_ARCH}" ] || [ "${SINGLE_ARCH}" == "aarch64" ]; then
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name testimage_aarch64 --arch aarch64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $testimage_main
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name testimage_aarch64 --arch aarch64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $testimage_main
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name libvirt-devel_aarch64 --arch aarch64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $libvirtdevel_main \
-        $libvirtdevel_extra
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name libvirt-devel_aarch64 --arch aarch64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $libvirtdevel_main \
+    $libvirtdevel_extra
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name sandboxroot_aarch64 --arch aarch64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $sandboxroot_main
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name sandboxroot_aarch64 --arch aarch64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $sandboxroot_main
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name passt_tree_aarch64 --arch aarch64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        passt-${PASST_VERSION}
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name passt_tree_aarch64 --arch aarch64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    passt-${PASST_VERSION}
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name launcherbase_aarch64 --arch aarch64 \
-        --basesystem ${BASESYSTEM} \
-        --force-ignore-with-dependencies '^mozjs60' \
-        --force-ignore-with-dependencies 'python' \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $launcherbase_main \
-        $launcherbase_aarch64 \
-        $launcherbase_extra
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name launcherbase_aarch64 --arch aarch64 \
+    --basesystem ${BASESYSTEM} \
+    --force-ignore-with-dependencies '^mozjs60' \
+    --force-ignore-with-dependencies 'python' \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $launcherbase_main \
+    $launcherbase_aarch64 \
+    $launcherbase_extra
 
-    # create a rpmtree for virt-handler
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name handlerbase_aarch64 --arch aarch64 \
-        --basesystem ${BASESYSTEM} \
-        --force-ignore-with-dependencies 'python' \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $handlerbase_main \
-        $handlerbase_extra
+  # create a rpmtree for virt-handler
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name handlerbase_aarch64 --arch aarch64 \
+    --basesystem ${BASESYSTEM} \
+    --force-ignore-with-dependencies 'python' \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $handlerbase_main \
+    $handlerbase_extra
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name exportserverbase_aarch64 --arch aarch64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $exportserverbase_main
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name exportserverbase_aarch64 --arch aarch64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $exportserverbase_main
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name pr-helper_aarch64 --arch aarch64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $pr_helper
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name pr-helper_aarch64 --arch aarch64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $pr_helper
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name sidecar-shim_aarch64 --arch aarch64 \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $sidecar_shim
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name sidecar-shim_aarch64 --arch aarch64 \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $sidecar_shim
 
-    # remove all RPMs which are no longer referenced by a rpmtree
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- prune
+  # remove all RPMs which are no longer referenced by a rpmtree
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- prune
 
-    # update tar2files targets which act as an adapter between rpms
-    # and cc_library which we need for virt-launcher and virt-handler
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //rpm:ldd_aarch64
+  # update tar2files targets which act as an adapter between rpms
+  # and cc_library which we need for virt-launcher and virt-handler
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //rpm:ldd_aarch64
 
-    # regenerate sandboxes
-    rm ${SANDBOX_DIR} -rf
-    kubevirt::bootstrap::regenerate aarch64
+  # regenerate sandboxes
+  rm ${SANDBOX_DIR} -rf
+  kubevirt::bootstrap::regenerate aarch64
 fi
 
 if [ -z "${SINGLE_ARCH}" ] || [ "${SINGLE_ARCH}" == "s390x" ]; then
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name testimage_s390x --arch s390x \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $testimage_main
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name testimage_s390x --arch s390x \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $testimage_main
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name libvirt-devel_s390x --arch s390x \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $libvirtdevel_main \
-        $libvirtdevel_extra
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name libvirt-devel_s390x --arch s390x \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $libvirtdevel_main \
+    $libvirtdevel_extra
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name sandboxroot_s390x --arch s390x \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $sandboxroot_main
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name sandboxroot_s390x --arch s390x \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $sandboxroot_main
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name launcherbase_s390x --arch s390x \
-        --basesystem ${BASESYSTEM} \
-        --force-ignore-with-dependencies '^mozjs60' \
-        --force-ignore-with-dependencies 'python' \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $launcherbase_main \
-        $launcherbase_s390x \
-        $launcherbase_extra
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name launcherbase_s390x --arch s390x \
+    --basesystem ${BASESYSTEM} \
+    --force-ignore-with-dependencies '^mozjs60' \
+    --force-ignore-with-dependencies 'python' \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $launcherbase_main \
+    $launcherbase_s390x \
+    $launcherbase_extra
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name passt_tree_s390x --arch s390x \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        passt-${PASST_VERSION}
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name passt_tree_s390x --arch s390x \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    passt-${PASST_VERSION}
 
-    # create a rpmtree for virt-handler
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name handlerbase_s390x --arch s390x \
-        --basesystem ${BASESYSTEM} \
-        --force-ignore-with-dependencies 'python' \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $handlerbase_main \
-        $handlerbase_extra
+  # create a rpmtree for virt-handler
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name handlerbase_s390x --arch s390x \
+    --basesystem ${BASESYSTEM} \
+    --force-ignore-with-dependencies 'python' \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $handlerbase_main \
+    $handlerbase_extra
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name exportserverbase_s390x --arch s390x \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $exportserverbase_main
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name exportserverbase_s390x --arch s390x \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $exportserverbase_main
 
-    bazel run \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name libguestfs-tools_s390x --arch s390x \
-        --basesystem ${BASESYSTEM} \
-        $centos_main \
-        $centos_extra \
-        $libguestfstools_main \
-        $libguestfstools_s390x \
-        $libguestfstools_extra \
-        ${bazeldnf_repos} \
-        --force-ignore-with-dependencies '^(kernel-|linux-firmware)' \
-        --force-ignore-with-dependencies '^(python[3]{0,1}-)' \
-        --force-ignore-with-dependencies '^mozjs60' \
-        --force-ignore-with-dependencies '^(libvirt-daemon-kvm|swtpm)' \
-        --force-ignore-with-dependencies '^(man-db|mandoc)' \
-        --force-ignore-with-dependencies '^dbus'
+  bazel run \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name libguestfs-tools_s390x --arch s390x \
+    --basesystem ${BASESYSTEM} \
+    $centos_main \
+    $centos_extra \
+    $libguestfstools_main \
+    $libguestfstools_s390x \
+    $libguestfstools_extra \
+    ${bazeldnf_repos} \
+    --force-ignore-with-dependencies '^(kernel-|linux-firmware)' \
+    --force-ignore-with-dependencies '^(python[3]{0,1}-)' \
+    --force-ignore-with-dependencies '^mozjs60' \
+    --force-ignore-with-dependencies '^(libvirt-daemon-kvm|swtpm)' \
+    --force-ignore-with-dependencies '^(man-db|mandoc)' \
+    --force-ignore-with-dependencies '^dbus'
 
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- rpmtree \
-        --public --nobest \
-        --name sidecar-shim_s390x --arch s390x \
-        --basesystem ${BASESYSTEM} \
-        ${bazeldnf_repos} \
-        $centos_main \
-        $centos_extra \
-        $sidecar_shim
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- rpmtree \
+    --public --nobest \
+    --name sidecar-shim_s390x --arch s390x \
+    --basesystem ${BASESYSTEM} \
+    ${bazeldnf_repos} \
+    $centos_main \
+    $centos_extra \
+    $sidecar_shim
 
-    # remove all RPMs which are no longer referenced by a rpmtree
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //:bazeldnf -- prune
+  # remove all RPMs which are no longer referenced by a rpmtree
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //:bazeldnf -- prune
 
-    # update tar2files targets which act as an adapter between rpms
-    # and cc_library which we need for virt-launcher and virt-handler
-    bazel run \
-        --config=${ARCHITECTURE} \
-        //rpm:ldd_s390x
+  # update tar2files targets which act as an adapter between rpms
+  # and cc_library which we need for virt-launcher and virt-handler
+  bazel run \
+    --config=${ARCHITECTURE} \
+    //rpm:ldd_s390x
 
-    # regenerate sandboxes
-    rm ${SANDBOX_DIR} -rf
-    kubevirt::bootstrap::regenerate s390x
+  # regenerate sandboxes
+  rm ${SANDBOX_DIR} -rf
+  kubevirt::bootstrap::regenerate s390x
 fi

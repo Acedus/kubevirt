@@ -383,7 +383,7 @@ func shouldAbort(exists bool, backupMetadata api.BackupMetadata, backupOptions *
 	return nil
 }
 
-func (m *StorageManager) abortBackup(vmi *v1.VirtualMachineInstance, backupMetadata api.BackupMetadata, ackupOptions *backupv1.BackupOptions) error {
+func (m *StorageManager) abortBackup(vmi *v1.VirtualMachineInstance, backupMetadata api.BackupMetadata, backupOptions *backupv1.BackupOptions) error {
 	domName := api.VMINamespaceKeyFunc(vmi)
 	dom, err := m.virConn.LookupDomainByName(domName)
 	if err != nil {
@@ -521,4 +521,29 @@ func findDisksWithCheckpointBitmap(dom cli.VirDomain, checkpointName string) (*a
 	}
 
 	return checkpointDisks, disksWithoutBitmap, nil
+}
+
+func (m *StorageManager) ExportVirtualMachineBackup(vmi *v1.VirtualMachineInstance, backupOptions *backupv1.BackupOptions) error {
+	m.backupTunnelMu.Lock()
+	defer m.backupTunnelMu.Unlock()
+
+	backupSock := filepath.Join(pullBackupSocketDir, pullBackupSocketName)
+	if _, err := os.Stat(backupSock); err != nil {
+		return fmt.Errorf("cannot initialize backup export tunnel: %w", err)
+	}
+
+	if m.activeBackupTunnel != nil {
+		m.activeBackupTunnel.Stop()
+	}
+
+	tunnel, err := NewBackupTunnelManager(*backupOptions.ExportServerAddr, backupSock, backupOptions.CACert, *backupOptions.ExportServerToken)
+	if err != nil {
+		return fmt.Errorf("failed to initialize backup tunnel: %w", err)
+	}
+
+	m.activeBackupTunnel = tunnel
+
+	go m.activeBackupTunnel.Run()
+
+	return nil
 }
