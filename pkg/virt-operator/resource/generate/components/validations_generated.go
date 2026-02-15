@@ -9124,6 +9124,11 @@ var CRDsValidation map[string]string = map[string]string{
               self.kind == ''VirtualMachineBackupTracker'')'
           - message: name is required
             rule: self.name != ''
+        tokenSecretRef:
+          description: |-
+            TokenSecretRef is the name of the secret that
+            will be used to pull the backup from an associated endpoint
+          type: string
       required:
       - source
       type: object
@@ -9132,6 +9137,9 @@ var CRDsValidation map[string]string = map[string]string{
         rule: self == oldSelf
       - message: pvcName is required
         rule: has(self.pvcName) && self.pvcName != ""
+      - message: tokenSecretRef is required when mode is Pull
+        rule: '!has(self.mode) || self.mode != ''Pull'' || (has(self.tokenSecretRef)
+          && self.tokenSecretRef != "")'
     status:
       description: VirtualMachineBackupStatus is the status for a VirtualMachineBackup
         resource

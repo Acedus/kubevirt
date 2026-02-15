@@ -274,6 +274,7 @@ var _ = Describe("Application", func() {
 			vmInformer,
 			vmiInformer,
 			pvcInformer,
+			vmExportInformer,
 			recorder,
 		)
 

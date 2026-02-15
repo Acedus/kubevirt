@@ -156,6 +156,7 @@ type VirtualMachineBackupList struct {
 // VirtualMachineBackupSpec is the spec for a VirtualMachineBackup resource
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="has(self.pvcName) && self.pvcName != \"\"",message="pvcName is required"
+// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode != 'Pull' || (has(self.tokenSecretRef) && self.tokenSecretRef != \"\")",message="tokenSecretRef is required when mode is Pull"
 type VirtualMachineBackupSpec struct {
 	// Source specifies the backup source - either a VirtualMachine or a VirtualMachineBackupTracker.
 	// When Kind is VirtualMachine: performs a backup of the specified VM.
@@ -181,6 +182,10 @@ type VirtualMachineBackupSpec struct {
 	// +optional
 	// ForceFullBackup indicates that a full backup is desired
 	ForceFullBackup bool `json:"forceFullBackup,omitempty"`
+	// +optional
+	// TokenSecretRef is the name of the secret that
+	// will be used to pull the backup from an associated endpoint
+	TokenSecretRef string `json:"tokenSecretRef,omitempty"`
 }
 
 // VirtualMachineBackupStatus is the status for a VirtualMachineBackup resource

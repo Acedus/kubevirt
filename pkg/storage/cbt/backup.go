@@ -36,6 +36,7 @@ import (
 
 	backupv1 "kubevirt.io/api/backup/v1alpha1"
 	v1 "kubevirt.io/api/core/v1"
+	exportv1 "kubevirt.io/api/export/v1beta1"
 	"kubevirt.io/client-go/kubecli"
 	"kubevirt.io/client-go/log"
 
@@ -50,6 +51,7 @@ const (
 
 	backupInitializingEvent         = "VirtualMachineBackupInitializing"
 	backupInitiatedEvent            = "VirtualMachineBackupInitiated"
+	backupPreparingExportEvent      = "VirtualMachineBackupPreparingExport"
 	backupAbortingEvent             = "VirtualMachineBackupAborting"
 	backupCompletedEvent            = "VirtualMachineBackupCompletedSuccessfully"
 	backupCompletedWithWarningEvent = "VirtualMachineBackupCompletedWithWarning"
@@ -57,6 +59,7 @@ const (
 
 	backupInitializing                   = "Backup is initializing"
 	backupInProgress                     = "Backup is in progress"
+	backupPreparingVMExport              = "Backup export is being initialized"
 	backupAborting                       = "Backup is aborting"
 	backupDeleting                       = "Backup is being deleted"
 	backupCompleted                      = "Successfully completed VirtualMachineBackup"
@@ -70,6 +73,10 @@ const (
 	trackerCheckpointRedefinitionPending = "Waiting for checkpoint redefinition on tracker %s"
 	invalidBackupModeMsg                 = "invalid backup mode: %s"
 	backupSourceNameEmptyMsg             = "Source name is empty"
+
+	backupExportPrefix             = "backup-export"
+	failedExportCreate             = "failed to create backup export: %w"
+	exportExistsWithDifferentOwner = "VMExport %s already exists but is not owned by backup %s"
 )
 
 var (
@@ -83,6 +90,7 @@ type VMBackupController struct {
 	vmStore               cache.Store
 	vmiStore              cache.Store
 	pvcStore              cache.Store
+	vmExportStore         cache.Store
 	recorder              record.EventRecorder
 	backupQueue           workqueue.TypedRateLimitingInterface[string]
 	trackerQueue          workqueue.TypedRateLimitingInterface[string]
@@ -95,6 +103,7 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 	vmInformer cache.SharedIndexInformer,
 	vmiInformer cache.SharedIndexInformer,
 	pvcInformer cache.SharedIndexInformer,
+	vmExportInformer cache.SharedIndexInformer,
 	recorder record.EventRecorder,
 ) (*VMBackupController, error) {
 	c := &VMBackupController{
@@ -111,12 +120,18 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 		vmStore:               vmInformer.GetStore(),
 		vmiStore:              vmiInformer.GetStore(),
 		pvcStore:              pvcInformer.GetStore(),
+		vmExportStore:         vmExportInformer.GetStore(),
 		recorder:              recorder,
 		client:                client,
 	}
 
 	c.hasSynced = func() bool {
-		return backupInformer.HasSynced() && backupTrackerInformer.HasSynced() && vmInformer.HasSynced() && vmiInformer.HasSynced() && pvcInformer.HasSynced()
+		return backupInformer.HasSynced() &&
+			backupTrackerInformer.HasSynced() &&
+			vmInformer.HasSynced() &&
+			vmiInformer.HasSynced() &&
+			pvcInformer.HasSynced() &&
+			vmExportInformer.HasSynced()
 	}
 
 	_, err := backupInformer.AddEventHandler(
@@ -142,6 +157,16 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc:    c.handleBackupTracker,
 			UpdateFunc: func(oldObj, newObj interface{}) { c.handleBackupTracker(newObj) },
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = vmExportInformer.AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    c.handleAddVMExport,
+			UpdateFunc: func(oldObj, newObj interface{}) { c.handleUpdateVMExport(oldObj, newObj) },
 		},
 	)
 	if err != nil {
@@ -243,6 +268,62 @@ func (ctrl *VMBackupController) handleBackupTracker(obj interface{}) {
 	for _, key := range backupKeys {
 		ctrl.backupQueue.Add(key)
 	}
+}
+
+func (ctrl *VMBackupController) handleAddVMExport(obj interface{}) {
+	if unknown, ok := obj.(cache.DeletedFinalStateUnknown); ok && unknown.Obj != nil {
+		obj = unknown.Obj
+	}
+
+	if vmExport, ok := obj.(*exportv1.VirtualMachineExport); ok {
+		key := getOwnerVMBackupKey(vmExport)
+		_, exists, err := ctrl.backupInformer.GetStore().GetByKey(key)
+		if err != nil {
+			utilruntime.HandleError(err)
+			return
+		}
+		if exists {
+			log.Log.V(3).Infof("Adding VMBackup due to VMExport creation: %s", key)
+			ctrl.backupQueue.Add(key)
+		}
+	}
+}
+
+func (ctrl *VMBackupController) handleUpdateVMExport(oldObj, newObj interface{}) {
+	ovmExport, ok := oldObj.(*exportv1.VirtualMachineExport)
+	if !ok {
+		return
+	}
+
+	nvmExport, ok := newObj.(*exportv1.VirtualMachineExport)
+	if !ok {
+		return
+	}
+
+	if equality.Semantic.DeepEqual(ovmExport.Status, nvmExport.Status) {
+		return
+	}
+
+	key := getOwnerVMBackupKey(nvmExport)
+	_, exists, err := ctrl.backupInformer.GetStore().GetByKey(key)
+	if err != nil {
+		utilruntime.HandleError(err)
+	}
+	if exists {
+		log.Log.V(3).Infof("Adding VMBackup due to VMExport update: %s", key)
+	}
+	ctrl.backupQueue.Add(key)
+}
+
+func getOwnerVMBackupKey(obj metav1.Object) string {
+	ownerRef := metav1.GetControllerOf(obj)
+	var key string
+	if ownerRef != nil {
+		if ownerRef.Kind == backupv1.VirtualMachineBackupGroupVersionKind.Kind && ownerRef.APIVersion == backupv1.VirtualMachineBackupGroupVersionKind.GroupVersion().String() {
+			key = controller.NamespacedKey(obj.GetNamespace(), ownerRef.Name)
+		}
+	}
+	return key
 }
 
 func (ctrl *VMBackupController) Run(threadiness int, stopCh <-chan struct{}) error {
@@ -460,7 +541,15 @@ func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) *Syn
 					return syncInfo
 				}
 			}
+		} else {
+			if *backup.Spec.Mode == backupv1.PullMode {
+				syncInfo := ctrl.handlePrepareBackupExport(backup, vmi)
+				if syncInfo != nil {
+					return syncInfo
+				}
+			}
 		}
+
 	}
 
 	return ctrl.checkBackupCompletion(backup, vmi, backupTracker)
@@ -554,6 +643,64 @@ func (ctrl *VMBackupController) handleAbort(backup *backupv1.VirtualMachineBacku
 	}
 }
 
+func (ctrl *VMBackupController) handlePrepareBackupExport(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) *SyncInfo {
+	syncInfo, _ := ctrl.getOrCreateBackupExport(vmi, backup)
+	if syncInfo != nil {
+		return syncInfo
+	}
+	return nil
+}
+
+func (ctrl *VMBackupController) getOrCreateBackupExport(vmi *v1.VirtualMachineInstance, backup *backupv1.VirtualMachineBackup) (*SyncInfo, *exportv1.VirtualMachineExport) {
+	exportName := fmt.Sprintf("%s-%s", backupExportPrefix, backup.Name)
+	objKey := cacheKeyFunc(backup.Namespace, exportName)
+	obj, exists, err := ctrl.vmExportStore.GetByKey(objKey)
+	if err != nil {
+		err = fmt.Errorf("error getting VMExport from store: %w", err)
+		log.Log.Error(err.Error())
+		return syncInfoError(err), nil
+	}
+	if exists {
+		vmExport := obj.(*exportv1.VirtualMachineExport)
+		if !metav1.IsControlledBy(vmExport, backup) {
+			return syncInfoError(fmt.Errorf(exportExistsWithDifferentOwner, vmExport.Name, backup.Name)), nil
+		}
+		return nil, vmExport
+	}
+
+	return ctrl.createBackupExport(backup, exportName, vmi), nil
+}
+
+func (ctrl *VMBackupController) createBackupExport(backup *backupv1.VirtualMachineBackup, exportName string, vmi *v1.VirtualMachineInstance) *SyncInfo {
+	vmExport := &exportv1.VirtualMachineExport{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exportName,
+			Namespace: backup.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(backup, backupv1.SchemeGroupVersion.WithKind(backupv1.VirtualMachineBackupGroupVersionKind.Kind)),
+			},
+		},
+		Spec: exportv1.VirtualMachineExportSpec{
+			TokenSecretRef: &backup.Spec.TokenSecretRef,
+			Source: corev1.TypedLocalObjectReference{
+				APIGroup: pointer.P(backupv1.VirtualMachineBackupGroupVersionKind.Group),
+				Kind:     backupv1.VirtualMachineBackupGroupVersionKind.Kind,
+				Name:     backup.Name,
+			},
+		},
+	}
+
+	_, err := ctrl.client.VirtualMachineExport(backup.Namespace).Create(context.Background(), vmExport, metav1.CreateOptions{})
+	if err != nil {
+		return syncInfoError(fmt.Errorf(failedExportCreate, err))
+	}
+
+	return &SyncInfo{
+		event:  backupPreparingExportEvent,
+		reason: backupPreparingVMExport,
+	}
+}
+
 func (ctrl *VMBackupController) validateVMIHealth(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) *SyncInfo {
 	if !vmi.IsRunning() || vmi.DeletionTimestamp != nil {
 		done, syncInfo := ctrl.cleanup(backup, vmi)
@@ -592,6 +739,8 @@ func (ctrl *VMBackupController) updateStatus(backup *backupv1.VirtualMachineBack
 			if syncInfo.backupType != "" {
 				backupOut.Status.Type = syncInfo.backupType
 			}
+		case backupPreparingExportEvent:
+			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionTrue, syncInfo.reason))
 		case backupAbortingEvent:
 			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionTrue, syncInfo.reason))
 			updateBackupCondition(backupOut, newAbortingCondition(corev1.ConditionTrue, syncInfo.reason))
