@@ -669,6 +669,13 @@ func (ctrl *VMBackupController) handlePrepareBackupExport(backup *backupv1.Virtu
 	if err != nil {
 		return syncInfoError(err)
 	}
+	syncInfo, token := getBackupExportJWT(backup)
+	if syncInfo != nil {
+		return syncInfo
+	}
+	if token == nil {
+		return syncInfoError(fmt.Errorf("cannot initiate backup export tunnel, JWT is nil"))
+	}
 	exportAddr := fmt.Sprintf("virt-export-%s-%s.svc", vmExport.Name, vmExport.Namespace)
 	backupOptions := &backupv1.BackupOptions{
 		BackupName:        backup.Name,
@@ -676,7 +683,7 @@ func (ctrl *VMBackupController) handlePrepareBackupExport(backup *backupv1.Virtu
 		BackupStartTime:   &backup.CreationTimestamp,
 		Mode:              *backup.Spec.Mode,
 		ExportServerAddr:  &exportAddr,
-		ExportServerToken: pointer.P("test"),
+		ExportServerToken: token,
 		CACert:            ca,
 	}
 	if err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions); err != nil {
@@ -686,6 +693,19 @@ func (ctrl *VMBackupController) handlePrepareBackupExport(backup *backupv1.Virtu
 		event:  backupExportInitiatedEvent,
 		reason: backupExportInitiated,
 	}
+}
+
+func getBackupExportJWT(backup *backupv1.VirtualMachineBackup) (*SyncInfo, *string) {
+	key, err := backupPrivateKey()
+	if err != nil {
+		return syncInfoError(fmt.Errorf("failed to get JWT signer private key for pull mode backup export: %w", err)), nil
+	}
+	tokenGen := newTokenGenerator(key)
+	token, err := tokenGen.Generate(string(backup.UID))
+	if err != nil {
+		return syncInfoError(fmt.Errorf("failed to generate JWT token for pull mode backup: %s", err)), nil
+	}
+	return nil, &token
 }
 
 func (ctrl *VMBackupController) getOrCreateBackupExport(vmi *v1.VirtualMachineInstance, backup *backupv1.VirtualMachineBackup) (*SyncInfo, *exportv1.VirtualMachineExport) {
