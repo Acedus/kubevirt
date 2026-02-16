@@ -693,7 +693,11 @@ func (ctrl *VMExportController) updateVMExport(vmExport *exportv1.VirtualMachine
 		if vmBackup == nil {
 			return 0, fmt.Errorf("unexpected nil virtualMachineBackup")
 		}
-		return ctrl.handleSource(vmExport, NewVMBackupSource(vmBackup))
+		pubKey, err := backupPublicKeyPEM()
+		if err != nil {
+			return 0, fmt.Errorf("could not obtain virtualMachineBackup tunnel public key: %w", err)
+		}
+		return ctrl.handleSource(vmExport, NewVMBackupSource(vmBackup, pubKey))
 	}
 
 	return 0, nil

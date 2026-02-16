@@ -485,6 +485,7 @@ func NewOperatorRole(namespace string) *rbacv1.Role {
 					components.VirtExportProxyCertSecretName,
 					components.VirtSynchronizationControllerCertSecretName,
 					components.VirtSynchronizationControllerServerCertSecretName,
+					components.VirtControllerBackupCertSecretName,
 				},
 				Verbs: []string{
 					"create",

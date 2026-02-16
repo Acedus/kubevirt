@@ -36,6 +36,7 @@ const (
 	VirtExportProxyCertSecretName                     = "kubevirt-exportproxy-certs"
 	VirtSynchronizationControllerCertSecretName       = "kubevirt-synchronization-controller-certs"
 	VirtSynchronizationControllerServerCertSecretName = "kubevirt-synchronization-controller-server-certs"
+	VirtControllerBackupCertSecretName                = "kubevirt-controller-backup-certs"
 	CABundleKey                                       = "ca-bundle"
 	LocalPodDNStemplateString                         = "%s.%s.pod.cluster.local"
 	CaClusterLocal                                    = "cluster.local"
@@ -200,6 +201,19 @@ var populationStrategy = map[string]CertificateCreationCallback{
 			secret.Namespace,
 			CaClusterLocal,
 			nil,
+			nil,
+			duration,
+		)
+		return keyPair.Cert, keyPair.Key
+	},
+	VirtControllerBackupCertSecretName: func(secret *k8sv1.Secret, caCert *tls.Certificate, duration time.Duration) (cert *x509.Certificate, key *ecdsa.PrivateKey) {
+		caKeyPair := &triple.KeyPair{
+			Key:  caCert.PrivateKey.(*ecdsa.PrivateKey),
+			Cert: caCert.Leaf,
+		}
+		keyPair, _ := triple.NewClientKeyPair(
+			caKeyPair,
+			"kubevirt.io:system:client:backup-controller",
 			nil,
 			duration,
 		)
@@ -425,6 +439,20 @@ func NewCertSecrets(installNamespace string, operatorNamespace string) []*k8sv1.
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      VirtSynchronizationControllerServerCertSecretName,
+				Namespace: installNamespace,
+				Labels: map[string]string{
+					v1.ManagedByLabel: v1.ManagedByLabelOperatorValue,
+				},
+			},
+			Type: k8sv1.SecretTypeTLS,
+		},
+		{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "Secret",
+				APIVersion: "v1",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      VirtControllerBackupCertSecretName,
 				Namespace: installNamespace,
 				Labels: map[string]string{
 					v1.ManagedByLabel: v1.ManagedByLabelOperatorValue,

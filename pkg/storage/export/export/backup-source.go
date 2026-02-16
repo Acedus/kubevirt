@@ -20,8 +20,12 @@
 package export
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -38,18 +42,21 @@ import (
 )
 
 const (
+	backupSigningCerts      = "/etc/virt-controller/backupcertificates"
 	backupsBasePath         = "/exports"
 	vmBackupReadyReason     = "VirtualMachineBackupReady"
 	vmBackupNotReadyMessage = "VMBackup is not progressing"
 )
 
 type VMBackupSource struct {
-	vmBackup *backupv1.VirtualMachineBackup
+	vmBackup        *backupv1.VirtualMachineBackup
+	backupPublicKey string
 }
 
-func NewVMBackupSource(vmBackup *backupv1.VirtualMachineBackup) *VMBackupSource {
+func NewVMBackupSource(vmBackup *backupv1.VirtualMachineBackup, backupPublicKey string) *VMBackupSource {
 	return &VMBackupSource{
-		vmBackup: vmBackup,
+		vmBackup:        vmBackup,
+		backupPublicKey: backupPublicKey,
 	}
 }
 
@@ -102,6 +109,14 @@ func (s *VMBackupSource) ConfigurePod(pod *corev1.Pod) {
 			Value: backupMapURI(volume.VolumeName),
 		})
 	}
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
+		Name:  "BACKUP_PUBLIC_KEY",
+		Value: s.backupPublicKey,
+	})
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
+		Name:  "BACKUP_UID",
+		Value: string(s.vmBackup.UID),
+	})
 }
 
 func (s *VMBackupSource) ConfigureExportLink(exportLink *exportv1.VirtualMachineExportLink, paths *ServerPaths, vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, hostAndBase, scheme string) {
@@ -237,4 +252,35 @@ func backupMapURI(volumeName string) string {
 
 func backupDataURI(volumeName string) string {
 	return path.Join(fmt.Sprintf("%s/%s/data", backupsBasePath, volumeName))
+}
+
+func backupPublicKeyPEM() (string, error) {
+	certPath := filepath.Join(backupSigningCerts, corev1.TLSCertKey)
+
+	certBytes, err := os.ReadFile(certPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read backup certificate: %v", err)
+	}
+
+	block, _ := pem.Decode(certBytes)
+	if block == nil {
+		return "", fmt.Errorf("failed to decode certificate PEM")
+	}
+
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse x509: %v", err)
+	}
+
+	pubDer, err := x509.MarshalPKIXPublicKey(certificate.PublicKey)
+	if err != nil {
+		return "", err
+	}
+
+	pubBlock := &pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: pubDer,
+	}
+
+	return string(pem.EncodeToMemory(pubBlock)), nil
 }
