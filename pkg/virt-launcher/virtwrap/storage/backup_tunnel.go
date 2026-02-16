@@ -5,12 +5,16 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"google.golang.org/grpc"
 
 	"kubevirt.io/client-go/log"
@@ -19,8 +23,9 @@ import (
 )
 
 const (
-	retryDelay  = 5 * time.Second
-	dialTimeout = 10 * time.Second
+	retryDelay       = 5 * time.Second
+	dialTimeout      = 10 * time.Second
+	exportServerPort = 9090
 )
 
 type BackupTunnelManager struct {
@@ -36,7 +41,7 @@ type BackupTunnelManager struct {
 	server *grpc.Server
 }
 
-func NewBackupTunnelManager(targetAddr, nbdSocket string, caCert []byte, token string) (*BackupTunnelManager, error) {
+func newBackupTunnelManager(targetAddr, nbdSocket string, caCert []byte, token string) (*BackupTunnelManager, error) {
 	certPool := x509.NewCertPool()
 	if ok := certPool.AppendCertsFromPEM(caCert); !ok {
 		return nil, fmt.Errorf("failed to parse CA certificate")
@@ -58,13 +63,20 @@ func NewBackupTunnelManager(targetAddr, nbdSocket string, caCert []byte, token s
 }
 
 func (m *BackupTunnelManager) Run() {
+	go m.watchSocketRemoval()
+
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		default:
+			if _, err := os.Stat(m.nbdSocket); errors.Is(err, os.ErrNotExist) {
+				log.Log.Infof("backup socket %s does not exist. terminating tunnel.", m.nbdSocket)
+				m.Stop()
+				return
+			}
 			if err := m.establishAndServe(); err != nil {
-				log.Log.Reason(err).Error("Backup tunnel connection lost, retrying...")
+				log.Log.Reason(err).Error("backup tunnel connection lost, retrying...")
 				select {
 				case <-time.After(retryDelay):
 				case <-m.ctx.Done():
@@ -77,7 +89,7 @@ func (m *BackupTunnelManager) Run() {
 
 func (m *BackupTunnelManager) establishAndServe() error {
 	dialer := &net.Dialer{Timeout: dialTimeout}
-	conn, err := tls.DialWithDialer(dialer, "tcp", m.targetAddr, m.tlsConfig)
+	conn, err := tls.DialWithDialer(dialer, "tcp", fmt.Sprintf("%s:%d", m.targetAddr, exportServerPort), m.tlsConfig)
 	if err != nil {
 		return err
 	}
@@ -119,6 +131,42 @@ func (m *BackupTunnelManager) Stop() {
 		m.server.Stop()
 	}
 	m.mu.Unlock()
+}
+
+func (m *BackupTunnelManager) watchSocketRemoval() {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Log.Reason(err).Error("failed to create fsnotify watcher")
+		return
+	}
+	defer watcher.Close()
+
+	dir := filepath.Dir(m.nbdSocket)
+	if err := watcher.Add(dir); err != nil {
+		log.Log.Reason(err).Errorf("failed to watch backup socket directory: %s", dir)
+		return
+	}
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Name == m.nbdSocket && (event.Op&fsnotify.Remove == fsnotify.Remove || event.Op&fsnotify.Rename == fsnotify.Rename) {
+				log.Log.Infof("reactive teardown: %s removed. Stopping tunnel.", event.Name)
+				m.Stop()
+				return
+			}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			log.Log.Reason(err).Error("fsnotify error")
+		}
+	}
 }
 
 type oneConnListener struct {

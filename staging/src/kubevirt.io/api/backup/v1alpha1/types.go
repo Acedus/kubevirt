@@ -42,6 +42,10 @@ type BackupVolumeInfo struct {
 	VolumeName string `json:"volumeName"`
 	// DiskTarget is the disk target device name at backup time
 	DiskTarget string `json:"diskTarget"`
+	// DataEndpoint is the URL of the endpoint for read for pull mode
+	DataEndpoint string `json:"dataEndpoint"`
+	// MapEndpoint is the URL of the endpoint for map for pull mode
+	MapEndpoint string `json:"mapEndpoint"`
 }
 
 type BackupCheckpoint struct {
@@ -221,6 +225,12 @@ const (
 
 	// ConditionInitializing indicates the backup is initializing
 	ConditionInitializing ConditionType = "Initializing"
+
+	// ConditionExportInitiated indicates the backup export has been initiated
+	ConditionExportInitiated ConditionType = "ExportInitiated"
+
+	// ConditionExportReady indicates the backup export has been initiated
+	ConditionExportReady ConditionType = "ExportReady"
 
 	// ConditionDeleting indicates the backup is deleteing
 	ConditionDeleting ConditionType = "Deleting"

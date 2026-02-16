@@ -4,9 +4,11 @@ package v1alpha1
 
 func (BackupVolumeInfo) SwaggerDoc() map[string]string {
 	return map[string]string{
-		"":           "BackupVolumeInfo contains information about a volume included in a backup",
-		"volumeName": "VolumeName is the volume name from VMI spec",
-		"diskTarget": "DiskTarget is the disk target device name at backup time",
+		"":             "BackupVolumeInfo contains information about a volume included in a backup",
+		"volumeName":   "VolumeName is the volume name from VMI spec",
+		"diskTarget":   "DiskTarget is the disk target device name at backup time",
+		"dataEndpoint": "DataEndpoint is the URL of the endpoint for read for pull mode",
+		"mapEndpoint":  "MapEndpoint is the URL of the endpoint for map for pull mode",
 	}
 }
 

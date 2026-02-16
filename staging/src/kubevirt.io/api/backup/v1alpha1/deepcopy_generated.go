@@ -69,6 +69,21 @@ func (in *BackupOptions) DeepCopyInto(out *BackupOptions) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.ExportServerAddr != nil {
+		in, out := &in.ExportServerAddr, &out.ExportServerAddr
+		*out = new(string)
+		**out = **in
+	}
+	if in.ExportServerToken != nil {
+		in, out := &in.ExportServerToken, &out.ExportServerToken
+		*out = new(string)
+		**out = **in
+	}
+	if in.CACert != nil {
+		in, out := &in.CACert, &out.CACert
+		*out = make([]byte, len(*in))
+		copy(*out, *in)
+	}
 	return
 }
 

@@ -360,27 +360,27 @@ func HandleBackupJobCompletedEvent(domain cli.VirDomain, event *libvirt.DomainEv
 
 func (m *StorageManager) AbortVirtualMachineBackup(vmi *v1.VirtualMachineInstance, backupOptions *backupv1.BackupOptions) error {
 	backupMetadata, exists := m.metadataCache.Backup.Load()
-	if err := shouldAbort(exists, backupMetadata, backupOptions); err != nil {
+	if err := checkBackupEligibility(exists, backupMetadata, backupOptions); err != nil {
 		return err
 	}
 	return m.abortBackup(vmi, backupMetadata, backupOptions)
 }
 
-func shouldAbort(exists bool, backupMetadata api.BackupMetadata, backupOptions *backupv1.BackupOptions) error {
-	const failedAbort = "failed to abort backup: %s"
+func checkBackupEligibility(exists bool, backupMetadata api.BackupMetadata, backupOptions *backupv1.BackupOptions) error {
 	if !exists || backupMetadata.Name == "" {
-		return fmt.Errorf(failedAbort, "could not find ongoing backup")
+		return fmt.Errorf("could not find ongoing backup")
 	}
 	if backupMetadata.StartTimestamp == nil {
-		return fmt.Errorf(failedAbort, "backup did not start yet")
+		return fmt.Errorf("backup did not start yet")
 	}
 	if backupMetadata.Name != backupOptions.BackupName || !backupMetadata.StartTimestamp.Equal(backupOptions.BackupStartTime) {
-		return fmt.Errorf(failedAbort, "requested backup differs from ongoing one")
+		return fmt.Errorf("requested backup differs from ongoing one")
 	}
 	if backupMetadata.Completed {
-		return fmt.Errorf(failedAbort, "backup already completed")
+		return fmt.Errorf("backup already completed")
 	}
 	return nil
+
 }
 
 func (m *StorageManager) abortBackup(vmi *v1.VirtualMachineInstance, backupMetadata api.BackupMetadata, backupOptions *backupv1.BackupOptions) error {
@@ -524,6 +524,14 @@ func findDisksWithCheckpointBitmap(dom cli.VirDomain, checkpointName string) (*a
 }
 
 func (m *StorageManager) ExportVirtualMachineBackup(vmi *v1.VirtualMachineInstance, backupOptions *backupv1.BackupOptions) error {
+	backupMetadata, exists := m.metadataCache.Backup.Load()
+	if err := checkBackupEligibility(exists, backupMetadata, backupOptions); err != nil {
+		return err
+	}
+	return m.initiateBackupTunnel(vmi, backupOptions)
+}
+
+func (m *StorageManager) initiateBackupTunnel(vmi *v1.VirtualMachineInstance, backupOptions *backupv1.BackupOptions) error {
 	m.backupTunnelMu.Lock()
 	defer m.backupTunnelMu.Unlock()
 
@@ -536,7 +544,7 @@ func (m *StorageManager) ExportVirtualMachineBackup(vmi *v1.VirtualMachineInstan
 		m.activeBackupTunnel.Stop()
 	}
 
-	tunnel, err := NewBackupTunnelManager(*backupOptions.ExportServerAddr, backupSock, backupOptions.CACert, *backupOptions.ExportServerToken)
+	tunnel, err := newBackupTunnelManager(*backupOptions.ExportServerAddr, backupSock, backupOptions.CACert, *backupOptions.ExportServerToken)
 	if err != nil {
 		return fmt.Errorf("failed to initialize backup tunnel: %w", err)
 	}

@@ -44,6 +44,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/controller"
 	hotplugdisk "kubevirt.io/kubevirt/pkg/hotplug-disk"
 	"kubevirt.io/kubevirt/pkg/pointer"
+	kvtls "kubevirt.io/kubevirt/pkg/util/tls"
 )
 
 const (
@@ -52,6 +53,8 @@ const (
 	backupInitializingEvent         = "VirtualMachineBackupInitializing"
 	backupInitiatedEvent            = "VirtualMachineBackupInitiated"
 	backupPreparingExportEvent      = "VirtualMachineBackupPreparingExport"
+	backupExportInitiatedEvent      = "VirtualMachineBackupExportInitiated"
+	backupExportReadyEvent          = "VirtualMachineBackupExportReady"
 	backupAbortingEvent             = "VirtualMachineBackupAborting"
 	backupCompletedEvent            = "VirtualMachineBackupCompletedSuccessfully"
 	backupCompletedWithWarningEvent = "VirtualMachineBackupCompletedWithWarning"
@@ -60,6 +63,8 @@ const (
 	backupInitializing                   = "Backup is initializing"
 	backupInProgress                     = "Backup is in progress"
 	backupPreparingVMExport              = "Backup export is being initialized"
+	backupExportInitiated                = "Backup export has been initiated, waiting for export links"
+	backupExportReady                    = "Backup export is ready to pull"
 	backupAborting                       = "Backup is aborting"
 	backupDeleting                       = "Backup is being deleted"
 	backupCompleted                      = "Successfully completed VirtualMachineBackup"
@@ -95,6 +100,7 @@ type VMBackupController struct {
 	backupQueue           workqueue.TypedRateLimitingInterface[string]
 	trackerQueue          workqueue.TypedRateLimitingInterface[string]
 	hasSynced             func() bool
+	caManager             kvtls.ClientCAManager
 }
 
 func NewVMBackupController(client kubecli.KubevirtClient,
@@ -104,7 +110,9 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 	vmiInformer cache.SharedIndexInformer,
 	pvcInformer cache.SharedIndexInformer,
 	vmExportInformer cache.SharedIndexInformer,
+	cmInformer cache.SharedIndexInformer,
 	recorder record.EventRecorder,
+	kubevirtNamespace string,
 ) (*VMBackupController, error) {
 	c := &VMBackupController{
 		backupQueue: workqueue.NewTypedRateLimitingQueueWithConfig(
@@ -123,6 +131,7 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 		vmExportStore:         vmExportInformer.GetStore(),
 		recorder:              recorder,
 		client:                client,
+		caManager:             kvtls.NewCAManager(cmInformer.GetStore(), kubevirtNamespace, "kubevirt-export-ca"),
 	}
 
 	c.hasSynced = func() bool {
@@ -543,9 +552,17 @@ func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) *Syn
 			}
 		} else {
 			if *backup.Spec.Mode == backupv1.PullMode {
-				syncInfo := ctrl.handlePrepareBackupExport(backup, vmi)
-				if syncInfo != nil {
-					return syncInfo
+				if !isBackupExportInitialized(backup.Status) {
+					syncInfo := ctrl.handlePrepareBackupExport(backup, vmi)
+					if syncInfo != nil {
+						return syncInfo
+					}
+				}
+				if !isBackupExportReady(backup.Status) {
+					syncInfo := ctrl.waitForBackupExportReady(backup, vmi)
+					if syncInfo != nil {
+						return syncInfo
+					}
 				}
 			}
 		}
@@ -644,11 +661,31 @@ func (ctrl *VMBackupController) handleAbort(backup *backupv1.VirtualMachineBacku
 }
 
 func (ctrl *VMBackupController) handlePrepareBackupExport(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) *SyncInfo {
-	syncInfo, _ := ctrl.getOrCreateBackupExport(vmi, backup)
+	syncInfo, vmExport := ctrl.getOrCreateBackupExport(vmi, backup)
 	if syncInfo != nil {
 		return syncInfo
 	}
-	return nil
+	ca, err := ctrl.caManager.GetCurrentRaw()
+	if err != nil {
+		return syncInfoError(err)
+	}
+	exportAddr := fmt.Sprintf("virt-export-%s-%s.svc", vmExport.Name, vmExport.Namespace)
+	backupOptions := &backupv1.BackupOptions{
+		BackupName:        backup.Name,
+		Cmd:               backupv1.Export,
+		BackupStartTime:   &backup.CreationTimestamp,
+		Mode:              *backup.Spec.Mode,
+		ExportServerAddr:  &exportAddr,
+		ExportServerToken: pointer.P("test"),
+		CACert:            ca,
+	}
+	if err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions); err != nil {
+		return syncInfoError(err)
+	}
+	return &SyncInfo{
+		event:  backupExportInitiatedEvent,
+		reason: backupExportInitiated,
+	}
 }
 
 func (ctrl *VMBackupController) getOrCreateBackupExport(vmi *v1.VirtualMachineInstance, backup *backupv1.VirtualMachineBackup) (*SyncInfo, *exportv1.VirtualMachineExport) {
@@ -701,6 +738,50 @@ func (ctrl *VMBackupController) createBackupExport(backup *backupv1.VirtualMachi
 	}
 }
 
+func (ctrl *VMBackupController) waitForBackupExportReady(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) *SyncInfo {
+	exportName := fmt.Sprintf("%s-%s", backupExportPrefix, backup.Name)
+	objKey := cacheKeyFunc(backup.Namespace, exportName)
+	obj, exists, err := ctrl.vmExportStore.GetByKey(objKey)
+	if err != nil {
+		err = fmt.Errorf("error getting VMExport from store: %w", err)
+		log.Log.Error(err.Error())
+		return syncInfoError(err)
+	}
+	if !exists {
+		return syncInfoError(fmt.Errorf("associated export does not exist"))
+	}
+	vmExport := obj.(*exportv1.VirtualMachineExport)
+	if vmExport.Status.Phase != exportv1.Ready {
+		return nil
+	}
+	if vmExport.Status.Links.Internal == nil || len(vmExport.Status.Links.Internal.Backups) == 0 {
+		return syncInfoError(fmt.Errorf("associated export ready but has no backup links"))
+	}
+
+	syncInfo := &SyncInfo{
+		event:  backupExportReadyEvent,
+		reason: backupExportReady,
+	}
+	endpointMap := make(map[string][]exportv1.VirtualMachineExportBackupEndpoint, 0)
+	for _, backupEndpoint := range vmExport.Status.Links.Internal.Backups {
+		endpointMap[backupEndpoint.Name] = backupEndpoint.Endpoints
+	}
+	for _, volume := range backup.Status.IncludedVolumes {
+		if endpoints, ok := endpointMap[volume.VolumeName]; ok {
+			for _, link := range endpoints {
+				switch link.Endpoint {
+				case exportv1.Data:
+					volume.DataEndpoint = link.Url
+				case exportv1.Map:
+					volume.MapEndpoint = link.Url
+				}
+			}
+		}
+		syncInfo.includedVolumes = append(syncInfo.includedVolumes, volume)
+	}
+	return syncInfo
+}
+
 func (ctrl *VMBackupController) validateVMIHealth(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) *SyncInfo {
 	if !vmi.IsRunning() || vmi.DeletionTimestamp != nil {
 		done, syncInfo := ctrl.cleanup(backup, vmi)
@@ -741,6 +822,14 @@ func (ctrl *VMBackupController) updateStatus(backup *backupv1.VirtualMachineBack
 			}
 		case backupPreparingExportEvent:
 			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionTrue, syncInfo.reason))
+		case backupExportInitiatedEvent:
+			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionTrue, syncInfo.reason))
+			updateBackupCondition(backupOut, newExportInitiatedCondition(corev1.ConditionTrue, syncInfo.reason))
+			updateBackupCondition(backupOut, newExportReadyCondition(corev1.ConditionFalse, syncInfo.reason))
+		case backupExportReadyEvent:
+			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionTrue, syncInfo.reason))
+			updateBackupCondition(backupOut, newExportInitiatedCondition(corev1.ConditionTrue, syncInfo.reason))
+			updateBackupCondition(backupOut, newExportReadyCondition(corev1.ConditionTrue, syncInfo.reason))
 		case backupAbortingEvent:
 			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionTrue, syncInfo.reason))
 			updateBackupCondition(backupOut, newAbortingCondition(corev1.ConditionTrue, syncInfo.reason))
@@ -1139,6 +1228,14 @@ func isBackupAborting(status *backupv1.VirtualMachineBackupStatus) bool {
 	return status != nil && hasCondition(status.Conditions, backupv1.ConditionAborting)
 }
 
+func isBackupExportInitialized(status *backupv1.VirtualMachineBackupStatus) bool {
+	return status != nil && hasCondition(status.Conditions, backupv1.ConditionExportInitiated)
+}
+
+func isBackupExportReady(status *backupv1.VirtualMachineBackupStatus) bool {
+	return status != nil && hasCondition(status.Conditions, backupv1.ConditionExportReady)
+}
+
 func IsBackupDone(status *backupv1.VirtualMachineBackupStatus) bool {
 	return status != nil && hasCondition(status.Conditions, backupv1.ConditionDone)
 }
@@ -1181,6 +1278,14 @@ func newDoneCondition(status corev1.ConditionStatus, reason string) backupv1.Con
 
 func newProgressingCondition(status corev1.ConditionStatus, reason string) backupv1.Condition {
 	return newCondition(backupv1.ConditionProgressing, status, reason)
+}
+
+func newExportInitiatedCondition(status corev1.ConditionStatus, reason string) backupv1.Condition {
+	return newCondition(backupv1.ConditionExportInitiated, status, reason)
+}
+
+func newExportReadyCondition(status corev1.ConditionStatus, reason string) backupv1.Condition {
+	return newCondition(backupv1.ConditionExportReady, status, reason)
 }
 
 func newAbortingCondition(status corev1.ConditionStatus, reason string) backupv1.Condition {
