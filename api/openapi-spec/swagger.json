@@ -19968,15 +19968,12 @@
     "type": "object",
     "required": [
      "volumeName",
-     "diskTarget",
-     "dataEndpoint",
-     "mapEndpoint"
+     "diskTarget"
     ],
     "properties": {
      "dataEndpoint": {
       "description": "DataEndpoint is the URL of the endpoint for read for pull mode",
-      "type": "string",
-      "default": ""
+      "type": "string"
      },
      "diskTarget": {
       "description": "DiskTarget is the disk target device name at backup time",
@@ -19985,8 +19982,7 @@
      },
      "mapEndpoint": {
       "description": "MapEndpoint is the URL of the endpoint for map for pull mode",
-      "type": "string",
-      "default": ""
+      "type": "string"
      },
      "volumeName": {
       "description": "VolumeName is the volume name from VMI spec",
@@ -20247,6 +20243,10 @@
        "$ref": "#/definitions/v1alpha1.Condition"
       },
       "x-kubernetes-list-type": "atomic"
+     },
+     "endpointCert": {
+      "description": "EndpointCert is the raw CACertificate that is to be used when connecting to an exported backup endpoint in pull mode.",
+      "type": "string"
      },
      "includedVolumes": {
       "description": "IncludedVolumes lists the volumes that were included in the backup",

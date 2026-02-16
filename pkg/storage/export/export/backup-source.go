@@ -117,6 +117,10 @@ func (s *VMBackupSource) ConfigurePod(pod *corev1.Pod) {
 		Name:  "BACKUP_UID",
 		Value: string(s.vmBackup.UID),
 	})
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
+		Name:  "BACKUP_TYPE",
+		Value: string(s.vmBackup.Status.Type),
+	})
 }
 
 func (s *VMBackupSource) ConfigureExportLink(exportLink *exportv1.VirtualMachineExportLink, paths *ServerPaths, vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, hostAndBase, scheme string) {
@@ -124,14 +128,14 @@ func (s *VMBackupSource) ConfigureExportLink(exportLink *exportv1.VirtualMachine
 		return
 	}
 
-	if s.vmBackup.Status == nil || s.HasContent() {
+	if s.vmBackup.Status == nil || !s.HasContent() {
 		return
 	}
 
 	for _, volume := range s.vmBackup.Status.IncludedVolumes {
 		backupInfo := paths.GetBackupInfo(volume.VolumeName)
 		if backupInfo == nil {
-			log.Log.Warningf("Backup %s not found in paths", volume)
+			log.Log.Warningf("Backup %s not found in paths", volume.VolumeName)
 			continue
 		}
 

@@ -238,6 +238,11 @@ func (in *VirtualMachineBackupStatus) DeepCopyInto(out *VirtualMachineBackupStat
 		*out = new(string)
 		**out = **in
 	}
+	if in.EndpointCert != nil {
+		in, out := &in.EndpointCert, &out.EndpointCert
+		*out = new(string)
+		**out = **in
+	}
 	if in.IncludedVolumes != nil {
 		in, out := &in.IncludedVolumes, &out.IncludedVolumes
 		*out = make([]BackupVolumeInfo, len(*in))

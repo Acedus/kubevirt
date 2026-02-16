@@ -7,10 +7,10 @@ service NBD {
     // Returns metadata (size + JSON info) about the disk export
     rpc GetExportInfo(ExportInfoRequest) returns (ExportInfoResponse) {}
 
-    // Returns the list of dirty regions for incremental backup
-    rpc GetDirtyBitmap(MapRequest) returns (MapResponse) {}
+    // Returns the list of extents for a disk export map
+    rpc GetMap(MapRequest) returns (stream MapResponse) {}
 
-    // High-performance data path for reading specific dirty regions
+    // Reads the disk export and streams back the result
     rpc Read(ReadRequest) returns (stream DataChunk) {}
 }
 
@@ -19,30 +19,36 @@ message ExportInfoRequest {
 }
 
 message ExportInfoResponse {
-    int64 size = 1;
-    bytes exportJson = 2; 
+    uint64 size = 1;
+    string exportJson = 2; 
 }
 
 message MapRequest {
     string exportName = 1;
     string bitmapName = 2;
+    uint64 offset = 3;
+    uint64 length = 4;
 }
 
 message MapResponse {
-    repeated DirtyRegion regions = 1;
+    repeated Extent extents = 1;
+    uint64 next_offset = 2;
 }
 
-message DirtyRegion {
-    int64 offset = 1;
-    int64 length = 2;
+message Extent {
+    uint64 offset = 1;
+    uint64 length = 2;
+    uint64 type = 3;
+    string description = 4;
 }
 
 message ReadRequest {
     string exportName = 1;
-    int64 offset = 2;
-    int64 length = 3;
+    uint64 offset = 2;
+    uint64 length = 3;
 }
 
 message DataChunk {
-    bytes data = 1;
+    uint64 offset = 1;
+    bytes data = 2;
 }

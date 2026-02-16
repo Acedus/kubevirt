@@ -29,6 +29,7 @@ import (
 
 	jose "gopkg.in/go-jose/go-jose.v2"
 	"gopkg.in/go-jose/go-jose.v2/jwt"
+
 	"kubevirt.io/kubevirt/pkg/certificates/triple/cert"
 
 	corev1 "k8s.io/api/core/v1"
@@ -62,6 +63,7 @@ func (g *tokenGenerator) Generate(backupUID string) (string, error) {
 
 	cl := jwt.Claims{
 		Issuer:   g.issuer,
+		Subject:  backupUID,
 		Audience: jwt.Audience{backupUID},
 		Expiry:   jwt.NewNumericDate(time.Now().Add(10 * time.Minute)),
 	}

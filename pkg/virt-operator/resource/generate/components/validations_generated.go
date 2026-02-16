@@ -8444,9 +8444,7 @@ var CRDsValidation map[string]string = map[string]string{
                         description: VolumeName is the volume name from VMI spec
                         type: string
                     required:
-                    - dataEndpoint
                     - diskTarget
-                    - mapEndpoint
                     - volumeName
                     type: object
                   type: array
@@ -9185,6 +9183,11 @@ var CRDsValidation map[string]string = map[string]string{
             type: object
           type: array
           x-kubernetes-list-type: atomic
+        endpointCert:
+          description: |-
+            EndpointCert is the raw CACertificate that is to be used when connecting
+            to an exported backup endpoint in pull mode.
+          type: string
         includedVolumes:
           description: IncludedVolumes lists the volumes that were included in the
             backup
@@ -9207,9 +9210,7 @@ var CRDsValidation map[string]string = map[string]string{
                 description: VolumeName is the volume name from VMI spec
                 type: string
             required:
-            - dataEndpoint
             - diskTarget
-            - mapEndpoint
             - volumeName
             type: object
           type: array
@@ -9323,9 +9324,7 @@ var CRDsValidation map[string]string = map[string]string{
                     description: VolumeName is the volume name from VMI spec
                     type: string
                 required:
-                - dataEndpoint
                 - diskTarget
-                - mapEndpoint
                 - volumeName
                 type: object
               type: array
@@ -14429,9 +14428,7 @@ var CRDsValidation map[string]string = map[string]string{
                         description: VolumeName is the volume name from VMI spec
                         type: string
                     required:
-                    - dataEndpoint
                     - diskTarget
-                    - mapEndpoint
                     - volumeName
                     type: object
                   type: array
@@ -31418,9 +31415,7 @@ var CRDsValidation map[string]string = map[string]string{
                                       VMI spec
                                     type: string
                                 required:
-                                - dataEndpoint
                                 - diskTarget
-                                - mapEndpoint
                                 - volumeName
                                 type: object
                               type: array

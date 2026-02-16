@@ -240,11 +240,15 @@ func generateDomainBackup(disks []api.Disk, backupOptions *backupv1.BackupOption
 			if backupOptions.TargetPath != nil {
 				setBackupDiskTargetPath(&backupDisk, backupOptions, volumeName, backupPath)
 			}
+			backupDisk.ExportName = volumeName
 			checkpointDisk.Checkpoint = "bitmap"
 			backupVolumesInfo = append(backupVolumesInfo, backupv1.BackupVolumeInfo{
 				VolumeName: volumeName,
 				DiskTarget: disk.Target.Device,
 			})
+			if backupOptions.Mode == backupv1.PullMode && backupOptions.Incremental != nil {
+				backupDisk.ExportBitmap = volumeName
+			}
 		} else {
 			backupDisk.Backup = "no"
 			checkpointDisk.Checkpoint = "no"
@@ -253,9 +257,9 @@ func generateDomainBackup(disks []api.Disk, backupOptions *backupv1.BackupOption
 		checkpointDisks.Disks = append(checkpointDisks.Disks, checkpointDisk)
 	}
 
-	domainBackup.BackupDisks = backupDisks
 	backupTime := backupTimeFormatted(backupOptions.BackupStartTime)
 	checkpointName := fmt.Sprintf("%s-%s", backupOptions.BackupName, backupTime)
+	domainBackup.BackupDisks = backupDisks
 	domainCheckpoint := &api.DomainCheckpoint{
 		Name:            checkpointName,
 		CheckpointDisks: checkpointDisks,
@@ -544,7 +548,7 @@ func (m *StorageManager) initiateBackupTunnel(vmi *v1.VirtualMachineInstance, ba
 		m.activeBackupTunnel.Stop()
 	}
 
-	tunnel, err := newBackupTunnelManager(*backupOptions.ExportServerAddr, backupSock, backupOptions.CACert, *backupOptions.ExportServerToken)
+	tunnel, err := newBackupTunnelManager(*backupOptions.ExportServerAddr, *backupOptions.ExportServerName, backupSock, *backupOptions.ExportServerToken, backupOptions.CACert)
 	if err != nil {
 		return fmt.Errorf("failed to initialize backup tunnel: %w", err)
 	}

@@ -37,7 +37,7 @@ type StorageManager struct {
 	memoryDumpInProgress     chan struct{}
 	cancelSafetyUnfreezeChan chan struct{}
 
-	activeBackupTunnel *BackupTunnelManager
+	activeBackupTunnel *backupTunnelManager
 	backupTunnelMu     sync.Mutex
 }
 

@@ -17387,7 +17387,6 @@ func schema_kubevirtio_api_backup_v1alpha1_BackupVolumeInfo(ref common.Reference
 					"dataEndpoint": {
 						SchemaProps: spec.SchemaProps{
 							Description: "DataEndpoint is the URL of the endpoint for read for pull mode",
-							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -17395,13 +17394,12 @@ func schema_kubevirtio_api_backup_v1alpha1_BackupVolumeInfo(ref common.Reference
 					"mapEndpoint": {
 						SchemaProps: spec.SchemaProps{
 							Description: "MapEndpoint is the URL of the endpoint for map for pull mode",
-							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 				},
-				Required: []string{"volumeName", "diskTarget", "dataEndpoint", "mapEndpoint"},
+				Required: []string{"volumeName", "diskTarget"},
 			},
 		},
 	}
@@ -17653,6 +17651,13 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupStatus(ref common
 					"checkpointName": {
 						SchemaProps: spec.SchemaProps{
 							Description: "CheckpointName the name of the checkpoint created for the current backup",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"endpointCert": {
+						SchemaProps: spec.SchemaProps{
+							Description: "EndpointCert is the raw CACertificate that is to be used when connecting to an exported backup endpoint in pull mode.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

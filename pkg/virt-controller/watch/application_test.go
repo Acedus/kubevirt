@@ -275,7 +275,9 @@ var _ = Describe("Application", func() {
 			vmiInformer,
 			pvcInformer,
 			vmExportInformer,
+			configMapInformer,
 			recorder,
+			"kubevirt",
 		)
 
 		app.readyChan = make(chan bool)

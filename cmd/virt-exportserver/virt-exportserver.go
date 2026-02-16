@@ -32,7 +32,8 @@ import (
 )
 
 const (
-	listenAddr = ":8443"
+	exportListenAddr       = ":8443"
+	backupTunnelListenAddr = ":9090"
 )
 
 func main() {
@@ -41,12 +42,18 @@ func main() {
 
 	certFile, keyFile := getCert()
 	config := exportServer.ExportServerConfig{
-		CertFile:   certFile,
-		KeyFile:    keyFile,
-		Deadline:   getDeadline(),
-		ListenAddr: getListenAddr(),
-		TokenFile:  getTokenFile(),
-		Paths:      export.CreateServerPaths(export.EnvironToMap()),
+		CertFile:               certFile,
+		KeyFile:                keyFile,
+		Deadline:               getDeadline(),
+		ExportListenAddr:       getExportListenAddr(),
+		BackupTunnelListenAddr: getBackupTunnelListenAddr(),
+		TokenFile:              getTokenFile(),
+		Paths:                  export.CreateServerPaths(export.EnvironToMap()),
+	}
+	if config.Paths.Backups != nil && len(config.Paths.Backups) > 0 {
+		config.BackupPublicKey = getBackupPublicKey()
+		config.BackupUID = getBackupUID()
+		config.BackupType = getBackupType()
 	}
 	server := exportServer.NewExportServer(config)
 	service.Setup(server)
@@ -70,12 +77,20 @@ func getCert() (certFile, keyFile string) {
 	return
 }
 
-func getListenAddr() string {
+func getExportListenAddr() string {
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr != "" {
 		return addr
 	}
-	return listenAddr
+	return exportListenAddr
+}
+
+func getBackupTunnelListenAddr() string {
+	addr := os.Getenv("BACKUP_TUNNEL_LISTEN_ADDR")
+	if addr != "" {
+		return addr
+	}
+	return backupTunnelListenAddr
 }
 
 func getDeadline() (result time.Time) {
@@ -88,4 +103,28 @@ func getDeadline() (result time.Time) {
 		}
 	}
 	return
+}
+
+func getBackupPublicKey() string {
+	publicKey := os.Getenv("BACKUP_PUBLIC_KEY")
+	if publicKey == "" {
+		panic("backup export but no tunnel public key")
+	}
+	return publicKey
+}
+
+func getBackupUID() string {
+	backupUID := os.Getenv("BACKUP_UID")
+	if backupUID == "" {
+		panic("backup export but not backup UID provided")
+	}
+	return backupUID
+}
+
+func getBackupType() string {
+	backupType := os.Getenv("BACKUP_TYPE")
+	if backupType == "" {
+		panic("backup export but no backup type provided")
+	}
+	return backupType
 }

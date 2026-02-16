@@ -30,6 +30,7 @@ rules:
   - kubevirt-exportproxy-certs
   - kubevirt-synchronization-controller-certs
   - kubevirt-synchronization-controller-server-certs
+  - kubevirt-controller-backup-certs
   resources:
   - secrets
   verbs:

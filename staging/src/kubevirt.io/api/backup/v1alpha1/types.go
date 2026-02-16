@@ -43,9 +43,9 @@ type BackupVolumeInfo struct {
 	// DiskTarget is the disk target device name at backup time
 	DiskTarget string `json:"diskTarget"`
 	// DataEndpoint is the URL of the endpoint for read for pull mode
-	DataEndpoint string `json:"dataEndpoint"`
+	DataEndpoint string `json:"dataEndpoint,omitempty"`
 	// MapEndpoint is the URL of the endpoint for map for pull mode
-	MapEndpoint string `json:"mapEndpoint"`
+	MapEndpoint string `json:"mapEndpoint,omitempty"`
 }
 
 type BackupCheckpoint struct {
@@ -88,6 +88,7 @@ type BackupOptions struct {
 	SkipQuiesce       bool         `json:"skipQuiesce,omitempty"`
 	ExportServerAddr  *string      `json:"exportServerAddr,omitempty"`
 	ExportServerToken *string      `json:"exportServerToken,omitempty"`
+	ExportServerName  *string      `json:"exportServerName,omitempty"`
 	CACert            []byte       `json:"caCert,omitempty"`
 }
 
@@ -207,6 +208,10 @@ type VirtualMachineBackupStatus struct {
 	// +optional
 	// CheckpointName the name of the checkpoint created for the current backup
 	CheckpointName *string `json:"checkpointName,omitempty"`
+	// +optional
+	// EndpointCert is the raw CACertificate that is to be used when connecting
+	// to an exported backup endpoint in pull mode.
+	EndpointCert *string `json:"endpointCert,omitempty"`
 	// +optional
 	// +listType=atomic
 	// IncludedVolumes lists the volumes that were included in the backup

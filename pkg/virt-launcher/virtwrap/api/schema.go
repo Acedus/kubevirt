@@ -460,12 +460,13 @@ type BackupDisks struct {
 }
 
 type BackupDisk struct {
-	Name       string         `xml:"name,attr"`
-	Backup     string         `xml:"backup,attr"`
-	Type       string         `xml:"type,attr,omitempty"`
-	Target     *BackupTarget  `xml:"target,omitempty"`
-	Scratch    *BackupScratch `xml:"scratch,omitempty"`
-	ExportName string         `xml:"exportname,attr,omitempty"`
+	Name         string         `xml:"name,attr"`
+	Backup       string         `xml:"backup,attr"`
+	Type         string         `xml:"type,attr,omitempty"`
+	Target       *BackupTarget  `xml:"target,omitempty"`
+	Scratch      *BackupScratch `xml:"scratch,omitempty"`
+	ExportName   string         `xml:"exportname,attr,omitempty"`
+	ExportBitmap string         `xml:"exportbitmap,attr,omityempty"`
 }
 
 type BackupTarget struct {

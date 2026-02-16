@@ -390,6 +390,7 @@ type SyncInfo struct {
 	checkpointName  *string
 	backupType      backupv1.BackupType
 	includedVolumes []backupv1.BackupVolumeInfo
+	cert            *string
 }
 
 func syncInfoError(err error) *SyncInfo {
@@ -676,7 +677,8 @@ func (ctrl *VMBackupController) handlePrepareBackupExport(backup *backupv1.Virtu
 	if token == nil {
 		return syncInfoError(fmt.Errorf("cannot initiate backup export tunnel, JWT is nil"))
 	}
-	exportAddr := fmt.Sprintf("virt-export-%s-%s.svc", vmExport.Name, vmExport.Namespace)
+	exportAddr := fmt.Sprintf("virt-export-%s.%s.svc", vmExport.Name, vmExport.Namespace)
+	serverName := fmt.Sprintf("%s.cluster.local", exportAddr)
 	backupOptions := &backupv1.BackupOptions{
 		BackupName:        backup.Name,
 		Cmd:               backupv1.Export,
@@ -684,6 +686,7 @@ func (ctrl *VMBackupController) handlePrepareBackupExport(backup *backupv1.Virtu
 		Mode:              *backup.Spec.Mode,
 		ExportServerAddr:  &exportAddr,
 		ExportServerToken: token,
+		ExportServerName:  &serverName,
 		CACert:            ca,
 	}
 	if err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions); err != nil {
@@ -771,19 +774,34 @@ func (ctrl *VMBackupController) waitForBackupExportReady(backup *backupv1.Virtua
 		return syncInfoError(fmt.Errorf("associated export does not exist"))
 	}
 	vmExport := obj.(*exportv1.VirtualMachineExport)
-	if vmExport.Status.Phase != exportv1.Ready {
+
+	if vmExport.Status == nil || vmExport.Status.Phase != exportv1.Ready {
 		return nil
 	}
-	if vmExport.Status.Links.Internal == nil || len(vmExport.Status.Links.Internal.Backups) == 0 {
+
+	links := vmExport.Status.Links
+	internalLinks := links == nil || links.Internal == nil || len(links.Internal.Backups) == 0
+	externalLinks := links == nil || links.External == nil || len(links.External.Backups) == 0
+
+	if internalLinks && externalLinks {
 		return syncInfoError(fmt.Errorf("associated export ready but has no backup links"))
+	}
+
+	iterableLinks := links.Internal
+	if !externalLinks {
+		iterableLinks = links.External
+	}
+	if iterableLinks.Cert == "" {
+		return syncInfoError(fmt.Errorf("associated export ready but has no cert exposed"))
 	}
 
 	syncInfo := &SyncInfo{
 		event:  backupExportReadyEvent,
 		reason: backupExportReady,
+		cert:   &iterableLinks.Cert,
 	}
 	endpointMap := make(map[string][]exportv1.VirtualMachineExportBackupEndpoint, 0)
-	for _, backupEndpoint := range vmExport.Status.Links.Internal.Backups {
+	for _, backupEndpoint := range iterableLinks.Backups {
 		endpointMap[backupEndpoint.Name] = backupEndpoint.Endpoints
 	}
 	for _, volume := range backup.Status.IncludedVolumes {
@@ -846,10 +864,15 @@ func (ctrl *VMBackupController) updateStatus(backup *backupv1.VirtualMachineBack
 			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionTrue, syncInfo.reason))
 			updateBackupCondition(backupOut, newExportInitiatedCondition(corev1.ConditionTrue, syncInfo.reason))
 			updateBackupCondition(backupOut, newExportReadyCondition(corev1.ConditionFalse, syncInfo.reason))
+			updateBackupCondition(backupOut, newDoneCondition(corev1.ConditionFalse, syncInfo.reason))
 		case backupExportReadyEvent:
 			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionTrue, syncInfo.reason))
 			updateBackupCondition(backupOut, newExportInitiatedCondition(corev1.ConditionTrue, syncInfo.reason))
 			updateBackupCondition(backupOut, newExportReadyCondition(corev1.ConditionTrue, syncInfo.reason))
+			updateBackupCondition(backupOut, newDoneCondition(corev1.ConditionFalse, syncInfo.reason))
+			if syncInfo.cert != nil {
+				backupOut.Status.EndpointCert = syncInfo.cert
+			}
 		case backupAbortingEvent:
 			updateBackupCondition(backupOut, newProgressingCondition(corev1.ConditionTrue, syncInfo.reason))
 			updateBackupCondition(backupOut, newAbortingCondition(corev1.ConditionTrue, syncInfo.reason))
@@ -872,12 +895,12 @@ func (ctrl *VMBackupController) updateStatus(backup *backupv1.VirtualMachineBack
 			if isBackupAborting(backup.Status) {
 				updateBackupCondition(backupOut, newAbortingCondition(corev1.ConditionFalse, syncInfo.reason))
 			}
-			if syncInfo.checkpointName != nil {
-				backupOut.Status.CheckpointName = syncInfo.checkpointName
-			}
 		}
 		if len(syncInfo.includedVolumes) > 0 {
 			backupOut.Status.IncludedVolumes = syncInfo.includedVolumes
+		}
+		if syncInfo.checkpointName != nil {
+			backupOut.Status.CheckpointName = syncInfo.checkpointName
 		}
 	}
 
@@ -1100,6 +1123,7 @@ func (ctrl *VMBackupController) checkBackupCompletion(backup *backupv1.VirtualMa
 		if len(backupStatus.Volumes) > 0 && len(backup.Status.IncludedVolumes) == 0 {
 			return &SyncInfo{
 				includedVolumes: backupStatus.Volumes,
+				checkpointName:  backupStatus.CheckpointName,
 			}
 		}
 		return nil
@@ -1149,7 +1173,7 @@ func resolveCompletion(backup *backupv1.VirtualMachineBackup, status *v1.Virtual
 		}
 	}
 
-	if status.BackupMsg != nil {
+	if status.BackupMsg != nil && *backup.Spec.Mode != backupv1.PullMode {
 		log.Log.Object(backup).Infof(backupCompletedWithWarningMsg, *status.BackupMsg)
 		return &SyncInfo{
 			event:  backupCompletedWithWarningEvent,
@@ -1216,16 +1240,14 @@ func isPushMode(backup *backupv1.VirtualMachineBackup) bool {
 }
 
 func (ctrl *VMBackupController) cleanup(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) (bool, *SyncInfo) {
-	if isPushMode(backup) {
-		volumeName := backupTargetVolumeName(backup.Name)
-		detached := ctrl.backupTargetPVCDetached(vmi, volumeName)
-		if !detached {
-			event := backupInitializingEvent
-			if isBackupProgressing(backup.Status) {
-				event = backupInitiatedEvent
-			}
-			return false, ctrl.detachBackupTargetPVC(vmi, volumeName, event)
+	volumeName := backupTargetVolumeName(backup.Name)
+	detached := ctrl.backupTargetPVCDetached(vmi, volumeName)
+	if !detached {
+		event := backupInitializingEvent
+		if isBackupProgressing(backup.Status) {
+			event = backupInitiatedEvent
 		}
+		return false, ctrl.detachBackupTargetPVC(vmi, volumeName, event)
 	}
 
 	syncInfo := ctrl.removeSourceBackupInProgress(vmi)
