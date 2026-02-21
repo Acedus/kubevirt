@@ -935,6 +935,8 @@ const VirtApiServiceName = "virt-api"
 
 const VirtControllerServiceName = "virt-controller"
 
+const VirtControllerBackupServiceName = "virt-controller-backup"
+
 const VirtHandlerServiceName = "virt-handler"
 
 const VirtExportProxyServiceName = "virt-exportproxy"

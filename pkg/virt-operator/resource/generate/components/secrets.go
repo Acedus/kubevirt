@@ -33,6 +33,7 @@ const (
 	VirtOperatorCertSecretName                        = "kubevirt-operator-certs"
 	VirtApiCertSecretName                             = "kubevirt-virt-api-certs"
 	VirtControllerCertSecretName                      = "kubevirt-controller-certs"
+	VirtControllerBackupCertSecretName                = "kubevirt-controller-backup-certs"
 	VirtExportProxyCertSecretName                     = "kubevirt-exportproxy-certs"
 	VirtSynchronizationControllerCertSecretName       = "kubevirt-synchronization-controller-certs"
 	VirtSynchronizationControllerServerCertSecretName = "kubevirt-synchronization-controller-server-certs"
@@ -99,6 +100,23 @@ var populationStrategy = map[string]CertificateCreationCallback{
 			caKeyPair,
 			fmt.Sprintf(LocalPodDNStemplateString, VirtControllerServiceName, secret.Namespace),
 			VirtControllerServiceName,
+			secret.Namespace,
+			CaClusterLocal,
+			nil,
+			nil,
+			duration,
+		)
+		return keyPair.Cert, keyPair.Key
+	},
+	VirtControllerBackupCertSecretName: func(secret *k8sv1.Secret, caCert *tls.Certificate, duration time.Duration) (cert *x509.Certificate, key *ecdsa.PrivateKey) {
+		caKeyPair := &triple.KeyPair{
+			Key:  caCert.PrivateKey.(*ecdsa.PrivateKey),
+			Cert: caCert.Leaf,
+		}
+		keyPair, _ := triple.NewServerKeyPair(
+			caKeyPair,
+			fmt.Sprintf(LocalPodDNStemplateString, VirtControllerBackupServiceName, secret.Namespace),
+			VirtControllerBackupServiceName,
 			secret.Namespace,
 			CaClusterLocal,
 			nil,
@@ -381,6 +399,20 @@ func NewCertSecrets(installNamespace string, operatorNamespace string) []*k8sv1.
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      VirtControllerCertSecretName,
+				Namespace: installNamespace,
+				Labels: map[string]string{
+					v1.ManagedByLabel: v1.ManagedByLabelOperatorValue,
+				},
+			},
+			Type: k8sv1.SecretTypeTLS,
+		},
+		{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "Secret",
+				APIVersion: "v1",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      VirtControllerBackupCertSecretName,
 				Namespace: installNamespace,
 				Labels: map[string]string{
 					v1.ManagedByLabel: v1.ManagedByLabelOperatorValue,

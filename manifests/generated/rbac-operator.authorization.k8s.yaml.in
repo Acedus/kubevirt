@@ -27,6 +27,7 @@ rules:
   - kubevirt-operator-certs
   - kubevirt-virt-api-certs
   - kubevirt-controller-certs
+  - kubevirt-controller-backup-certs
   - kubevirt-exportproxy-certs
   - kubevirt-synchronization-controller-certs
   - kubevirt-synchronization-controller-server-certs

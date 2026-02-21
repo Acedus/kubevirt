@@ -90,8 +90,8 @@ const (
 	NAMESPACE = "kubevirt-test"
 
 	// +1 for ContainerPathVolumes webhook (always enabled in tests)
-	resourceCount = 92 + virtTemplateResourceCount
-	patchCount    = 60 + virtTemplatePatchCount
+	resourceCount = 93 + virtTemplateResourceCount
+	patchCount    = 61 + virtTemplatePatchCount
 	updateCount   = 33 + virtTemplateUpdateCount
 
 	// 1 because a temporary validation webhook is created to block new CRDs until api server is deployed
