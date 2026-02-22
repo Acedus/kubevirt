@@ -21,6 +21,9 @@ package storage
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/pem"
 	"io"
 	"net"
@@ -29,6 +32,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -256,6 +261,52 @@ var _ = Describe("Backup Tunnel", func() {
 			_, err := manager.watchSocket(ctx)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("failed to watch directory"))
+		})
+	})
+
+	Context("TTL handling", func() {
+		generateToken := func(expiry *time.Time) string {
+			key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			Expect(err).ToNot(HaveOccurred())
+
+			sig, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key}, (&jose.SignerOptions{}).WithType("JWT"))
+			Expect(err).ToNot(HaveOccurred())
+
+			claims := jwt.Claims{}
+			if expiry != nil {
+				claims.Expiry = jwt.NewNumericDate(*expiry)
+			}
+
+			raw, err := jwt.Signed(sig).Claims(claims).Serialize()
+			Expect(err).ToNot(HaveOccurred())
+			return raw
+		}
+
+		It("should return an error if token is malformed", func() {
+			_, _, err := extractContextFromToken("invalid.token.string")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to parse JWT token"))
+		})
+
+		It("should return an error if token lacks an expiry claim", func() {
+			token := generateToken(nil)
+			_, _, err := extractContextFromToken(token)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("missing the required expiry claim"))
+		})
+
+		It("should return a context with the correct deadline", func() {
+			expectedExpiry := time.Now().Add(1 * time.Hour).Truncate(time.Second)
+			token := generateToken(&expectedExpiry)
+
+			ctx, cancel, err := extractContextFromToken(token)
+			Expect(err).ToNot(HaveOccurred())
+			defer cancel()
+
+			deadline, ok := ctx.Deadline()
+			Expect(ok).To(BeTrue(), "context should have a deadline set")
+
+			Expect(deadline).To(BeTemporally("==", expectedExpiry))
 		})
 	})
 })

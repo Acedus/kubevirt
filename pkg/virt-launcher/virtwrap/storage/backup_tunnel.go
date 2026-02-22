@@ -34,6 +34,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -65,12 +67,14 @@ type backupTunnelManager struct {
 
 	mu     sync.Mutex
 	server *grpc.Server
+	cancel context.CancelFunc
 }
 
 func newBackupTunnelManager(targetAddr, serverName, nbdSocket, token string, caCert []byte) (*backupTunnelManager, error) {
 	if err := canCreateTunnel(targetAddr, serverName, nbdSocket, token); err != nil {
 		return nil, err
 	}
+
 	certPool := x509.NewCertPool()
 	if ok := certPool.AppendCertsFromPEM(caCert); !ok {
 		return nil, fmt.Errorf("failed to parse CA certificate: no valid PEM blocks found")
@@ -88,14 +92,23 @@ func newBackupTunnelManager(targetAddr, serverName, nbdSocket, token string, caC
 }
 
 func (m *backupTunnelManager) Start() error {
-	// TODO: add TTL handling by deriving from JWT token
-	ctx := context.Background()
+	ctx, cancel, err := extractContextFromToken(m.token)
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	m.cancel = cancel
+	m.mu.Unlock()
+
 	nbdSocketCh, err := m.watchSocket(ctx)
 	if err != nil {
+		cancel()
 		return fmt.Errorf("failed to initialize socket watcher: %w", err)
 	}
 
 	go func() {
+		defer cancel()
 		if err := m.run(ctx, nbdSocketCh); err != nil {
 			log.Log.Reason(err).Error("backup tunnel stopped with terminal error")
 		}
@@ -105,6 +118,11 @@ func (m *backupTunnelManager) Start() error {
 }
 
 func (m *backupTunnelManager) Stop() {
+	m.mu.Lock()
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.mu.Unlock()
 	m.stopServer()
 }
 
@@ -376,4 +394,23 @@ func canCreateTunnel(targetAddr, serverName, nbdSocket, token string) error {
 	}
 
 	return nil
+}
+
+func extractContextFromToken(token string) (context.Context, context.CancelFunc, error) {
+	parsedToken, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse JWT token: %w", err)
+	}
+
+	var claims jwt.Claims
+	if err := parsedToken.UnsafeClaimsWithoutVerification(&claims); err != nil {
+		return nil, nil, fmt.Errorf("failed to extract JWT claims: %w", err)
+	}
+
+	if claims.Expiry == nil {
+		return nil, nil, fmt.Errorf("JWT token is missing the required expiry claim")
+	}
+
+	ctx, cancel := context.WithDeadline(context.Background(), claims.Expiry.Time())
+	return ctx, cancel, nil
 }
