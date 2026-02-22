@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/certificate"
 	"k8s.io/client-go/util/workqueue"
 
 	backupv1 "kubevirt.io/api/backup/v1alpha1"
@@ -87,6 +88,7 @@ type VMBackupController struct {
 	backupQueue           workqueue.TypedRateLimitingInterface[string]
 	trackerQueue          workqueue.TypedRateLimitingInterface[string]
 	hasSynced             func() bool
+	tokenGenerator        *tokenGenerator
 }
 
 func NewVMBackupController(client kubecli.KubevirtClient,
@@ -96,6 +98,7 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 	vmiInformer cache.SharedIndexInformer,
 	pvcInformer cache.SharedIndexInformer,
 	recorder record.EventRecorder,
+	certManager certificate.Manager,
 ) (*VMBackupController, error) {
 	c := &VMBackupController{
 		backupQueue: workqueue.NewTypedRateLimitingQueueWithConfig(
@@ -113,6 +116,7 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 		pvcStore:              pvcInformer.GetStore(),
 		recorder:              recorder,
 		client:                client,
+		tokenGenerator:        newTokenGenerator(certManager),
 	}
 
 	c.hasSynced = func() bool {

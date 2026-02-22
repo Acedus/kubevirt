@@ -274,6 +274,7 @@ var _ = Describe("Application", func() {
 			vmiInformer,
 			pvcInformer,
 			recorder,
+			nil,
 		)
 
 		app.readyChan = make(chan bool)

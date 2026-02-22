@@ -135,6 +135,9 @@ const (
 
 	defaultPromCertFilePath = "/etc/virt-controller/certificates/tls.crt"
 	defaultPromKeyFilePath  = "/etc/virt-controller/certificates/tls.key"
+
+	defaultBackupCertFilePath = "/etc/virt-controller/backupcertificates/tls.crt"
+	defaultBackupKeyFilePath  = "/etc/virt-controller/backupcertificates/tls.key"
 )
 
 var (
@@ -276,8 +279,12 @@ type VirtControllerApp struct {
 	additionalLauncherLabelsSync      []string
 	backupControllerThreads           int
 
-	promCertFilePath         string
-	promKeyFilePath          string
+	promCertFilePath string
+	promKeyFilePath  string
+
+	backupCertFilePath string
+	backupKeyFilePath  string
+
 	nodeTopologyUpdater      topology.NodeTopologyUpdater
 	nodeTopologyUpdatePeriod time.Duration
 	reloadableRateLimiter    *ratelimiter.ReloadableRateLimiter
@@ -985,8 +992,10 @@ func (vca *VirtControllerApp) initCloneController() {
 func (vca *VirtControllerApp) initBackupController() {
 	var err error
 	recorder := vca.newRecorder(k8sv1.NamespaceAll, "backup-controller")
+	backupCertManager := bootstrap.NewFileCertificateManager(vca.backupCertFilePath, vca.backupKeyFilePath)
+	go backupCertManager.Start()
 	vca.vmBackupController, err = backup.NewVMBackupController(
-		vca.clientSet, vca.vmBackupInformer, vca.vmBackupTrackerInformer, vca.vmInformer, vca.vmiInformer, vca.persistentVolumeClaimInformer, recorder,
+		vca.clientSet, vca.vmBackupInformer, vca.vmBackupTrackerInformer, vca.vmInformer, vca.vmiInformer, vca.persistentVolumeClaimInformer, recorder, backupCertManager,
 	)
 	if err != nil {
 		panic(err)
@@ -1098,6 +1107,12 @@ func (vca *VirtControllerApp) AddFlags() {
 
 	flag.StringVar(&vca.promKeyFilePath, "prom-key-file", defaultPromKeyFilePath,
 		"Private key for the client certificate used to prove the identity of the virt-controller when it must call out Promethus during a request")
+
+	flag.StringVar(&vca.backupCertFilePath, "backup-cert-file", defaultBackupCertFilePath,
+		"Certificate file for signing backup tokens for CBT pull mode backup")
+
+	flag.StringVar(&vca.backupKeyFilePath, "backup-key-file", defaultBackupKeyFilePath,
+		"Private key file for signing backup tokens CBT pull mode backup")
 
 	flag.IntVar(&vca.cloneControllerThreads, "clone-controller-threads", defaultControllerThreads,
 		"Number of goroutines to run for clone controller")
