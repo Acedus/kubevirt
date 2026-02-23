@@ -20,25 +20,37 @@
 package virtexportserver
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	goflag "flag"
 	"fmt"
 	"io"
 	golog "log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	gzip "github.com/klauspost/pgzip"
 	flag "github.com/spf13/pflag"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -48,6 +60,10 @@ import (
 	virtv1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/log"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
+
+	nbdv1 "kubevirt.io/kubevirt/pkg/storage/cbt/nbd/v1"
+
+	backupv1 "kubevirt.io/api/backup/v1alpha1"
 
 	"kubevirt.io/kubevirt/pkg/service"
 	"kubevirt.io/kubevirt/pkg/storage/export/export"
@@ -66,6 +82,9 @@ const (
 
 	external = "/external"
 	internal = "/internal"
+
+	maxTunnelConns     = 1
+	defaultMapPageSize = 512
 )
 
 var excludeMap = map[string]struct{}{
@@ -77,11 +96,17 @@ type TokenGetterFunc func() (string, error)
 type ExportServerConfig struct {
 	Deadline time.Time
 
-	ListenAddr string
+	ExportListenAddr       string
+	BackupTunnelListenAddr string
 
 	CertFile, KeyFile string
 
 	TokenFile string
+
+	BackupUID        string
+	BackupType       string
+	BackupCheckpoint string
+	BackupPublicKey  *ecdsa.PublicKey
 
 	Paths *export.ServerPaths
 
@@ -107,6 +132,11 @@ type execReader struct {
 type exportServer struct {
 	ExportServerConfig
 	handler http.Handler
+
+	parsedBackupPublicKey *ecdsa.PublicKey
+	tunnelSem             chan struct{}
+	nbdClient             nbdv1.NBDClient
+	nbdMu                 sync.RWMutex
 }
 
 func (er *execReader) Read(p []byte) (int, error) {
@@ -135,6 +165,11 @@ func (s *exportServer) initHandler() {
 			log.Log.Infof("Handling path %s\n", path)
 			mux.Handle(path, tokenChecker(s.TokenGetter, handler))
 		}
+	}
+	for _, bi := range s.Paths.Backups {
+		log.Log.Infof("Handling backup path %s (Map) and %s (Data)\n", bi.MapURI, bi.DataURI)
+		mux.Handle(bi.MapURI, tokenChecker(s.TokenGetter, s.backupMapHandler(bi.Path)))
+		mux.Handle(bi.DataURI, tokenChecker(s.TokenGetter, s.backupDataHandler(bi.Path)))
 	}
 	if s.Paths.VMURI != "" {
 		mux.Handle(filepath.Join(internal, s.Paths.VMURI), tokenChecker(s.TokenGetter, s.VmHandler(s.Paths.Volumes, getInternalBasePath, getInternalCAConfigMap)))
@@ -194,8 +229,13 @@ func (s *exportServer) getHandlerMap(vi export.VolumeInfo) map[string]http.Handl
 func (s *exportServer) Run() {
 	s.initHandler()
 
+	tunnelDone := make(chan struct{})
+	if s.BackupTunnelListenAddr != "" {
+		go s.runTunnelListener(tunnelDone)
+	}
+
 	srv := &http.Server{
-		Addr:    s.ListenAddr,
+		Addr:    s.ExportListenAddr,
 		Handler: s.handler,
 		// Disable HTTP/2
 		// See CVE-2023-44487
@@ -229,7 +269,10 @@ func (s *exportServer) AddFlags() {
 }
 
 func NewExportServer(config ExportServerConfig) service.Service {
-	es := &exportServer{ExportServerConfig: config}
+	es := &exportServer{
+		ExportServerConfig: config,
+		tunnelSem:          make(chan struct{}, maxTunnelConns),
+	}
 
 	if es.ArchiveHandler == nil {
 		es.ArchiveHandler = archiveHandler
@@ -784,4 +827,378 @@ func secretHandler(tokenGetter TokenGetterFunc) http.Handler {
 
 func (s *exportServer) readyHandler(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "OK")
+}
+
+func (s *exportServer) runTunnelListener(done <-chan struct{}) {
+	cert, err := tls.LoadX509KeyPair(s.CertFile, s.KeyFile)
+	if err != nil {
+		golog.Fatalf("failed to load tunnel certs: %v", err)
+	}
+
+	config := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	ln, err := tls.Listen("tcp", s.BackupTunnelListenAddr, config)
+	if err != nil {
+		golog.Fatalf("failed to bind tunnel listener on %s: %v", s.BackupTunnelListenAddr, err)
+	}
+
+	go func() {
+		<-done
+		ln.Close()
+		log.Log.Info("tunnel listener shut down")
+	}()
+
+	log.Log.Infof("tunnel listener active on %s", s.BackupTunnelListenAddr)
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			log.Log.Reason(err).Error("tunnel accept failed")
+			continue
+		}
+		select {
+		case s.tunnelSem <- struct{}{}:
+			go func() {
+				defer func() { <-s.tunnelSem }()
+				s.handleNewTunnel(conn)
+			}()
+		default:
+			log.Log.Warning("rejecting tunnel connection: maximum concurrent tunnels reached")
+			conn.Close()
+		}
+	}
+}
+
+func (s *exportServer) handleNewTunnel(conn net.Conn) {
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	launcherToken, err := readHandshakeLine(conn)
+	if err != nil {
+		log.Log.Reason(err).Error("failed to read launcher token")
+		return
+	}
+
+	if err := s.verifyBackupToken(launcherToken); err != nil {
+		log.Log.Reason(err).Error("JWT verification failed")
+		conn.Write([]byte("ERROR: Unauthorized\n"))
+		return
+	}
+	conn.SetReadDeadline(time.Time{})
+	conn.Write([]byte("OK\n"))
+
+	tc := &tunnelConn{
+		Conn:   conn,
+		closed: make(chan struct{}),
+	}
+
+	var dialOnce sync.Once
+	clientConn, err := grpc.NewClient(
+		"passthrough:///backup",
+		grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) {
+			var c net.Conn
+			dialOnce.Do(func() { c = tc })
+			if c != nil {
+				return c, nil
+			}
+			return nil, fmt.Errorf("tunnel connection is single-use; reconnect not supported")
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                10 * time.Second,
+			Timeout:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
+	)
+	if err != nil {
+		log.Log.Reason(err).Error("failed to create gRPC client for tunnel")
+		return
+	}
+	defer clientConn.Close()
+
+	clientConn.Connect()
+
+	s.nbdMu.Lock()
+	s.nbdClient = nbdv1.NewNBDClient(clientConn)
+	currentClient := s.nbdClient
+	s.nbdMu.Unlock()
+
+	log.Log.Info("backup tunnel established and NBD client registered")
+
+	<-tc.closed
+
+	s.nbdMu.Lock()
+	if s.nbdClient == currentClient {
+		s.nbdClient = nil
+	}
+	s.nbdMu.Unlock()
+	log.Log.Info("backup tunnel disconnected")
+}
+
+func (s *exportServer) verifyBackupToken(tokenStr string) error {
+	if s.ExportServerConfig.BackupPublicKey == nil {
+		return fmt.Errorf("no backup public key configured")
+	}
+
+	tok, err := jwt.ParseSigned(tokenStr, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		return fmt.Errorf("failed to parse token: %w", err)
+	}
+
+	claims := jwt.Claims{}
+	if err := tok.Claims(s.ExportServerConfig.BackupPublicKey, &claims); err != nil {
+		return fmt.Errorf("invalid signature: %w", err)
+	}
+
+	return claims.Validate(jwt.Expected{
+		Issuer:      "kubevirt-backup-controller",
+		Subject:     s.BackupUID,
+		AnyAudience: jwt.Audience{s.BackupUID},
+		Time:        time.Now(),
+	})
+}
+
+type ExportMapExtent struct {
+	Offset      uint64 `json:"offset"`
+	Length      uint64 `json:"length"`
+	Type        uint64 `json:"type"`
+	Description string `json:"description"`
+}
+
+type ExportMapResponse struct {
+	Extents    []ExportMapExtent `json:"extents"`
+	NextOffset *uint64           `json:"next_offset"`
+}
+
+func (s *exportServer) backupMapHandler(exportName string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		s.nbdMu.RLock()
+		client := s.nbdClient
+		s.nbdMu.RUnlock()
+		if client == nil {
+			http.Error(w, "Backup source (virt-launcher) not connected via tunnel", http.StatusServiceUnavailable)
+			return
+		}
+
+		offset := uint64(0)
+		length := uint64(0)
+		pageSize := defaultMapPageSize
+		query := req.URL.Query()
+
+		if offsetStr := query.Get("offset"); offsetStr != "" {
+			o, err := strconv.ParseUint(offsetStr, 10, 64)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("invalid offset %q: %v", offsetStr, err), http.StatusBadRequest)
+				return
+			}
+			offset = o
+		}
+		if lengthStr := query.Get("length"); lengthStr != "" {
+			l, err := strconv.ParseUint(lengthStr, 10, 64)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("invalid length %q: %v", lengthStr, err), http.StatusBadRequest)
+				return
+			}
+			length = l
+		}
+		if pageSizeStr := query.Get("page_size"); pageSizeStr != "" {
+			p, err := strconv.Atoi(pageSizeStr)
+			if err != nil || p <= 0 {
+				http.Error(w, fmt.Sprintf("invalid page_size %q", pageSizeStr), http.StatusBadRequest)
+				return
+			}
+			pageSize = p
+		}
+
+		var bitmapName string
+		if s.BackupType == string(backupv1.Incremental) && s.BackupCheckpoint != "" {
+			bitmapName = s.BackupCheckpoint
+		}
+
+		streamCtx, streamCancel := context.WithCancel(req.Context())
+		defer streamCancel()
+
+		stream, err := client.Map(streamCtx, &nbdv1.MapRequest{
+			ExportName: exportName,
+			BitmapName: bitmapName,
+			Offset:     offset,
+			Length:     length,
+		})
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to call map for export: %s", exportName)
+			log.Log.Reason(err).Error(errMsg)
+			http.Error(w, errMsg, http.StatusInternalServerError)
+			return
+		}
+
+		extents, nextOffsetPtr, err := collectMapPage(stream, pageSize)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to collect map extents for export: %s", exportName)
+			log.Log.Reason(err).Error(errMsg)
+			http.Error(w, errMsg, http.StatusInternalServerError)
+			return
+		}
+
+		page := ExportMapResponse{
+			Extents:    extents,
+			NextOffset: nextOffsetPtr,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(page); err != nil {
+			log.Log.Reason(err).Errorf("failed to encode map page for export %s", exportName)
+		}
+	})
+}
+
+func (s *exportServer) backupDataHandler(exportName string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		s.nbdMu.RLock()
+		client := s.nbdClient
+		s.nbdMu.RUnlock()
+
+		if client == nil {
+			http.Error(w, "Backup source not connected", http.StatusServiceUnavailable)
+			return
+		}
+
+		offset := uint64(0)
+		length := uint64(0)
+
+		query := req.URL.Query()
+		if offsetStr := query.Get("offset"); offsetStr != "" {
+			o, err := strconv.ParseUint(offsetStr, 10, 64)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("invalid offset %q: %v", offsetStr, err), http.StatusBadRequest)
+				return
+			}
+			offset = o
+		}
+		if lengthStr := query.Get("length"); lengthStr != "" {
+			l, err := strconv.ParseUint(lengthStr, 10, 64)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("invalid length %q: %v", lengthStr, err), http.StatusBadRequest)
+				return
+			}
+			length = l
+		}
+
+		stream, err := client.Read(req.Context(), &nbdv1.ReadRequest{
+			ExportName: exportName,
+			Offset:     offset,
+			Length:     length,
+		})
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to call read for export: %s", exportName), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/octet-stream")
+		for {
+			chunk, err := stream.Recv()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				log.Log.Reason(err).Error("Tunnel stream interrupted")
+				return
+			}
+			if _, err := w.Write(chunk.Data); err != nil {
+				log.Log.Reason(err).Error("HTTP client disconnected during stream")
+				return
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	})
+}
+
+// tunnelConn wraps a net.Conn and signals via a channel when Close is called.
+// This lets handleNewTunnel block cleanly until the tunnel peer disconnects
+// without polling gRPC connection states.
+type tunnelConn struct {
+	net.Conn
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (c *tunnelConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+func readHandshakeLine(conn net.Conn) (string, error) {
+	reader := bufio.NewReader(io.LimitReader(conn, 4096))
+	line, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	if len(line) == 4096 && line[len(line)-1] != '\n' {
+		return "", fmt.Errorf("token too long")
+	}
+	return strings.TrimSpace(line), nil
+}
+
+func collectMapPage(stream nbdv1.NBD_MapClient, pageSize int) ([]ExportMapExtent, *uint64, error) {
+	var extents []ExportMapExtent
+	for {
+		msg, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return extents, nil, nil
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, e := range msg.Extents {
+			if len(extents) >= pageSize {
+				return extents, &e.Offset, nil
+			}
+			extents = append(extents, ExportMapExtent{
+				Offset:      e.Offset,
+				Length:      e.Length,
+				Type:        e.Flags,
+				Description: e.Description,
+			})
+		}
+	}
+}
+
+func ParsePublicKeyPEM(pemData string) (*ecdsa.PublicKey, error) {
+	if pemData == "" {
+		return nil, fmt.Errorf("public key PEM is empty")
+	}
+
+	block, _ := pem.Decode([]byte(pemData))
+	if block == nil || block.Type != "PUBLIC KEY" {
+		return nil, fmt.Errorf("failed to decode PEM block or block type is not public key")
+	}
+
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse PKIX public key: %w", err)
+	}
+
+	ecdsaPub, ok := pub.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("parsed key is not of type ECDSA")
+	}
+
+	return ecdsaPub, nil
 }
