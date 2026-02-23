@@ -274,8 +274,11 @@ var _ = Describe("Application", func() {
 			vmInformer,
 			vmiInformer,
 			pvcInformer,
+			vmExportInformer,
+			configMapInformer,
 			recorder,
 			nil,
+			"",
 		)
 
 		app.readyChan = make(chan bool)

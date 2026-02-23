@@ -60,6 +60,7 @@ import (
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/certificate"
 	"k8s.io/client-go/util/flowcontrol"
 
 	"kubevirt.io/kubevirt/pkg/virt-controller/watch/dra"
@@ -284,6 +285,7 @@ type VirtControllerApp struct {
 
 	backupCertFilePath string
 	backupKeyFilePath  string
+	backupCertManager  certificate.Manager
 
 	nodeTopologyUpdater      topology.NodeTopologyUpdater
 	nodeTopologyUpdatePeriod time.Duration
@@ -495,6 +497,9 @@ func Execute() {
 	); err != nil {
 		golog.Fatal(err)
 	}
+
+	app.backupCertManager = bootstrap.NewFileCertificateManager(app.backupCertFilePath, app.backupKeyFilePath)
+	go app.backupCertManager.Start()
 
 	app.initCommon()
 	app.initReplicaSet()
@@ -945,8 +950,6 @@ func (vca *VirtControllerApp) initRestoreController() {
 
 func (vca *VirtControllerApp) initExportController() {
 	recorder := vca.newRecorder(k8sv1.NamespaceAll, "export-controller")
-	backupCertManager := bootstrap.NewFileCertificateManager(vca.backupCertFilePath, vca.backupKeyFilePath)
-	go backupCertManager.Start()
 	vca.exportController = &export.VMExportController{
 		ManifestRenderer:            vca.templateService,
 		Client:                      vca.clientSet,
@@ -975,7 +978,7 @@ func (vca *VirtControllerApp) initExportController() {
 		ClusterPreferenceInformer:   vca.clusterPreferenceInformer,
 		ControllerRevisionInformer:  vca.controllerRevisionInformer,
 		VMBackupInformer:            vca.vmBackupInformer,
-		BackupCertManager:           backupCertManager,
+		BackupCertManager:           vca.backupCertManager,
 	}
 	if err := vca.exportController.Init(); err != nil {
 		panic(err)
@@ -996,10 +999,18 @@ func (vca *VirtControllerApp) initCloneController() {
 func (vca *VirtControllerApp) initBackupController() {
 	var err error
 	recorder := vca.newRecorder(k8sv1.NamespaceAll, "backup-controller")
-	backupCertManager := bootstrap.NewFileCertificateManager(vca.backupCertFilePath, vca.backupKeyFilePath)
-	go backupCertManager.Start()
 	vca.vmBackupController, err = backup.NewVMBackupController(
-		vca.clientSet, vca.vmBackupInformer, vca.vmBackupTrackerInformer, vca.vmInformer, vca.vmiInformer, vca.persistentVolumeClaimInformer, recorder, backupCertManager,
+		vca.clientSet,
+		vca.vmBackupInformer,
+		vca.vmBackupTrackerInformer,
+		vca.vmInformer,
+		vca.vmiInformer,
+		vca.persistentVolumeClaimInformer,
+		vca.vmExportInformer,
+		vca.caExportConfigMapInformer,
+		recorder,
+		vca.backupCertManager,
+		vca.kubevirtNamespace,
 	)
 	if err != nil {
 		panic(err)
