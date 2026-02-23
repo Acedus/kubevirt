@@ -945,6 +945,8 @@ func (vca *VirtControllerApp) initRestoreController() {
 
 func (vca *VirtControllerApp) initExportController() {
 	recorder := vca.newRecorder(k8sv1.NamespaceAll, "export-controller")
+	backupCertManager := bootstrap.NewFileCertificateManager(vca.backupCertFilePath, vca.backupKeyFilePath)
+	go backupCertManager.Start()
 	vca.exportController = &export.VMExportController{
 		ManifestRenderer:            vca.templateService,
 		Client:                      vca.clientSet,
@@ -972,6 +974,8 @@ func (vca *VirtControllerApp) initExportController() {
 		PreferenceInformer:          vca.preferenceInformer,
 		ClusterPreferenceInformer:   vca.clusterPreferenceInformer,
 		ControllerRevisionInformer:  vca.controllerRevisionInformer,
+		VMBackupInformer:            vca.vmBackupInformer,
+		BackupCertManager:           backupCertManager,
 	}
 	if err := vca.exportController.Init(); err != nil {
 		panic(err)
