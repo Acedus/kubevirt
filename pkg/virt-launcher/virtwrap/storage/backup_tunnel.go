@@ -27,15 +27,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/go-jose/go-jose/v4"
-	"github.com/go-jose/go-jose/v4/jwt"
+	"golang.org/x/net/http2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -48,9 +47,7 @@ import (
 const (
 	defaultKeepaliveMinTime        = 5 * time.Second
 	defaultDialTimeout             = 10 * time.Second
-	defaultHandshakeTimeout        = 10 * time.Second
 	defaultGracefulShutdownTimeout = 10 * time.Second
-	defaultExportServerPort        = 9090
 
 	defaultTunnelInit          = 1 * time.Second
 	defaultTunnelCap           = 5 * time.Minute
@@ -61,41 +58,35 @@ const (
 
 type backupTunnelManager struct {
 	targetAddr string
+	serverName string
 	nbdSocket  string
-	token      string
-	tlsConfig  *tls.Config
+
+	caCert     []byte
+	backupCert []byte
+	backupKey  []byte
 
 	mu     sync.Mutex
 	server *grpc.Server
 	cancel context.CancelFunc
 }
 
-func newBackupTunnelManager(targetAddr, serverName, nbdSocket, token string, caCert []byte) (*backupTunnelManager, error) {
-	if err := canCreateTunnel(targetAddr, serverName, nbdSocket, token); err != nil {
-		return nil, err
+func newBackupTunnelManager(targetAddr, serverName, nbdSocket string, caCert, backupCert, backupKey []byte) (*backupTunnelManager, error) {
+	if targetAddr == "" || serverName == "" || nbdSocket == "" {
+		return nil, fmt.Errorf("invalid tunnel configuration: missing required parameters")
 	}
 
-	certPool := x509.NewCertPool()
-	if ok := certPool.AppendCertsFromPEM(caCert); !ok {
-		return nil, fmt.Errorf("failed to parse CA certificate: no valid PEM blocks found")
-	}
 	return &backupTunnelManager{
 		targetAddr: targetAddr,
+		serverName: serverName,
 		nbdSocket:  nbdSocket,
-		token:      token,
-		tlsConfig: &tls.Config{
-			RootCAs:            certPool,
-			ServerName:         serverName,
-			InsecureSkipVerify: false,
-		},
+		caCert:     caCert,
+		backupCert: backupCert,
+		backupKey:  backupKey,
 	}, nil
 }
 
 func (m *backupTunnelManager) Start() error {
-	ctx, cancel, err := extractContextFromToken(m.token)
-	if err != nil {
-		return err
-	}
+	ctx, cancel := context.WithCancel(context.Background())
 
 	m.mu.Lock()
 	m.cancel = cancel
@@ -127,10 +118,6 @@ func (m *backupTunnelManager) Stop() {
 }
 
 func (m *backupTunnelManager) run(ctx context.Context, nbdSocketCh <-chan struct{}) error {
-	// the virt-exportserver may not be listening yet when we try to connect
-	// or the connection may have terminated abruptly.
-	// try establishing the connection with an exponential backoff and
-	// reset the duration if enough time passes without a connection failure after establishing it
 	delayFn := wait.Backoff{
 		Duration: defaultTunnelInit,
 		Cap:      defaultTunnelCap,
@@ -174,17 +161,22 @@ func (m *backupTunnelManager) stopServer() {
 }
 
 func (m *backupTunnelManager) establishAndServe(ctx context.Context, nbdSocketCh <-chan struct{}) error {
-	addr := fmt.Sprintf("%s:%d", m.targetAddr, defaultExportServerPort)
+	url := fmt.Sprintf("https://%s:443", m.targetAddr)
 
-	conn, err := m.dial(addr)
+	// 1. Prepare mTLS config
+	tlsConfig, err := m.prepareTLSConfig()
 	if err != nil {
-		return fmt.Errorf("dial %s: %w", addr, err)
+		return fmt.Errorf("tls config: %w", err)
+	}
+
+	// 2. Dial the tunnel via HTTP/2 CONNECT
+	conn, err := m.openConnectTunnel(ctx, url, tlsConfig)
+	if err != nil {
+		return fmt.Errorf("connect tunnel: %w", err)
 	}
 	defer conn.Close()
-	if err := m.handshake(conn); err != nil {
-		return fmt.Errorf("handshake: %w", err)
-	}
 
+	// 3. Setup gRPC server over the tunnel connection
 	srv := grpc.NewServer(
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             defaultKeepaliveMinTime,
@@ -197,34 +189,11 @@ func (m *backupTunnelManager) establishAndServe(ctx context.Context, nbdSocketCh
 	m.server = srv
 	m.mu.Unlock()
 
-	log.Log.Infof("backup tunnel: connected to %s, serving NBD over gRPC", addr)
+	log.Log.Infof("backup tunnel: connected via CONNECT to %s, serving NBD", url)
 
+	// 4. Handle lifecycle
 	serveDone := make(chan struct{})
-	defer close(serveDone)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			log.Log.Info("context done, closing backup tunnel")
-		case <-nbdSocketCh:
-			log.Log.Info("NBD socket gone, closing backup tunnel")
-		case <-serveDone:
-			return
-		}
-
-		gracefulDone := make(chan struct{})
-		go func() {
-			defer close(gracefulDone)
-			srv.GracefulStop()
-		}()
-
-		select {
-		case <-gracefulDone:
-		case <-time.After(defaultGracefulShutdownTimeout):
-			log.Log.Warning("backup tunnel graceful shutdown timeout, forcing stop")
-			srv.Stop()
-		}
-	}()
+	go m.manageGracefulShutdown(ctx, srv, nbdSocketCh, serveDone)
 
 	closed := make(chan struct{})
 	wrapped := &closeNotifyConn{Conn: conn, closed: closed}
@@ -236,65 +205,94 @@ func (m *backupTunnelManager) establishAndServe(ctx context.Context, nbdSocketCh
 		return err
 	}
 
+	close(serveDone)
 	m.mu.Lock()
 	m.server = nil
 	m.mu.Unlock()
 
-	select {
-	case <-ctx.Done():
-		return nil
-	case <-nbdSocketCh:
-		return nil
-	default:
-		return fmt.Errorf("remote closed connection unexpectedly")
-	}
-}
-
-func (m *backupTunnelManager) dial(addr string) (*tls.Conn, error) {
-	return tls.DialWithDialer(&net.Dialer{Timeout: defaultDialTimeout}, "tcp", addr, m.tlsConfig)
-}
-
-func (m *backupTunnelManager) handshake(conn net.Conn) error {
-	deadline := time.Now().Add(defaultHandshakeTimeout)
-
-	if err := conn.SetWriteDeadline(deadline); err != nil {
-		return fmt.Errorf("set write deadline: %w", err)
-	}
-	if _, err := fmt.Fprintf(conn, "%s\n", m.token); err != nil {
-		return fmt.Errorf("send token: %w", err)
-	}
-	conn.SetWriteDeadline(time.Time{})
-
-	if err := conn.SetReadDeadline(deadline); err != nil {
-		return fmt.Errorf("set read deadline: %w", err)
-	}
-
-	respStr, err := readUnbufferedLine(conn)
-	conn.SetReadDeadline(time.Time{})
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-
-	if respStr != "OK" {
-		return fmt.Errorf("server rejected token: %q", respStr)
-	}
 	return nil
 }
 
-func readUnbufferedLine(r io.Reader) (string, error) {
-	var resp []byte
-	var buf [1]byte
-	for len(resp) < 1024 {
-		_, err := r.Read(buf[:])
-		if err != nil {
-			return string(resp), err
-		}
-		if buf[0] == '\n' {
-			return strings.TrimSuffix(string(resp), "\r"), nil
-		}
-		resp = append(resp, buf[0])
+func (m *backupTunnelManager) prepareTLSConfig() (*tls.Config, error) {
+	certPool := x509.NewCertPool()
+	if ok := certPool.AppendCertsFromPEM(m.caCert); !ok {
+		return nil, fmt.Errorf("failed to parse CA certificate")
 	}
-	return "", fmt.Errorf("line length limited to 1024 bytes")
+
+	clientCert, err := tls.X509KeyPair(m.backupCert, m.backupKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load client keypair: %w", err)
+	}
+
+	return &tls.Config{
+		RootCAs:      certPool,
+		Certificates: []tls.Certificate{clientCert},
+		ServerName:   m.serverName,
+		// Force HTTP/2 so the CONNECT upgrade yields a bidirectional
+		// stream.  With HTTP/1.1, http.Client only exposes an
+		// io.ReadCloser for the response body, making writes impossible.
+		NextProtos: []string{"h2"},
+	}, nil
+}
+
+// openConnectTunnel sends an HTTP/2 CONNECT request to the export server and
+// returns a net.Conn representing the open tunnel.
+//
+// HTTP/2 CONNECT gives us genuine bidirectionality without any raw-socket
+// tricks: the request body pipe is the write path, resp.Body is the read
+// path.  No bufio buffering, no manual frame writing, no lost bytes.
+func (m *backupTunnelManager) openConnectTunnel(ctx context.Context, targetURL string, tlsConfig *tls.Config) (net.Conn, error) {
+	transport := &http2.Transport{
+		TLSClientConfig: tlsConfig,
+	}
+
+	// The pipe couples the gRPC server's writes to the HTTP/2 request body.
+	// Closing pw signals end-of-stream to the server.
+	pr, pw := io.Pipe()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, targetURL, pr)
+	if err != nil {
+		pr.Close()
+		pw.Close()
+		return nil, err
+	}
+
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		pr.Close()
+		pw.Close()
+		return nil, fmt.Errorf("CONNECT roundtrip: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		pr.Close()
+		pw.Close()
+		return nil, fmt.Errorf("server rejected CONNECT: %s", resp.Status)
+	}
+
+	return &h2ClientConn{r: resp.Body, w: pw, t: transport}, nil
+}
+
+func (m *backupTunnelManager) manageGracefulShutdown(ctx context.Context, srv *grpc.Server, nbdSocketCh <-chan struct{}, serveDone <-chan struct{}) {
+	select {
+	case <-ctx.Done():
+	case <-nbdSocketCh:
+	case <-serveDone:
+		return
+	}
+
+	gracefulDone := make(chan struct{})
+	go func() {
+		defer close(gracefulDone)
+		srv.GracefulStop()
+	}()
+
+	select {
+	case <-gracefulDone:
+	case <-time.After(defaultGracefulShutdownTimeout):
+		srv.Stop()
+	}
 }
 
 func (m *backupTunnelManager) watchSocket(ctx context.Context) (<-chan struct{}, error) {
@@ -341,6 +339,38 @@ func (m *backupTunnelManager) watchSocket(ctx context.Context) (<-chan struct{},
 	return ch, nil
 }
 
+// h2ClientConn adapts an HTTP/2 CONNECT stream into a net.Conn.
+//
+//   - Reads come from resp.Body (server → client direction).
+//   - Writes go to pw, the write end of the pipe that feeds req.Body
+//     (client → server direction).
+//   - Closing drains both halves and tells the transport to release the
+//     underlying connection.
+type h2ClientConn struct {
+	r io.ReadCloser  // resp.Body
+	w io.WriteCloser // pipe writer → req.Body
+	t *http2.Transport
+}
+
+func (c *h2ClientConn) Read(b []byte) (int, error)  { return c.r.Read(b) }
+func (c *h2ClientConn) Write(b []byte) (int, error) { return c.w.Write(b) }
+
+func (c *h2ClientConn) Close() error {
+	c.t.CloseIdleConnections()
+	rerr := c.r.Close()
+	werr := c.w.Close()
+	if rerr != nil {
+		return rerr
+	}
+	return werr
+}
+
+func (c *h2ClientConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (c *h2ClientConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (c *h2ClientConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *h2ClientConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *h2ClientConn) SetWriteDeadline(_ time.Time) error { return nil }
+
 type closeNotifyConn struct {
 	net.Conn
 	once   sync.Once
@@ -354,7 +384,7 @@ func (c *closeNotifyConn) Close() error {
 
 // oneConnListener hands out exactly one connection on the first Accept call,
 // then blocks subsequent Accept calls until the connection closes, at which
-// point it returns io.EOF so gRPC's internal accept loop exits cleanly
+// point it returns net.ErrClosed so gRPC's internal accept loop exits cleanly.
 type oneConnListener struct {
 	mu     sync.Mutex
 	conn   net.Conn
@@ -381,36 +411,3 @@ func (l *oneConnListener) Accept() (net.Conn, error) {
 func (l *oneConnListener) Close() error   { return nil }
 func (l *oneConnListener) Addr() net.Addr { return l.addr }
 
-func canCreateTunnel(targetAddr, serverName, nbdSocket, token string) error {
-	switch {
-	case targetAddr == "":
-		return fmt.Errorf("targetAddr must not be empty")
-	case serverName == "":
-		return fmt.Errorf("serverName must not be empty")
-	case nbdSocket == "":
-		return fmt.Errorf("nbdSocket must not be empty")
-	case token == "":
-		return fmt.Errorf("token must not be empty")
-	}
-
-	return nil
-}
-
-func extractContextFromToken(token string) (context.Context, context.CancelFunc, error) {
-	parsedToken, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.ES256})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse JWT token: %w", err)
-	}
-
-	var claims jwt.Claims
-	if err := parsedToken.UnsafeClaimsWithoutVerification(&claims); err != nil {
-		return nil, nil, fmt.Errorf("failed to extract JWT claims: %w", err)
-	}
-
-	if claims.Expiry == nil {
-		return nil, nil, fmt.Errorf("JWT token is missing the required expiry claim")
-	}
-
-	ctx, cancel := context.WithDeadline(context.Background(), claims.Expiry.Time())
-	return ctx, cancel, nil
-}

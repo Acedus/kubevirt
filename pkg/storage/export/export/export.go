@@ -340,6 +340,7 @@ type VMExportController struct {
 	ClusterPreferenceInformer   cache.SharedIndexInformer
 	ControllerRevisionInformer  cache.SharedIndexInformer
 	VMBackupInformer            cache.SharedIndexInformer
+	BackupConfigMapInformer     cache.SharedIndexInformer
 
 	Recorder record.EventRecorder
 
@@ -347,8 +348,8 @@ type VMExportController struct {
 
 	vmExportQueue workqueue.TypedRateLimitingInterface[string]
 
-	BackupCertManager certificate.Manager
-	caCertManager     certificate.Manager
+	caCertManager   certificate.Manager
+	backupCAManager certificate.Manager
 
 	clusterConfig *virtconfig.ClusterConfig
 
@@ -697,11 +698,11 @@ func (ctrl *VMExportController) updateVMExport(vmExport *exportv1.VirtualMachine
 		if vmBackup.Status == nil || vmBackup.Status.Type == "" {
 			return 0, fmt.Errorf("backup status empty")
 		}
-		pubKey, err := ctrl.backupPublicKeyPEM()
+		caCert, err := ctrl.backupCA()
 		if err != nil {
-			return 0, fmt.Errorf("could not obtain virtualMachineBackup tunnel public key: %w", err)
+			return 0, fmt.Errorf("backup CACert could not be retrieved")
 		}
-		return ctrl.handleSource(vmExport, NewVMBackupSource(vmBackup, pubKey))
+		return ctrl.handleSource(vmExport, NewVMBackupSource(vmBackup, caCert))
 	}
 
 	return 0, nil

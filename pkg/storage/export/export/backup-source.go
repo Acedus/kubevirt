@@ -20,10 +20,9 @@
 package export
 
 import (
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"path"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -37,6 +36,7 @@ import (
 	backupv1 "kubevirt.io/api/backup/v1alpha1"
 
 	"kubevirt.io/kubevirt/pkg/controller"
+	"kubevirt.io/kubevirt/pkg/virt-operator/resource/generate/components"
 )
 
 const (
@@ -48,14 +48,14 @@ const (
 )
 
 type VMBackupSource struct {
-	vmBackup        *backupv1.VirtualMachineBackup
-	backupPublicKey string
+	vmBackup *backupv1.VirtualMachineBackup
+	caCert   string
 }
 
-func NewVMBackupSource(vmBackup *backupv1.VirtualMachineBackup, backupPublicKey string) *VMBackupSource {
+func NewVMBackupSource(vmBackup *backupv1.VirtualMachineBackup, caCert string) *VMBackupSource {
 	return &VMBackupSource{
-		vmBackup:        vmBackup,
-		backupPublicKey: backupPublicKey,
+		vmBackup: vmBackup,
+		caCert:   caCert,
 	}
 }
 
@@ -112,8 +112,8 @@ func (s *VMBackupSource) ConfigurePod(pod *corev1.Pod) {
 		})
 	}
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
-		Name:  "BACKUP_PUBLIC_KEY",
-		Value: s.backupPublicKey,
+		Name:  "BACKUP_CACERT",
+		Value: s.caCert,
 	})
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
 		Name:  "BACKUP_UID",
@@ -251,35 +251,15 @@ func (ctrl *VMExportController) getVMBackupFromExport(vmExport *exportv1.Virtual
 	return vmBackup, nil
 }
 
-func (ctrl *VMExportController) backupPublicKeyPEM() (string, error) {
-	if ctrl.BackupCertManager == nil {
-		return "", fmt.Errorf("BackupCertManager is not initialized")
+func (ctrl *VMExportController) backupCA() (string, error) {
+	key := controller.NamespacedKey(ctrl.KubevirtNamespace, components.KubeVirtBackupCASecretName)
+	obj, exists, err := ctrl.BackupConfigMapInformer.GetStore().GetByKey(key)
+	if err != nil || !exists {
+		return "", err
 	}
-	tlsCert := ctrl.BackupCertManager.Current()
-	if tlsCert == nil {
-		return "", fmt.Errorf("no certificate available")
-	}
-
-	if len(tlsCert.Certificate) == 0 {
-		return "", fmt.Errorf("tls certificate chain is empty")
-	}
-
-	cert, err := x509.ParseCertificate(tlsCert.Certificate[0])
-	if err != nil {
-		return "", fmt.Errorf("failed to parse x509 certificate: %v", err)
-	}
-
-	pubDer, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal public key: %v", err)
-	}
-
-	pubBlock := &pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: pubDer,
-	}
-
-	return string(pem.EncodeToMemory(pubBlock)), nil
+	cm := obj.(*corev1.ConfigMap).DeepCopy()
+	bundle := cm.Data[caBundle]
+	return strings.TrimSpace(bundle), nil
 }
 
 func backupPort() corev1.ServicePort {

@@ -24,10 +24,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -821,100 +818,6 @@ var _ = Describe("exportserver", func() {
 		})
 	})
 
-	Context("ParsePublicKeyPEM", func() {
-		It("should parse a valid ECDSA public key", func() {
-			_, pub := generateKeypair()
-			der, err := x509.MarshalPKIXPublicKey(pub)
-			Expect(err).ToNot(HaveOccurred())
-			pubPem := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
-			parsed, err := ParsePublicKeyPEM(pubPem)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(parsed.Equal(pub)).To(BeTrue())
-		})
-
-		It("should return an error for an empty string", func() {
-			_, err := ParsePublicKeyPEM("")
-			Expect(err).To(MatchError(ContainSubstring("empty")))
-		})
-
-		It("should return an error for a non-PEM string", func() {
-			_, err := ParsePublicKeyPEM("not-a-pem-block")
-			Expect(err).To(HaveOccurred())
-		})
-
-		It("should return an error when the PEM block type is not PUBLIC KEY", func() {
-			block := &pem.Block{Type: "CERTIFICATE", Bytes: []byte("fake")}
-			_, err := ParsePublicKeyPEM(string(pem.EncodeToMemory(block)))
-			Expect(err).To(MatchError(ContainSubstring("block type")))
-		})
-
-		It("should return an error when the DER payload is not valid PKIX", func() {
-			block := &pem.Block{Type: "PUBLIC KEY", Bytes: []byte("fake")}
-			_, err := ParsePublicKeyPEM(string(pem.EncodeToMemory(block)))
-			Expect(err).To(MatchError(ContainSubstring("PKIX")))
-		})
-
-		It("should return an error for an RSA public key (not ECDSA)", func() {
-			rsaPriv, err := rsa.GenerateKey(rand.Reader, 2048)
-			Expect(err).ToNot(HaveOccurred())
-			der, err := x509.MarshalPKIXPublicKey(&rsaPriv.PublicKey)
-			pubPem := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
-			_, err = ParsePublicKeyPEM(pubPem)
-			Expect(err).To(MatchError(ContainSubstring("not of type ECDSA")))
-		})
-	})
-
-	Context("verifyBackupToken", func() {
-		const testUID = "test-backup"
-
-		var (
-			priv   *ecdsa.PrivateKey
-			server *exportServer
-		)
-
-		BeforeEach(func() {
-			var pub *ecdsa.PublicKey
-			priv, pub = generateKeypair()
-			server = newBackupServer(pub, testUID)
-		})
-
-		It("should accept a valid unexpired token with correct claims", func() {
-			tok := signBackupToken(priv, testUID, testUID, time.Now().Add(5*time.Minute))
-			Expect(server.verifyBackupToken(tok)).To(Succeed())
-		})
-
-		It("should reject when no public key is configured", func() {
-			server.ExportServerConfig.BackupPublicKey = nil
-			tok := signBackupToken(priv, testUID, testUID, time.Now().Add(5*time.Minute))
-			Expect(server.verifyBackupToken(tok)).To(MatchError(ContainSubstring("no backup public key")))
-		})
-
-		It("should reject a token signed by a different key", func() {
-			otherPriv, _ := generateKeypair()
-			tok := signBackupToken(otherPriv, testUID, testUID, time.Now().Add(5*time.Minute))
-			Expect(server.verifyBackupToken(tok)).To(HaveOccurred())
-		})
-
-		It("should reject an expired token", func() {
-			tok := signBackupToken(priv, testUID, testUID, time.Now().Add(-1*time.Minute))
-			Expect(server.verifyBackupToken(tok)).To(HaveOccurred())
-		})
-
-		It("should reject a token with the wrong subject", func() {
-			tok := signBackupToken(priv, "wrong-uid", testUID, time.Now().Add(5*time.Minute))
-			Expect(server.verifyBackupToken(tok)).To(HaveOccurred())
-		})
-
-		It("should reject a token with the wrong audience", func() {
-			tok := signBackupToken(priv, testUID, "wrong-audience", time.Now().Add(5*time.Minute))
-			Expect(server.verifyBackupToken(tok)).To(HaveOccurred())
-		})
-
-		It("should reject a non-JWT string", func() {
-			Expect(server.verifyBackupToken("not-a-jwt")).To(HaveOccurred())
-		})
-	})
-
 	Context("backupMapHandler", func() {
 		var (
 			ctrl   *gomock.Controller
@@ -1264,48 +1167,6 @@ var _ = Describe("exportserver", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(extents).To(BeEmpty())
 			Expect(nextOff).To(BeNil())
-		})
-	})
-
-	Context("readHandshakeLine", func() {
-		makeConn := func(data string) net.Conn {
-			server, client := net.Pipe()
-			go func() {
-				client.Write([]byte(data))
-				client.Close()
-			}()
-			return server
-		}
-
-		It("should read and trim a standard newline-terminated token", func() {
-			conn := makeConn("test-token\n")
-			defer conn.Close()
-			line, err := readHandshakeLine(conn)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(line).To(Equal("test-token"))
-		})
-
-		It("should read a token with no trailing newline", func() {
-			conn := makeConn("token-no-newline")
-			defer conn.Close()
-			line, err := readHandshakeLine(conn)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(line).To(Equal("token-no-newline"))
-		})
-
-		It("should trim surrounding whitespaces", func() {
-			conn := makeConn("  spaced-token  \n")
-			defer conn.Close()
-			line, err := readHandshakeLine(conn)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(line).To(Equal("spaced-token"))
-		})
-
-		It("should return an error for a token exceeding 4096 bytes", func() {
-			conn := makeConn(strings.Repeat("x", 4097))
-			defer conn.Close()
-			_, err := readHandshakeLine(conn)
-			Expect(err).To(HaveOccurred())
 		})
 	})
 

@@ -20,8 +20,6 @@
 package main
 
 import (
-	"crypto/ecdsa"
-	"fmt"
 	"os"
 	"time"
 
@@ -44,19 +42,18 @@ func main() {
 
 	certFile, keyFile := getCert()
 	config := exportServer.ExportServerConfig{
-		CertFile:               certFile,
-		KeyFile:                keyFile,
-		Deadline:               getDeadline(),
-		ExportListenAddr:       getExportListenAddr(),
-		BackupTunnelListenAddr: getBackupTunnelListenAddr(),
-		TokenFile:              getTokenFile(),
-		Paths:                  export.CreateServerPaths(export.EnvironToMap()),
+		CertFile:   certFile,
+		KeyFile:    keyFile,
+		Deadline:   getDeadline(),
+		ListenAddr: getListenAddr(),
+		TokenFile:  getTokenFile(),
+		Paths:      export.CreateServerPaths(export.EnvironToMap()),
 	}
 	if len(config.Paths.Backups) > 0 {
-		config.BackupPublicKey = getBackupPublicKey()
 		config.BackupUID = getBackupUID()
 		config.BackupType = getBackupType()
 		config.BackupCheckpoint = getBackupCheckpoint()
+		config.BackupCACert = []byte(getBackupCACert())
 	}
 	server := exportServer.NewExportServer(config)
 	service.Setup(server)
@@ -80,20 +77,12 @@ func getCert() (certFile, keyFile string) {
 	return
 }
 
-func getExportListenAddr() string {
+func getListenAddr() string {
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr != "" {
 		return addr
 	}
 	return exportListenAddr
-}
-
-func getBackupTunnelListenAddr() string {
-	addr := os.Getenv("BACKUP_TUNNEL_LISTEN_ADDR")
-	if addr != "" {
-		return addr
-	}
-	return backupTunnelListenAddr
 }
 
 func getDeadline() (result time.Time) {
@@ -106,18 +95,6 @@ func getDeadline() (result time.Time) {
 		}
 	}
 	return
-}
-
-func getBackupPublicKey() *ecdsa.PublicKey {
-	publicKeyRaw := os.Getenv("BACKUP_PUBLIC_KEY")
-	if publicKeyRaw == "" {
-		panic("backup export but no tunnel public key")
-	}
-	publicKey, err := exportServer.ParsePublicKeyPEM(publicKeyRaw)
-	if err != nil {
-		panic(fmt.Sprintf("backup export with invalid tunnel public key: %v", err))
-	}
-	return publicKey
 }
 
 func getBackupUID() string {
@@ -139,4 +116,12 @@ func getBackupType() string {
 func getBackupCheckpoint() string {
 	checkpointName := os.Getenv("BACKUP_CHECKPOINT")
 	return checkpointName
+}
+
+func getBackupCACert() string {
+	caCert := os.Getenv("BACKUP_CACERT")
+	if caCert == "" {
+		panic("backup export but no backup CA provided")
+	}
+	return caCert
 }

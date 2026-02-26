@@ -839,8 +839,11 @@ func getBackupOptionsFromRequest(request *cmdv1.BackupRequest) (*backupv1.Backup
 		if options.ExportServerAddr == nil {
 			return nil, fmt.Errorf("backup export server address wasn't provided")
 		}
-		if options.ExportServerToken == nil {
-			return nil, fmt.Errorf("backup export server token wasn't provided")
+		if len(options.BackupKey) == 0 {
+			return nil, fmt.Errorf("backup key wasn't provided")
+		}
+		if len(options.BackupCert) == 0 {
+			return nil, fmt.Errorf("backup cert wasn't provided")
 		}
 		if len(options.CACert) == 0 {
 			return nil, fmt.Errorf("backup export server CA cert wasn't provided")

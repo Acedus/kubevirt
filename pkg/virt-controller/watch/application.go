@@ -203,6 +203,7 @@ type VirtControllerApp struct {
 	workloadUpdateController *workloadupdater.WorkloadUpdateController
 
 	caExportConfigMapInformer    cache.SharedIndexInformer
+	caBackupConfigMapInformer    cache.SharedIndexInformer
 	exportRouteConfigMapInformer cache.SharedInformer
 	exportServiceInformer        cache.SharedIndexInformer
 	exportController             *export.VMExportController
@@ -425,6 +426,8 @@ func Execute() {
 	app.vmRestoreInformer = app.informerFactory.VirtualMachineRestore()
 	app.storageClassInformer = app.informerFactory.StorageClass()
 	app.caExportConfigMapInformer = app.informerFactory.KubeVirtExportCAConfigMap()
+	app.caBackupConfigMapInformer = app.informerFactory.KubeVirtBackupCAConfigMap()
+
 	app.exportRouteConfigMapInformer = app.informerFactory.ExportRouteConfigMap()
 	app.unmanagedSecretInformer = app.informerFactory.UnmanagedSecrets()
 	app.allPodInformer = app.informerFactory.Pod()
@@ -978,7 +981,7 @@ func (vca *VirtControllerApp) initExportController() {
 		ClusterPreferenceInformer:   vca.clusterPreferenceInformer,
 		ControllerRevisionInformer:  vca.controllerRevisionInformer,
 		VMBackupInformer:            vca.vmBackupInformer,
-		BackupCertManager:           vca.backupCertManager,
+		BackupConfigMapInformer:     vca.caBackupConfigMapInformer,
 	}
 	if err := vca.exportController.Init(); err != nil {
 		panic(err)

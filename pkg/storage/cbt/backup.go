@@ -21,6 +21,7 @@ package cbt
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"fmt"
 	"time"
 
@@ -43,6 +44,9 @@ import (
 	"kubevirt.io/client-go/log"
 
 	"kubevirt.io/kubevirt/pkg/apimachinery/patch"
+	"kubevirt.io/kubevirt/pkg/certificates/bootstrap"
+	"kubevirt.io/kubevirt/pkg/certificates/triple"
+	"kubevirt.io/kubevirt/pkg/certificates/triple/cert"
 	"kubevirt.io/kubevirt/pkg/controller"
 	hotplugdisk "kubevirt.io/kubevirt/pkg/hotplug-disk"
 	"kubevirt.io/kubevirt/pkg/pointer"
@@ -85,6 +89,10 @@ const (
 	backupTTLExpiredMsg            = "pull mode backup TTL has expired"
 	exportExistsWithDifferentOwner = "VMExport %s already exists but is not owned by backup %s"
 	defaultPullModeDurationTTL     = 2 * time.Hour
+
+	caDefaultPath = "/etc/virt-controller/backupca"
+	caCertFile    = caDefaultPath + "/tls.crt"
+	caKeyFile     = caDefaultPath + "/tls.key"
 )
 
 var (
@@ -103,8 +111,8 @@ type VMBackupController struct {
 	backupQueue           workqueue.TypedRateLimitingInterface[string]
 	trackerQueue          workqueue.TypedRateLimitingInterface[string]
 	hasSynced             func() bool
-	tokenGenerator        *tokenGenerator
-	caManager             kvtls.ClientCAManager
+	exportCAManager       kvtls.ClientCAManager
+	caCertManager         certificate.Manager
 }
 
 func NewVMBackupController(client kubecli.KubevirtClient,
@@ -136,9 +144,11 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 		vmExportStore:         vmExportInformer.GetStore(),
 		recorder:              recorder,
 		client:                client,
-		tokenGenerator:        newTokenGenerator(certManager),
-		caManager:             kvtls.NewCAManager(cmInformer.GetStore(), kubevirtNamespace, "kubevirt-export-ca"),
+		exportCAManager:       kvtls.NewCAManager(cmInformer.GetStore(), kubevirtNamespace, "kubevirt-export-ca"),
 	}
+
+	c.caCertManager = bootstrap.NewFileCertificateManager(caCertFile, caKeyFile)
+	go c.caCertManager.Start()
 
 	c.hasSynced = func() bool {
 		return backupInformer.HasSynced() && backupTrackerInformer.HasSynced() && vmInformer.HasSynced() && vmiInformer.HasSynced() && pvcInformer.HasSynced() && vmExportInformer.HasSynced()
@@ -697,28 +707,27 @@ func (ctrl *VMBackupController) handlePrepareBackupExport(backup *backupv1.Virtu
 	if syncInfo != nil {
 		return syncInfo
 	}
-	ca, err := ctrl.caManager.GetCurrentRaw()
+	ca, err := ctrl.exportCAManager.GetCurrentRaw()
 	if err != nil {
 		return syncInfoError(err)
 	}
-	token, err := ctrl.tokenGenerator.generate(string(backup.UID), getPullBackupExpirationTime(backup))
+	keyPair, err := ctrl.generateBackupCert(backup)
 	if err != nil {
 		return syncInfoError(err)
 	}
-	if token == "" {
-		return syncInfoError(fmt.Errorf("cannot initiate backup export tunnel, empty JWT"))
-	}
+
 	exportAddr := fmt.Sprintf("virt-export-%s.%s.svc", vmExport.Name, vmExport.Namespace)
 	serverName := fmt.Sprintf("%s.cluster.local", exportAddr)
 	backupOptions := &backupv1.BackupOptions{
-		BackupName:        backup.Name,
-		Cmd:               backupv1.Export,
-		BackupStartTime:   &backup.CreationTimestamp,
-		Mode:              *backup.Spec.Mode,
-		ExportServerAddr:  &exportAddr,
-		ExportServerToken: &token,
-		ExportServerName:  &serverName,
-		CACert:            ca,
+		BackupName:       backup.Name,
+		Cmd:              backupv1.Export,
+		BackupStartTime:  &backup.CreationTimestamp,
+		Mode:             *backup.Spec.Mode,
+		ExportServerAddr: &exportAddr,
+		ExportServerName: &serverName,
+		BackupCert:       cert.EncodeCertPEM(keyPair.Cert),
+		BackupKey:        cert.EncodePrivateKeyPEM(keyPair.Key),
+		CACert:           ca,
 	}
 	if err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions); err != nil {
 		return syncInfoError(err)
@@ -727,6 +736,21 @@ func (ctrl *VMBackupController) handlePrepareBackupExport(backup *backupv1.Virtu
 		event:  backupExportInitiatedEvent,
 		reason: backupExportInitiated,
 	}
+}
+
+func (ctrl *VMBackupController) generateBackupCert(backup *backupv1.VirtualMachineBackup) (*triple.KeyPair, error) {
+	caCert := ctrl.caCertManager.Current()
+	caKeyPair := &triple.KeyPair{
+		Key:  caCert.PrivateKey.(*ecdsa.PrivateKey),
+		Cert: caCert.Leaf,
+	}
+	keyPair, err := triple.NewClientKeyPair(
+		caKeyPair,
+		fmt.Sprintf("kubevirt.io:system:client:%s", backup.UID),
+		nil,
+		getPullBackupRemainingTTL(backup).Duration,
+	)
+	return keyPair, err
 }
 
 func (ctrl *VMBackupController) getOrCreateBackupExport(vmi *v1.VirtualMachineInstance, backup *backupv1.VirtualMachineBackup) (*SyncInfo, *exportv1.VirtualMachineExport) {

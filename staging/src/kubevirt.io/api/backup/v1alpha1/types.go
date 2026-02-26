@@ -79,17 +79,18 @@ const (
 
 // BackupOptions are options used to configure virtual machine backup job
 type BackupOptions struct {
-	BackupName        string       `json:"backupName,omitempty"`
-	Cmd               BackupCmd    `json:"cmd,omitempty"`
-	Mode              BackupMode   `json:"mode,omitempty"`
-	BackupStartTime   *metav1.Time `json:"backupStartTime,omitempty"`
-	Incremental       *string      `json:"incremental,omitempty"`
-	TargetPath        *string      `json:"targetPath,omitempty"`
-	SkipQuiesce       bool         `json:"skipQuiesce,omitempty"`
-	ExportServerAddr  *string      `json:"exportServerAddr,omitempty"`
-	ExportServerToken *string      `json:"exportServerToken,omitempty"`
-	ExportServerName  *string      `json:"exportServerName,omitempty"`
-	CACert            []byte       `json:"caCert,omitempty"`
+	BackupName       string       `json:"backupName,omitempty"`
+	Cmd              BackupCmd    `json:"cmd,omitempty"`
+	Mode             BackupMode   `json:"mode,omitempty"`
+	BackupStartTime  *metav1.Time `json:"backupStartTime,omitempty"`
+	Incremental      *string      `json:"incremental,omitempty"`
+	TargetPath       *string      `json:"targetPath,omitempty"`
+	SkipQuiesce      bool         `json:"skipQuiesce,omitempty"`
+	ExportServerAddr *string      `json:"exportServerAddr,omitempty"`
+	ExportServerName *string      `json:"exportServerName,omitempty"`
+	BackupKey        []byte       `json:"backupKey,omitempty"`
+	BackupCert       []byte       `json:"backupCert,omitempty"`
+	CACert           []byte       `json:"caCert,omitempty"`
 }
 
 // VirtualMachineBackupTracker defines the way to track the latest checkpoint of

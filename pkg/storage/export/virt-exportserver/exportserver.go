@@ -20,14 +20,11 @@
 package virtexportserver
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	goflag "flag"
 	"fmt"
@@ -44,10 +41,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-jose/go-jose/v4"
-	"github.com/go-jose/go-jose/v4/jwt"
 	gzip "github.com/klauspost/pgzip"
 	flag "github.com/spf13/pflag"
+	"golang.org/x/net/http2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
@@ -73,6 +69,7 @@ import (
 const (
 	authHeader              = "x-kubevirt-export-token"
 	manifestCmBasePath      = "/manifest_data/"
+	exportTunnelPath        = "/_tunnel"
 	vmManifestPath          = manifestCmBasePath + "virtualmachine-manifest"
 	internalLinkPath        = manifestCmBasePath + "internal_host"
 	internalCaConfigMapPath = manifestCmBasePath + "internal_ca_cm"
@@ -96,17 +93,16 @@ type TokenGetterFunc func() (string, error)
 type ExportServerConfig struct {
 	Deadline time.Time
 
-	ExportListenAddr       string
-	BackupTunnelListenAddr string
+	ListenAddr string
 
 	CertFile, KeyFile string
+	BackupCACert      []byte
 
 	TokenFile string
 
 	BackupUID        string
 	BackupType       string
 	BackupCheckpoint string
-	BackupPublicKey  *ecdsa.PublicKey
 
 	Paths *export.ServerPaths
 
@@ -133,10 +129,8 @@ type exportServer struct {
 	ExportServerConfig
 	handler http.Handler
 
-	parsedBackupPublicKey *ecdsa.PublicKey
-	tunnelSem             chan struct{}
-	nbdClient             nbdv1.NBDClient
-	nbdMu                 sync.RWMutex
+	nbdClient nbdv1.NBDClient
+	nbdMu     sync.RWMutex
 }
 
 func (er *execReader) Read(p []byte) (int, error) {
@@ -229,17 +223,38 @@ func (s *exportServer) getHandlerMap(vi export.VolumeInfo) map[string]http.Handl
 func (s *exportServer) Run() {
 	s.initHandler()
 
-	tunnelDone := make(chan struct{})
-	if s.BackupTunnelListenAddr != "" {
-		go s.runTunnelListener(tunnelDone)
+	clientCAPool := x509.NewCertPool()
+	if ok := clientCAPool.AppendCertsFromPEM(s.BackupCACert); !ok {
+		panic("failed to parse Backup CA")
 	}
 
+	tlsConfig := &tls.Config{
+		ClientCAs:  clientCAPool,
+		ClientAuth: tls.VerifyClientCertIfGiven,
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"},
+	}
+
+	rootHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			s.handleTunnel(w, r)
+			return
+		}
+		s.handler.ServeHTTP(w, r)
+	})
+
 	srv := &http.Server{
-		Addr:    s.ExportListenAddr,
-		Handler: s.handler,
-		// Disable HTTP/2
-		// See CVE-2023-44487
-		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
+		Addr:      s.ListenAddr,
+		Handler:   rootHandler,
+		TLSConfig: tlsConfig,
+	}
+
+	h2Server := &http2.Server{
+		MaxConcurrentStreams: 50,
+		IdleTimeout:          60 * time.Second,
+	}
+	if err := http2.ConfigureServer(srv, h2Server); err != nil {
+		panic(err)
 	}
 
 	ch := make(chan error)
@@ -271,7 +286,6 @@ func (s *exportServer) AddFlags() {
 func NewExportServer(config ExportServerConfig) service.Service {
 	es := &exportServer{
 		ExportServerConfig: config,
-		tunnelSem:          make(chan struct{}, maxTunnelConns),
 	}
 
 	if es.ArchiveHandler == nil {
@@ -829,85 +843,51 @@ func (s *exportServer) readyHandler(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "OK")
 }
 
-func (s *exportServer) runTunnelListener(done <-chan struct{}) {
-	cert, err := tls.LoadX509KeyPair(s.CertFile, s.KeyFile)
-	if err != nil {
-		golog.Fatalf("failed to load tunnel certs: %v", err)
-	}
-
-	config := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
-	}
-
-	ln, err := tls.Listen("tcp", s.BackupTunnelListenAddr, config)
-	if err != nil {
-		golog.Fatalf("failed to bind tunnel listener on %s: %v", s.BackupTunnelListenAddr, err)
-	}
-
-	go func() {
-		<-done
-		ln.Close()
-		log.Log.Info("tunnel listener shut down")
-	}()
-
-	log.Log.Infof("tunnel listener active on %s", s.BackupTunnelListenAddr)
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			log.Log.Reason(err).Error("tunnel accept failed")
-			continue
-		}
-		select {
-		case s.tunnelSem <- struct{}{}:
-			go func() {
-				defer func() { <-s.tunnelSem }()
-				s.handleNewTunnel(conn)
-			}()
-		default:
-			log.Log.Warning("rejecting tunnel connection: maximum concurrent tunnels reached")
-			conn.Close()
-		}
-	}
-}
-
-func (s *exportServer) handleNewTunnel(conn net.Conn) {
-	defer conn.Close()
-
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	launcherToken, err := readHandshakeLine(conn)
-	if err != nil {
-		log.Log.Reason(err).Error("failed to read launcher token")
+func (s *exportServer) handleTunnel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodConnect {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if err := s.verifyBackupToken(launcherToken); err != nil {
-		log.Log.Reason(err).Error("JWT verification failed")
-		conn.Write([]byte("ERROR: Unauthorized\n"))
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		log.Log.Error("Tunnel rejected: no client certificate presented")
+		http.Error(w, "mTLS required", http.StatusUnauthorized)
 		return
 	}
-	conn.SetReadDeadline(time.Time{})
-	conn.Write([]byte("OK\n"))
 
-	tc := &tunnelConn{
-		Conn:   conn,
-		closed: make(chan struct{}),
+	expectedCN := fmt.Sprintf("kubevirt.io:system:client:%s", s.BackupUID)
+	clientCN := r.TLS.PeerCertificates[0].Subject.CommonName
+	if clientCN != expectedCN {
+		log.Log.Errorf("Identity mismatch! Cert: %s, Expected: %s", clientCN, expectedCN)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
 	}
+
+	s.nbdMu.Lock()
+	if s.nbdClient != nil {
+		s.nbdMu.Unlock()
+		log.Log.Warning("Rejecting tunnel: active session already exists")
+		http.Error(w, "Conflict", http.StatusConflict)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.(http.Flusher).Flush()
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	conn := newH2ServerConn(r.Body, w, cancel)
 
 	var dialOnce sync.Once
 	clientConn, err := grpc.NewClient(
 		"passthrough:///backup",
 		grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) {
 			var c net.Conn
-			dialOnce.Do(func() { c = tc })
+			dialOnce.Do(func() { c = conn })
 			if c != nil {
 				return c, nil
 			}
-			return nil, fmt.Errorf("tunnel connection is single-use; reconnect not supported")
+			return nil, errors.New("tunnel closed")
 		}),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
@@ -917,52 +897,57 @@ func (s *exportServer) handleNewTunnel(conn net.Conn) {
 		}),
 	)
 	if err != nil {
-		log.Log.Reason(err).Error("failed to create gRPC client for tunnel")
+		s.nbdMu.Unlock()
 		return
 	}
-	defer clientConn.Close()
 
-	clientConn.Connect()
-
-	s.nbdMu.Lock()
 	s.nbdClient = nbdv1.NewNBDClient(clientConn)
-	currentClient := s.nbdClient
 	s.nbdMu.Unlock()
 
-	log.Log.Info("backup tunnel established and NBD client registered")
+	log.Log.Infof("Exclusive backup tunnel established for %s", s.BackupUID)
 
-	<-tc.closed
+	<-ctx.Done()
 
 	s.nbdMu.Lock()
-	if s.nbdClient == currentClient {
-		s.nbdClient = nil
-	}
+	clientConn.Close()
+	s.nbdClient = nil
 	s.nbdMu.Unlock()
-	log.Log.Info("backup tunnel disconnected")
+	log.Log.Info("Backup tunnel disconnected, listener reset")
 }
 
-func (s *exportServer) verifyBackupToken(tokenStr string) error {
-	if s.ExportServerConfig.BackupPublicKey == nil {
-		return fmt.Errorf("no backup public key configured")
-	}
-
-	tok, err := jwt.ParseSigned(tokenStr, []jose.SignatureAlgorithm{jose.ES256})
-	if err != nil {
-		return fmt.Errorf("failed to parse token: %w", err)
-	}
-
-	claims := jwt.Claims{}
-	if err := tok.Claims(s.ExportServerConfig.BackupPublicKey, &claims); err != nil {
-		return fmt.Errorf("invalid signature: %w", err)
-	}
-
-	return claims.Validate(jwt.Expected{
-		Issuer:      "kubevirt-backup-controller",
-		Subject:     s.BackupUID,
-		AnyAudience: jwt.Audience{s.BackupUID},
-		Time:        time.Now(),
-	})
+type h2ServerConn struct {
+	r      io.ReadCloser
+	w      http.ResponseWriter
+	f      http.Flusher
+	cancel context.CancelFunc
+	once   sync.Once
 }
+
+func newH2ServerConn(r io.ReadCloser, w http.ResponseWriter, cancel context.CancelFunc) net.Conn {
+	f, _ := w.(http.Flusher)
+	return &h2ServerConn{r: r, w: w, f: f, cancel: cancel}
+}
+
+func (c *h2ServerConn) Read(b []byte) (int, error) { return c.r.Read(b) }
+
+func (c *h2ServerConn) Write(b []byte) (int, error) {
+	n, err := c.w.Write(b)
+	if err == nil && c.f != nil {
+		c.f.Flush()
+	}
+	return n, err
+}
+
+func (c *h2ServerConn) Close() error {
+	c.once.Do(c.cancel)
+	return c.r.Close()
+}
+
+func (c *h2ServerConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (c *h2ServerConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (c *h2ServerConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *h2ServerConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *h2ServerConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 type ExportMapExtent struct {
 	Offset      uint64 `json:"offset"`
@@ -1130,32 +1115,6 @@ func (s *exportServer) backupDataHandler(exportName string) http.Handler {
 	})
 }
 
-// tunnelConn wraps a net.Conn and signals via a channel when Close is called.
-// This lets handleNewTunnel block cleanly until the tunnel peer disconnects
-// without polling gRPC connection states.
-type tunnelConn struct {
-	net.Conn
-	once   sync.Once
-	closed chan struct{}
-}
-
-func (c *tunnelConn) Close() error {
-	c.once.Do(func() { close(c.closed) })
-	return c.Conn.Close()
-}
-
-func readHandshakeLine(conn net.Conn) (string, error) {
-	reader := bufio.NewReader(io.LimitReader(conn, 4096))
-	line, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-	if len(line) == 4096 && line[len(line)-1] != '\n' {
-		return "", fmt.Errorf("token too long")
-	}
-	return strings.TrimSpace(line), nil
-}
-
 func collectMapPage(stream nbdv1.NBD_MapClient, pageSize int) ([]ExportMapExtent, *uint64, error) {
 	var extents []ExportMapExtent
 	for {
@@ -1178,27 +1137,4 @@ func collectMapPage(stream nbdv1.NBD_MapClient, pageSize int) ([]ExportMapExtent
 			})
 		}
 	}
-}
-
-func ParsePublicKeyPEM(pemData string) (*ecdsa.PublicKey, error) {
-	if pemData == "" {
-		return nil, fmt.Errorf("public key PEM is empty")
-	}
-
-	block, _ := pem.Decode([]byte(pemData))
-	if block == nil || block.Type != "PUBLIC KEY" {
-		return nil, fmt.Errorf("failed to decode PEM block or block type is not public key")
-	}
-
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse PKIX public key: %w", err)
-	}
-
-	ecdsaPub, ok := pub.(*ecdsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("parsed key is not of type ECDSA")
-	}
-
-	return ecdsaPub, nil
 }

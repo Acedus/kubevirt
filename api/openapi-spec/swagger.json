@@ -19972,6 +19972,14 @@
     "description": "BackupOptions are options used to configure virtual machine backup job",
     "type": "object",
     "properties": {
+     "backupCert": {
+      "type": "string",
+      "format": "byte"
+     },
+     "backupKey": {
+      "type": "string",
+      "format": "byte"
+     },
      "backupName": {
       "type": "string"
      },
@@ -19989,9 +19997,6 @@
       "type": "string"
      },
      "exportServerName": {
-      "type": "string"
-     },
-     "exportServerToken": {
       "type": "string"
      },
      "incremental": {

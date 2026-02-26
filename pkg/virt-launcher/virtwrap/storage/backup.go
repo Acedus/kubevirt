@@ -418,7 +418,7 @@ func (m *StorageManager) initiateBackupTunnel(backupOptions *backupv1.BackupOpti
 		m.activeBackupTunnel.Stop()
 	}
 
-	tunnel, err := newBackupTunnelManager(*backupOptions.ExportServerAddr, *backupOptions.ExportServerName, backupSock, *backupOptions.ExportServerToken, backupOptions.CACert)
+	tunnel, err := newBackupTunnelManager(*backupOptions.ExportServerAddr, *backupOptions.ExportServerName, backupSock, backupOptions.CACert, backupOptions.BackupCert, backupOptions.BackupKey)
 	if err != nil {
 		return fmt.Errorf("failed to initialize backup tunnel: %w", err)
 	}
