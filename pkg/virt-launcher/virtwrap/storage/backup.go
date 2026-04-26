@@ -44,6 +44,7 @@ import (
 )
 
 const (
+	CheckpointDataLossPrefix          = "checkpoint data loss: "
 	ChangedBlockTrackingNotEnabledMsg = "Backup failed ChangedBlockTracking is not enabled"
 	backupTimeXMLFormat               = "2006-01-02_15-04-05"
 	freezeFailedMsg                   = "Failed freezing guest filesystem: %s"
@@ -445,9 +446,9 @@ func (m *StorageManager) initiateBackupTunnel(backupOptions *backupv1.BackupOpti
 	return nil
 }
 
-// isLibvirtCheckpointInvalidError checks if the libvirt error indicates
+// IsCheckpointInvalidError checks if the libvirt error indicates
 // the checkpoint is invalid/corrupt (bitmap corruption, inconsistent state, etc.)
-func isLibvirtCheckpointInvalidError(err error) bool {
+func IsCheckpointInvalidError(err error) bool {
 	var libvirtErr libvirt.Error
 	if errors.As(err, &libvirtErr) {
 		switch libvirtErr.Code {
@@ -509,7 +510,7 @@ func (m *StorageManager) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, chec
 	redefineFlags := libvirt.DOMAIN_CHECKPOINT_CREATE_REDEFINE | libvirt.DOMAIN_CHECKPOINT_CREATE_REDEFINE_VALIDATE
 	_, err = dom.CreateCheckpointXML(string(checkpointXML), redefineFlags)
 	if err != nil {
-		checkpointInvalid = isLibvirtCheckpointInvalidError(err)
+		checkpointInvalid = IsCheckpointInvalidError(err)
 		if checkpointInvalid {
 			logger.Reason(err).Error("Checkpoint bitmap is invalid/corrupt")
 		}

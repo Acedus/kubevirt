@@ -894,7 +894,11 @@ func (l *Launcher) BackupVirtualMachine(_ context.Context, request *cmdv1.Backup
 	if err := l.domainManager.BackupVirtualMachine(vmi, options); err != nil {
 		log.Log.Object(vmi).Reason(err).Errorf("Failed to run backup job")
 		response.Success = false
-		response.Message = err.Error()
+		if storage.IsCheckpointInvalidError(err) {
+			response.Message = storage.CheckpointDataLossPrefix + err.Error()
+		} else {
+			response.Message = err.Error()
+		}
 		return response, nil
 	}
 

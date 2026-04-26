@@ -1003,6 +1003,38 @@ var _ = Describe("Backup", func() {
 			Expect(disksWithoutBitmap).To(BeEmpty())
 		})
 	})
+
+	Context("IsCheckpointInvalidError", func() {
+		DescribeTable("should detect libvirt checkpoint errors",
+			func(err error, expected bool) {
+				Expect(IsCheckpointInvalidError(err)).To(Equal(expected))
+			},
+			Entry("ERR_NO_DOMAIN_CHECKPOINT",
+				libvirt.Error{Code: libvirt.ERR_NO_DOMAIN_CHECKPOINT, Message: "Domain checkpoint not found"},
+				true,
+			),
+			Entry("ERR_INVALID_DOMAIN_CHECKPOINT",
+				libvirt.Error{Code: libvirt.ERR_INVALID_DOMAIN_CHECKPOINT, Message: "invalid checkpoint"},
+				true,
+			),
+			Entry("ERR_CHECKPOINT_INCONSISTENT",
+				libvirt.Error{Code: libvirt.ERR_CHECKPOINT_INCONSISTENT, Message: "inconsistent checkpoint"},
+				true,
+			),
+			Entry("unrelated libvirt error",
+				libvirt.Error{Code: libvirt.ERR_INTERNAL_ERROR, Message: "internal error"},
+				false,
+			),
+			Entry("non-libvirt error",
+				fmt.Errorf("some other error"),
+				false,
+			),
+			Entry("nil error",
+				nil,
+				false,
+			),
+		)
+	})
 })
 
 func mockQueryBitmaps(fileToBitmap map[string]string) func(dom cli.VirDomain) (map[string][]qmpBitmapInfo, error) {
