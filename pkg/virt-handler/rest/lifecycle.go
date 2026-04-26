@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/emicklei/go-restful/v3"
 
@@ -373,7 +374,11 @@ func (lh *LifecycleHandler) BackupHandler(request *restful.Request, response *re
 	err = client.VirtualMachineBackup(vmi, opts)
 	if err != nil {
 		log.Log.Object(vmi).Reason(err).Error("Failed backing up VM")
-		response.WriteError(http.StatusBadRequest, err)
+		if strings.Contains(err.Error(), "checkpoint data loss: ") {
+			response.WriteError(http.StatusUnprocessableEntity, err)
+		} else {
+			response.WriteError(http.StatusServiceUnavailable, err)
+		}
 		lh.recorder.Eventf(vmi, k8sv1.EventTypeWarning, "BackupError", "%s: %s", "Failed backing up VM", err.Error())
 		return
 	}
