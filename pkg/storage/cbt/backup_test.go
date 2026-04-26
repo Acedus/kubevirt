@@ -1155,7 +1155,34 @@ var _ = Describe("Backup Controller", func() {
 
 			syncInfo := controller.handleBackupInitiation(backup, vmi, nil, log.DefaultLogger())
 			Expect(syncInfo.err).To(HaveOccurred())
-			Expect(syncInfo.err.Error()).To(ContainSubstring("failed to send Start backup command"))
+			Expect(syncInfo.err.Error()).To(ContainSubstring("api error"))
+		})
+
+		It("should fail backup permanently when checkpoint is no longer valid", func() {
+			backupTracker := createBackupTracker(backupTrackerName, vmName, checkpointName)
+			controller.backupTrackerInformer.GetStore().Add(backupTracker)
+
+			backup := createBackupWithTracker(backupName, vmName, pvcName)
+			backup.Finalizers = []string{vmBackupFinalizer}
+
+			vm := createVM(vmName)
+			controller.vmStore.Add(vm)
+			vmi := createInitializedVMI()
+			controller.vmiStore.Add(vmi)
+			pvc := createPVC(pvcName)
+			controller.pvcStore.Add(pvc)
+
+			checkpointErr := fmt.Errorf("unexpected return code 422 (422 Unprocessable Entity), message: checkpoint data loss: virError(Code=103)")
+
+			vmiInterface.EXPECT().
+				Backup(gomock.Any(), vmName, gomock.Any()).
+				Return(checkpointErr)
+
+			syncInfo := controller.handleBackupInitiation(backup, vmi, backupTracker, log.DefaultLogger())
+			Expect(syncInfo.err).ToNot(HaveOccurred())
+			Expect(syncInfo.event).To(Equal(backupFailedEvent))
+			Expect(syncInfo.reason).To(ContainSubstring("checkpoint is no longer valid"))
+			Expect(syncInfo.reason).To(ContainSubstring("full backup is required"))
 		})
 	})
 

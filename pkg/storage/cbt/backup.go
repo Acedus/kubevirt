@@ -642,8 +642,14 @@ func (ctrl *VMBackupController) handleBackupInitiation(backup *backupv1.VirtualM
 
 	err = ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, &backupOptions)
 	if err != nil {
-		err = fmt.Errorf("failed to send Start backup command: %w", err)
-		logger.Error(err.Error())
+		if isCheckpointInvalidError(err) {
+			logger.Warningf("Checkpoint is no longer valid: %v", err)
+			return &SyncInfo{
+				event:  backupFailedEvent,
+				reason: fmt.Sprintf(backupFailed, "checkpoint is no longer valid, a full backup is required"),
+			}
+		}
+		logger.Errorf("Failed to start backup: %v", err)
 		return syncInfoError(err)
 	}
 	logger.Infof("Started backup for VMI %s successfully", vmi.Name)
