@@ -246,9 +246,6 @@ const (
 	// ConditionExportInitiated indicates the backup export has been initiated
 	ConditionExportInitiated ConditionType = "ExportInitiated"
 
-	// ConditionExportReady indicates the backup export is ready
-	ConditionExportReady ConditionType = "ExportReady"
-
 	// ConditionAborting indicates the backup is aborting
 	ConditionAborting ConditionType = "Aborting"
 )

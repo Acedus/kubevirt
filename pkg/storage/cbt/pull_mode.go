@@ -57,10 +57,6 @@ func isBackupExportInitialized(backup *backupv1.VirtualMachineBackup) bool {
 	return meta.IsStatusConditionTrue(backupConditions(backup), string(backupv1.ConditionExportInitiated))
 }
 
-func isBackupExportReady(backup *backupv1.VirtualMachineBackup) bool {
-	return meta.IsStatusConditionTrue(backupConditions(backup), string(backupv1.ConditionExportReady))
-}
-
 func getPullBackupTTL(backup *backupv1.VirtualMachineBackup) *metav1.Duration {
 	ttl := &metav1.Duration{Duration: defaultPullModeDurationTTL}
 	if backup.Spec.TTLDuration != nil {
@@ -117,7 +113,7 @@ func (ctrl *VMBackupController) handlePullMode(backup *backupv1.VirtualMachineBa
 		return nil
 	}
 
-	if !isBackupExportReady(backup) {
+	if backup.Status.EndpointCert == nil {
 		return ctrl.populateExportLinks(backup, vmExport)
 	}
 

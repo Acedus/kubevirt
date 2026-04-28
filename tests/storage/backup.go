@@ -1452,23 +1452,16 @@ func waitBackupExportReady(virtClient kubecli.KubevirtClient, namespace string, 
 	var vmbackup *backupv1.VirtualMachineBackup
 
 	By(fmt.Sprintf("Waiting for VirtualMachineBackup %s/%s to have its VMExport ready", namespace, backupName))
-	Eventually(func() *backupv1.VirtualMachineBackupStatus {
+	Eventually(func() *string {
 		var err error
 		vmbackup, err = virtClient.VirtualMachineBackup(namespace).Get(context.Background(), backupName, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 
-		return vmbackup.Status
-	}, 180*time.Second, 2*time.Second).Should(And(
-		Not(BeNil()),
-		gstruct.PointTo(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
-			"Conditions": ContainElements(
-				gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
-					"Type":   Equal(string(backupv1.ConditionExportReady)),
-					"Status": Equal(metav1.ConditionTrue),
-				}),
-			),
-		})),
-	))
+		if vmbackup.Status == nil {
+			return nil
+		}
+		return vmbackup.Status.EndpointCert
+	}, 180*time.Second, 2*time.Second).ShouldNot(BeNil())
 	return vmbackup
 }
 

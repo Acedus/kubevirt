@@ -377,9 +377,7 @@ var _ = Describe("Pull Mode", func() {
 		It("should recreate export when it disappeared", func() {
 			backup := createPullBackup(backupName, 0)
 			backup.Spec.TokenSecretRef = "test-token"
-			backup.Status.Conditions = []metav1.Condition{
-				newCondition(string(backupv1.ConditionExportReady), metav1.ConditionTrue, "Ready", ""),
-			}
+			backup.Status.EndpointCert = pointer.P("some-cert")
 			vmi := &v1.VirtualMachineInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: vmName, Namespace: testNamespace},
 			}
@@ -401,7 +399,6 @@ var _ = Describe("Pull Mode - export condition predicates", func() {
 			Status: &backupv1.VirtualMachineBackupStatus{},
 		}
 		Expect(isBackupExportInitialized(backup)).To(BeFalse())
-		Expect(isBackupExportReady(backup)).To(BeFalse())
 	})
 
 	It("should return true when export initialized condition is set", func() {
@@ -413,16 +410,5 @@ var _ = Describe("Pull Mode - export condition predicates", func() {
 			},
 		}
 		Expect(isBackupExportInitialized(backup)).To(BeTrue())
-	})
-
-	It("should return true when export ready condition is set", func() {
-		backup := &backupv1.VirtualMachineBackup{
-			Status: &backupv1.VirtualMachineBackupStatus{
-				Conditions: []metav1.Condition{
-					newCondition(string(backupv1.ConditionExportReady), metav1.ConditionTrue, "Ready", ""),
-				},
-			},
-		}
-		Expect(isBackupExportReady(backup)).To(BeTrue())
 	})
 })
