@@ -105,23 +105,20 @@ func (ctrl *VMBackupController) handlePullMode(backup *backupv1.VirtualMachineBa
 		return nil
 	}
 
+	if vmExport.Status == nil || vmExport.Status.ServiceName == "" {
+		return nil
+	}
+
 	if !isBackupExportInitialized(backup) {
-		if vmExport.Status == nil || vmExport.Status.ServiceName == "" {
-			return nil
-		}
 		return ctrl.handlePrepareBackupExport(backup, vmi, vmExport)
 	}
 
-	if !isBackupExportReady(backup) {
-		if err := ctrl.waitForBackupExportReady(backup); err != nil {
-			return err
-		}
+	if vmExport.Status.Phase != exportv1.Ready {
+		return nil
 	}
 
-	if isBackupExportReady(backup) {
-		if err := ctrl.validateExportHealth(backup); err != nil {
-			return err
-		}
+	if !isBackupExportReady(backup) {
+		return ctrl.populateExportLinks(backup, vmExport)
 	}
 
 	return nil
@@ -203,21 +200,7 @@ func (ctrl *VMBackupController) createBackupExport(backup *backupv1.VirtualMachi
 	return nil
 }
 
-func (ctrl *VMBackupController) waitForBackupExportReady(backup *backupv1.VirtualMachineBackup) error {
-	objKey := cacheKeyFunc(backup.Namespace, backup.Name)
-	obj, exists, err := ctrl.vmExportStore.GetByKey(objKey)
-	if err != nil {
-		return fmt.Errorf("error getting VMExport from store: %w", err)
-	}
-	if !exists {
-		return fmt.Errorf("associated export does not exist")
-	}
-	vmExport := obj.(*exportv1.VirtualMachineExport)
-
-	if vmExport.Status == nil || vmExport.Status.Phase != exportv1.Ready {
-		return nil
-	}
-
+func (ctrl *VMBackupController) populateExportLinks(backup *backupv1.VirtualMachineBackup, vmExport *exportv1.VirtualMachineExport) error {
 	if len(backup.Status.IncludedVolumes) == 0 {
 		return nil
 	}
@@ -264,21 +247,6 @@ func (ctrl *VMBackupController) waitForBackupExportReady(backup *backupv1.Virtua
 	return nil
 }
 
-func (ctrl *VMBackupController) validateExportHealth(backup *backupv1.VirtualMachineBackup) error {
-	objKey := cacheKeyFunc(backup.Namespace, backup.Name)
-	_, exists, err := ctrl.vmExportStore.GetByKey(objKey)
-	if err != nil {
-		return fmt.Errorf("error getting VMExport from store: %w", err)
-	}
-
-	if exists {
-		return nil
-	}
-
-	ctrl.setPreparingExport(backup)
-	return nil
-}
-
 func (ctrl *VMBackupController) generateBackupTunnelCert(backup *backupv1.VirtualMachineBackup) (*triple.KeyPair, error) {
 	caCert := ctrl.caCertManager.Current()
 	caKeyPair := &triple.KeyPair{
@@ -295,7 +263,7 @@ func (ctrl *VMBackupController) generateBackupTunnelCert(backup *backupv1.Virtua
 }
 
 func (ctrl *VMBackupController) handlePullModeTTLExpiry(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) error {
-	if hasVMIBackupStatus(vmi) && !vmi.Status.ChangedBlockTracking.BackupStatus.Completed {
+	if hasVMIBackupStatus(vmi, backup.Name) && !vmi.Status.ChangedBlockTracking.BackupStatus.Completed {
 		return ctrl.handleAbort(backup, vmi)
 	}
 	return nil
