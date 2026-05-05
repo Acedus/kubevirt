@@ -23,7 +23,6 @@ import (
 	_ "embed"
 	"encoding/xml"
 	"fmt"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -4471,65 +4470,13 @@ var _ = Describe("disk device naming", func() {
 	})
 })
 
-var _ = Describe("direct IO checker", func() {
-	var directIOChecker DirectIOChecker
-	var tmpDir string
-	var existingFile string
-	var nonExistingFile string
-	var err error
-
-	BeforeEach(func() {
-		directIOChecker = NewDirectIOChecker()
-		tmpDir, err = os.MkdirTemp("", "direct-io-checker")
-		Expect(err).ToNot(HaveOccurred())
-		existingFile = filepath.Join(tmpDir, "disk.img")
-		Expect(os.WriteFile(existingFile, []byte("test"), 0644)).To(Succeed())
-		nonExistingFile = filepath.Join(tmpDir, "non-existing-file")
-	})
-
-	AfterEach(func() {
-		Expect(os.RemoveAll(tmpDir)).To(Succeed())
-	})
-
-	It("should not fail when file/device exists", func() {
-		_, err = directIOChecker.CheckFile(existingFile)
-		Expect(err).ToNot(HaveOccurred())
-		_, err = directIOChecker.CheckBlockDevice(existingFile)
-		Expect(err).ToNot(HaveOccurred())
-	})
-
-	It("should not fail when file does not exist", func() {
-		_, err := directIOChecker.CheckFile(nonExistingFile)
-		Expect(err).ToNot(HaveOccurred())
-		_, err = os.Stat(nonExistingFile)
-		Expect(err).To(MatchError(fs.ErrNotExist))
-	})
-
-	It("should fail when device does not exist", func() {
-		_, err := directIOChecker.CheckBlockDevice(nonExistingFile)
-		Expect(err).To(HaveOccurred())
-		_, err = os.Stat(nonExistingFile)
-		Expect(err).To(MatchError(fs.ErrNotExist))
-	})
-
-	It("should fail when the path does not exist", func() {
-		nonExistingPath := "/non/existing/path/disk.img"
-		_, err = directIOChecker.CheckFile(nonExistingPath)
-		Expect(err).To(MatchError(fs.ErrNotExist))
-		_, err = directIOChecker.CheckBlockDevice(nonExistingPath)
-		Expect(err).To(MatchError(fs.ErrNotExist))
-		_, err = os.Stat(nonExistingPath)
-		Expect(err).To(MatchError(fs.ErrNotExist))
-	})
-})
-
 var _ = Describe("Driver Cache and IO Settings", func() {
 	var ctrl *gomock.Controller
-	var mockDirectIOChecker *MockDirectIOChecker
+	var mockDirectIOChecker *storage.MockDirectIOChecker
 
 	BeforeEach(func() {
 		ctrl = gomock.NewController(GinkgoT())
-		mockDirectIOChecker = NewMockDirectIOChecker(ctrl)
+		mockDirectIOChecker = storage.NewMockDirectIOChecker(ctrl)
 	})
 
 	expectCheckTrue := func() {

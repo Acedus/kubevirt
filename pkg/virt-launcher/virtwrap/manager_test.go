@@ -67,6 +67,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/cli"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/arch"
+	converterstorage "kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/storage"
 	convertertypes "kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/types"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter/vcpu"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/efi"
@@ -103,7 +104,7 @@ var _ = BeforeSuite(func() {
 
 var _ = Describe("Manager", func() {
 	var mockLibvirt *testing.Libvirt
-	var mockDirectIOChecker *converter.MockDirectIOChecker
+	var mockDirectIOChecker *converterstorage.MockDirectIOChecker
 	var ctrl *gomock.Controller
 	var testVirtShareDir string
 	var testEphemeralDiskDir string
@@ -122,7 +123,7 @@ var _ = Describe("Manager", func() {
 		mockLibvirt = testing.NewLibvirt(ctrl)
 		metadataCache = metadata.NewCache()
 		mockLibvirt.DomainEXPECT().GetBlockInfo(gomock.Any(), gomock.Any()).AnyTimes().Return(&libvirt.DomainBlockInfo{Capacity: 0}, nil)
-		mockDirectIOChecker = converter.NewMockDirectIOChecker(ctrl)
+		mockDirectIOChecker = converterstorage.NewMockDirectIOChecker(ctrl)
 		mockDirectIOChecker.EXPECT().CheckBlockDevice(gomock.Any()).AnyTimes().Return(true, nil)
 		mockDirectIOChecker.EXPECT().CheckFile(gomock.Any()).AnyTimes().Return(true, nil)
 		topology = &cmdv1.Topology{

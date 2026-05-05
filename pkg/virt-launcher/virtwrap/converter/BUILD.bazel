@@ -4,7 +4,6 @@ go_library(
     name = "go_default_library",
     srcs = [
         "converter.go",
-        "generated_mock_converter.go",
         "pci-placement.go",
     ],
     importpath = "kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/converter",
@@ -40,7 +39,6 @@ go_library(
         "//staging/src/kubevirt.io/api/core/v1:go_default_library",
         "//staging/src/kubevirt.io/client-go/log:go_default_library",
         "//staging/src/kubevirt.io/client-go/precond:go_default_library",
-        "//vendor/go.uber.org/mock/gomock:go_default_library",
         "//vendor/golang.org/x/sys/unix:go_default_library",
         "//vendor/k8s.io/utils/ptr:go_default_library",
     ],
