@@ -138,8 +138,7 @@ var _ = Describe("Backup", func() {
 		})
 
 		Context("when backup has already completed", func() {
-			It("should fail to reinitialize", func() {
-				// Set up completed backup with same timestamp
+			It("should return nil for idempotency", func() {
 				completedTime := metav1.Now()
 				existingBackup := api.BackupMetadata{
 					Name:           backupOptions.BackupName,
@@ -150,8 +149,7 @@ var _ = Describe("Backup", func() {
 				metadataCache.Backup.Store(existingBackup)
 
 				err := manager.BackupVirtualMachine(vmi, backupOptions)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("already executed"))
+				Expect(err).ToNot(HaveOccurred())
 			})
 		})
 
@@ -719,7 +717,7 @@ var _ = Describe("Backup", func() {
 				)
 			})
 
-			It("should fail to abort a backup that already completed", func() {
+			It("should return nil when aborting a completed backup", func() {
 				backupMetadata := api.BackupMetadata{
 					Name:           backupOptions.BackupName,
 					StartTimestamp: backupOptions.BackupStartTime,
@@ -727,11 +725,7 @@ var _ = Describe("Backup", func() {
 				}
 				metadataCache.Backup.Store(backupMetadata)
 
-				Expect(manager.AbortVirtualMachineBackup(vmi, backupOptions)).To(
-					MatchError(
-						ContainSubstring("failed to abort backup: backup already completed"),
-					),
-				)
+				Expect(manager.AbortVirtualMachineBackup(vmi, backupOptions)).To(Succeed())
 			})
 
 			It("should return an error when the libvirt domain is not found", func() {
@@ -768,7 +762,7 @@ var _ = Describe("Backup", func() {
 				)
 			})
 
-			DescribeTable("should return an error when the domain job is wrong", func(jobOperation libvirt.DomainJobOperationType, jobType libvirt.DomainJobType) {
+			DescribeTable("should return nil when no active backup job exists", func(jobOperation libvirt.DomainJobOperationType, jobType libvirt.DomainJobType) {
 				backupMetadata := api.BackupMetadata{
 					Name:           backupOptions.BackupName,
 					StartTimestamp: backupOptions.BackupStartTime,
@@ -782,10 +776,7 @@ var _ = Describe("Backup", func() {
 				mockConn.EXPECT().LookupDomainByName(gomock.Any()).Return(mockDomain, nil)
 				mockDomain.EXPECT().GetJobStats(libvirt.DomainGetJobStatsFlags(0)).Return(wrongJob, nil)
 				mockDomain.EXPECT().Free().MaxTimes(1).Return(nil)
-				expectedErr := fmt.Sprintf("cannot abort backup, wrong operation or type: %d, %d", jobOperation, jobType)
-				Expect(manager.AbortVirtualMachineBackup(vmi, backupOptions)).To(
-					MatchError(ContainSubstring(expectedErr)),
-				)
+				Expect(manager.AbortVirtualMachineBackup(vmi, backupOptions)).To(Succeed())
 			},
 				Entry("with wrong job operation", libvirt.DOMAIN_JOB_OPERATION_MIGRATION_IN, libvirt.DOMAIN_JOB_UNBOUNDED),
 				Entry("with wrong job type", libvirt.DOMAIN_JOB_OPERATION_BACKUP, libvirt.DOMAIN_JOB_BOUNDED),

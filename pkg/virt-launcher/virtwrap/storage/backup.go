@@ -95,11 +95,9 @@ func (m *StorageManager) initializeBackupMetadata(backupOptions *backupv1.Backup
 			if backupMetadata.EndTimestamp == nil {
 				// backup is already in progress, ignore
 				return true, nil
-			} else {
-				// backup already completed should not initialize the same backup again
-				return false, fmt.Errorf("backup %s that started at %s already executed, finished at %v, completed: %t",
-					backupOptions.BackupName, *backupMetadata.StartTimestamp, *backupMetadata.EndTimestamp, backupMetadata.Completed)
 			}
+			log.Log.Infof("Backup %s already completed at %v, nothing to do", backupOptions.BackupName, *backupMetadata.EndTimestamp)
+			return true, nil
 		} else {
 			if backupMetadata.EndTimestamp == nil {
 				// another backup already exists and has not completed yet
@@ -371,6 +369,10 @@ func (m *StorageManager) AbortVirtualMachineBackup(vmi *v1.VirtualMachineInstanc
 	if err := checkBackupEligibility(exists, backupMetadata, backupOptions); err != nil {
 		return fmt.Errorf("failed to abort backup: %w", err)
 	}
+	if backupMetadata.Completed {
+		log.Log.Infof("Backup %s already completed, nothing to abort", backupOptions.BackupName)
+		return nil
+	}
 	return m.abortBackup(vmi, backupMetadata)
 }
 
@@ -389,7 +391,8 @@ func (m *StorageManager) abortBackup(vmi *v1.VirtualMachineInstance, backupMetad
 		return err
 	}
 	if stats.Operation != libvirt.DOMAIN_JOB_OPERATION_BACKUP || stats.Type != libvirt.DOMAIN_JOB_UNBOUNDED {
-		return fmt.Errorf("cannot abort backup, wrong operation or type: %d, %d", stats.Operation, stats.Type)
+		log.Log.Object(vmi).Infof("No active backup job to abort (operation: %d, type: %d)", stats.Operation, stats.Type)
+		return nil
 	}
 
 	if err := dom.AbortJob(); err != nil {
@@ -620,7 +623,7 @@ func checkBackupEligibility(exists bool, backupMetadata api.BackupMetadata, back
 		return fmt.Errorf("requested backup differs from ongoing one")
 	}
 	if backupMetadata.Completed {
-		return fmt.Errorf("backup already completed")
+		return nil
 	}
 	return nil
 }
