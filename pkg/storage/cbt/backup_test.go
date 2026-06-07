@@ -401,8 +401,9 @@ var _ = Describe("Backup Controller", func() {
 			statusUpdated = true
 			updateObj := update.GetObject().(*backupv1.VirtualMachineBackup)
 
-			Expect(meta.IsStatusConditionTrue(updateObj.Status.Conditions, string(backupv1.ConditionInitializing))).To(BeTrue())
-			cond := meta.FindStatusCondition(updateObj.Status.Conditions, string(backupv1.ConditionInitializing))
+			Expect(meta.IsStatusConditionTrue(updateObj.Status.Conditions, string(backupv1.ConditionProgressing))).To(BeTrue())
+			cond := meta.FindStatusCondition(updateObj.Status.Conditions, string(backupv1.ConditionProgressing))
+			Expect(cond.Reason).To(Equal(backupv1.ReasonInitializing))
 			Expect(cond.Message).To(ContainSubstring(fmt.Sprintf(backupTrackerNotFoundMsg, backupTrackerName)))
 			return true, updateObj, nil
 		})
@@ -435,8 +436,9 @@ var _ = Describe("Backup Controller", func() {
 			statusUpdated = true
 			updateObj := update.GetObject().(*backupv1.VirtualMachineBackup)
 
-			Expect(meta.IsStatusConditionTrue(updateObj.Status.Conditions, string(backupv1.ConditionInitializing))).To(BeTrue())
-			cond := meta.FindStatusCondition(updateObj.Status.Conditions, string(backupv1.ConditionInitializing))
+			Expect(meta.IsStatusConditionTrue(updateObj.Status.Conditions, string(backupv1.ConditionProgressing))).To(BeTrue())
+			cond := meta.FindStatusCondition(updateObj.Status.Conditions, string(backupv1.ConditionProgressing))
+			Expect(cond.Reason).To(Equal(backupv1.ReasonInitializing))
 			Expect(cond.Message).To(ContainSubstring(fmt.Sprintf(trackerCheckpointRedefinitionPending, backupTrackerName)))
 			return true, updateObj, nil
 		})
@@ -523,8 +525,9 @@ var _ = Describe("Backup Controller", func() {
 
 				backupCopy, err := syncBackup(backup)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionInitializing))).To(BeTrue())
-				cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionInitializing))
+				Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))).To(BeTrue())
+				cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))
+				Expect(cond.Reason).To(Equal(backupv1.ReasonInitializing))
 				Expect(cond.Message).To(Equal(fmt.Sprintf(vmNotFoundMsg, testNamespace, vmName)))
 			})
 
@@ -536,8 +539,9 @@ var _ = Describe("Backup Controller", func() {
 
 				backupCopy, err := syncBackup(backup)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionInitializing))).To(BeTrue())
-				cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionInitializing))
+				Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))).To(BeTrue())
+				cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))
+				Expect(cond.Reason).To(Equal(backupv1.ReasonInitializing))
 				Expect(cond.Message).To(Equal(fmt.Sprintf(vmNotRunningMsg, vmName)))
 			})
 
@@ -552,8 +556,9 @@ var _ = Describe("Backup Controller", func() {
 
 				backupCopy, err := syncBackup(backup)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionInitializing))).To(BeTrue())
-				cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionInitializing))
+				Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))).To(BeTrue())
+				cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))
+				Expect(cond.Reason).To(Equal(backupv1.ReasonInitializing))
 				Expect(cond.Message).To(Equal(fmt.Sprintf(vmNoVolumesToBackupMsg, vmName)))
 			})
 
@@ -570,8 +575,9 @@ var _ = Describe("Backup Controller", func() {
 
 				backupCopy, err := syncBackup(backup)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionInitializing))).To(BeTrue())
-				cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionInitializing))
+				Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))).To(BeTrue())
+				cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))
+				Expect(cond.Reason).To(Equal(backupv1.ReasonInitializing))
 				Expect(cond.Message).To(Equal(fmt.Sprintf(vmNoChangedBlockTrackingMsg, vmName)))
 			})
 
@@ -596,8 +602,9 @@ var _ = Describe("Backup Controller", func() {
 					statusUpdated = true
 					updateObj := update.GetObject().(*backupv1.VirtualMachineBackup)
 
-					Expect(meta.IsStatusConditionTrue(updateObj.Status.Conditions, string(backupv1.ConditionInitializing))).To(BeTrue())
-					cond := meta.FindStatusCondition(updateObj.Status.Conditions, string(backupv1.ConditionInitializing))
+					Expect(meta.IsStatusConditionTrue(updateObj.Status.Conditions, string(backupv1.ConditionProgressing))).To(BeTrue())
+					cond := meta.FindStatusCondition(updateObj.Status.Conditions, string(backupv1.ConditionProgressing))
+					Expect(cond.Reason).To(Equal(backupv1.ReasonInitializing))
 					Expect(cond.Message).To(ContainSubstring(fmt.Sprintf(vmMigrationInProgressMsg, vmName)))
 					return true, updateObj, nil
 				})
@@ -964,7 +971,9 @@ var _ = Describe("Backup Controller", func() {
 
 			backupCopy, err := syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionAborting))).To(BeTrue())
+			Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))).To(BeTrue())
+			cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))
+			Expect(cond.Reason).To(Equal(backupv1.ReasonAborting))
 			Eventually(recorder.Events).Should(Receive(ContainSubstring(backupAbortingEvent)))
 		})
 
@@ -1005,8 +1014,7 @@ var _ = Describe("Backup Controller", func() {
 			backup.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
 			backup.Status = &backupv1.VirtualMachineBackupStatus{
 				Conditions: []metav1.Condition{
-					newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, "Progressing", ""),
-					newCondition(string(backupv1.ConditionAborting), metav1.ConditionTrue, "Aborting", backupAborting),
+					newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonAborting, backupAborting),
 				},
 			}
 
@@ -1027,8 +1035,7 @@ var _ = Describe("Backup Controller", func() {
 			backup.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
 			backup.Status = &backupv1.VirtualMachineBackupStatus{
 				Conditions: []metav1.Condition{
-					newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, "Progressing", ""),
-					newCondition(string(backupv1.ConditionAborting), metav1.ConditionTrue, "Aborting", backupAborting),
+					newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonAborting, backupAborting),
 				},
 			}
 
@@ -1057,7 +1064,7 @@ var _ = Describe("Backup Controller", func() {
 			Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionFailed))).To(BeTrue())
 			failedCond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionFailed))
 			Expect(failedCond.Message).To(ContainSubstring("backup aborted"))
-			Expect(meta.IsStatusConditionFalse(backupCopy.Status.Conditions, string(backupv1.ConditionAborting))).To(BeTrue())
+			Expect(meta.IsStatusConditionFalse(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))).To(BeTrue())
 			Eventually(recorder.Events).Should(Receive(ContainSubstring(backupFailedEvent)))
 		})
 
@@ -1242,19 +1249,19 @@ var _ = Describe("Backup Controller", func() {
 			},
 			Entry("failure with a message",
 				true, pointer.P("disk error"),
-				backupv1.ConditionFailed, "Failed", "disk error", backupFailedEvent,
+				backupv1.ConditionFailed, backupv1.ReasonFailed, "disk error", backupFailedEvent,
 			),
 			Entry("failure without a message (nil check)",
 				true, nil,
-				backupv1.ConditionFailed, "Failed", "unknown, no completion message", backupFailedEvent,
+				backupv1.ConditionFailed, backupv1.ReasonFailed, "unknown, no completion message", backupFailedEvent,
 			),
 			Entry("success with a warning message",
 				false, pointer.P("quiesce failed"),
-				backupv1.ConditionComplete, "CompletedWithWarning", "quiesce failed", backupCompletedWithWarningEvent,
+				backupv1.ConditionComplete, backupv1.ReasonCompletedWithWarning, "quiesce failed", backupCompletedWithWarningEvent,
 			),
 			Entry("success",
 				false, nil,
-				backupv1.ConditionComplete, "Completed", backupCompleted, backupCompletedEvent,
+				backupv1.ConditionComplete, backupv1.ReasonCompleted, backupCompleted, backupCompletedEvent,
 			),
 		)
 	})
@@ -1693,8 +1700,8 @@ var _ = Describe("Backup Controller", func() {
 		})
 
 		It("should return nil when export is not yet in Ready phase", func() {
-			backup.Status.Conditions = append(backup.Status.Conditions,
-				newCondition(string(backupv1.ConditionExportInitiated), metav1.ConditionTrue, "ExportInitiated", ""))
+			meta.SetStatusCondition(&backup.Status.Conditions,
+				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportInitiated, ""))
 
 			vmExport = createBackupVMExport(backup)
 			vmExport.Status = &exportv1.VirtualMachineExportStatus{Phase: exportv1.Pending}
@@ -1705,8 +1712,8 @@ var _ = Describe("Backup Controller", func() {
 		})
 
 		It("should update includedVolumes when export is in Ready phase but the backup has no included volumes", func() {
-			backup.Status.Conditions = append(backup.Status.Conditions,
-				newCondition(string(backupv1.ConditionExportInitiated), metav1.ConditionTrue, "ExportInitiated", ""))
+			meta.SetStatusCondition(&backup.Status.Conditions,
+				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportInitiated, ""))
 
 			vmExport := createBackupVMExport(backup)
 			vmExport.Status = &exportv1.VirtualMachineExportStatus{Phase: exportv1.Ready}
@@ -1725,8 +1732,8 @@ var _ = Describe("Backup Controller", func() {
 		})
 
 		It("should return an error when export is ready but has no links", func() {
-			backup.Status.Conditions = append(backup.Status.Conditions,
-				newCondition(string(backupv1.ConditionExportInitiated), metav1.ConditionTrue, "ExportInitiated", ""))
+			meta.SetStatusCondition(&backup.Status.Conditions,
+				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportInitiated, ""))
 			backup.Status.IncludedVolumes = append(backup.Status.IncludedVolumes, backupv1.BackupVolumeInfo{
 				VolumeName: "datadisk",
 				DiskTarget: "vda",
@@ -1740,8 +1747,8 @@ var _ = Describe("Backup Controller", func() {
 		})
 
 		It("should return an error when the export is ready but the cert is empty", func() {
-			backup.Status.Conditions = append(backup.Status.Conditions,
-				newCondition(string(backupv1.ConditionExportInitiated), metav1.ConditionTrue, "ExportInitiated", ""))
+			meta.SetStatusCondition(&backup.Status.Conditions,
+				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportInitiated, ""))
 			backup.Status.IncludedVolumes = append(backup.Status.IncludedVolumes, backupv1.BackupVolumeInfo{
 				VolumeName: "datadisk",
 				DiskTarget: "vda",
@@ -1769,8 +1776,8 @@ var _ = Describe("Backup Controller", func() {
 		})
 
 		It("should return ExportReady with populated endpoints using internal links", func() {
-			backup.Status.Conditions = append(backup.Status.Conditions,
-				newCondition(string(backupv1.ConditionExportInitiated), metav1.ConditionTrue, "ExportInitiated", ""))
+			meta.SetStatusCondition(&backup.Status.Conditions,
+				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportInitiated, ""))
 			backup.Status.IncludedVolumes = []backupv1.BackupVolumeInfo{{VolumeName: pvcName}}
 			vmExport.Status = &exportv1.VirtualMachineExportStatus{
 				Phase: exportv1.Ready,
@@ -1791,7 +1798,9 @@ var _ = Describe("Backup Controller", func() {
 
 			backupCopy, err := syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionExportReady))).To(BeTrue())
+			cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal(backupv1.ReasonExportReady))
 			Expect(backupCopy.Status.EndpointCert).ToNot(BeNil())
 			Expect(*backupCopy.Status.EndpointCert).ToNot(BeEmpty())
 			Expect(backupCopy.Status.IncludedVolumes).To(HaveLen(1))
@@ -1800,8 +1809,8 @@ var _ = Describe("Backup Controller", func() {
 		})
 
 		It("should prioritize external links over internal links", func() {
-			backup.Status.Conditions = append(backup.Status.Conditions,
-				newCondition(string(backupv1.ConditionExportInitiated), metav1.ConditionTrue, "ExportInitiated", ""))
+			meta.SetStatusCondition(&backup.Status.Conditions,
+				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportInitiated, ""))
 			backup.Status.IncludedVolumes = []backupv1.BackupVolumeInfo{{VolumeName: pvcName}}
 			vmExport.Status = &exportv1.VirtualMachineExportStatus{
 				Phase: exportv1.Ready,
@@ -1832,15 +1841,17 @@ var _ = Describe("Backup Controller", func() {
 
 			backupCopy, err := syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionExportReady))).To(BeTrue())
+			cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal(backupv1.ReasonExportReady))
 			Expect(backupCopy.Status.IncludedVolumes).To(HaveLen(1))
 			Expect(backupCopy.Status.IncludedVolumes[0].DataEndpoint).To(Equal("/external/data"))
 			Expect(backupCopy.Status.IncludedVolumes[0].MapEndpoint).To(Equal("/external/map"))
 		})
 
 		It("should map endpoints independently for multiple volumes", func() {
-			backup.Status.Conditions = append(backup.Status.Conditions,
-				newCondition(string(backupv1.ConditionExportInitiated), metav1.ConditionTrue, "ExportInitiated", ""))
+			meta.SetStatusCondition(&backup.Status.Conditions,
+				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportInitiated, ""))
 			backup.Status.IncludedVolumes = []backupv1.BackupVolumeInfo{
 				{VolumeName: "rootdisk"},
 				{VolumeName: "datadisk"},
@@ -1914,7 +1925,9 @@ var _ = Describe("Backup Controller", func() {
 
 			backupCopy, err := syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(meta.IsStatusConditionFalse(backupCopy.Status.Conditions, string(backupv1.ConditionExportInitiated))).To(BeTrue())
+			cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal(backupv1.ReasonPreparingExport))
 		})
 
 		It("should set a TTL on the export that reflects elapsed time", func() {
@@ -1936,13 +1949,13 @@ var _ = Describe("Backup Controller", func() {
 		})
 
 		It("should reset to Progressing condition when the export has disappeared", func() {
-			backup.Status.Conditions = append(backup.Status.Conditions,
-				newCondition(string(backupv1.ConditionExportInitiated), metav1.ConditionTrue, "ExportInitiated", ""),
-				newCondition(string(backupv1.ConditionExportReady), metav1.ConditionTrue, "ExportReady", ""),
-			)
+			meta.SetStatusCondition(&backup.Status.Conditions,
+				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportReady, ""))
 			backupCopy, err := syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(meta.IsStatusConditionFalse(backupCopy.Status.Conditions, string(backupv1.ConditionExportInitiated))).To(BeTrue())
+			cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal(backupv1.ReasonPreparingExport))
 		})
 
 		It("should abort when backup is still in progress at TTL expiry", func() {
@@ -1960,16 +1973,15 @@ var _ = Describe("Backup Controller", func() {
 
 			backupCopy, err := syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionAborting))).To(BeTrue())
-			abortCond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionAborting))
-			Expect(abortCond.Message).To(ContainSubstring(backupTTLExpiredMsg))
+			cond := meta.FindStatusCondition(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal(backupv1.ReasonAborting))
+			Expect(cond.Message).To(ContainSubstring(backupTTLExpiredMsg))
 		})
 
 		It("should delete the export when the backup completed", func() {
-			backup.Status.Conditions = append(backup.Status.Conditions,
-				newCondition(string(backupv1.ConditionExportInitiated), metav1.ConditionTrue, "ExportInitiated", ""),
-				newCondition(string(backupv1.ConditionExportReady), metav1.ConditionTrue, "ExportReady", ""),
-			)
+			meta.SetStatusCondition(&backup.Status.Conditions,
+				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportReady, ""))
 			vmi.Status.ChangedBlockTracking = &v1.ChangedBlockTrackingStatus{
 				State: v1.ChangedBlockTrackingEnabled,
 				BackupStatus: &v1.VirtualMachineInstanceBackupStatus{
