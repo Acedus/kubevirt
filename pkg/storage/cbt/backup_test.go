@@ -1704,7 +1704,7 @@ var _ = Describe("Backup Controller", func() {
 				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportInitiated, ""))
 
 			vmExport = createBackupVMExport(backup)
-			vmExport.Status = &exportv1.VirtualMachineExportStatus{Phase: exportv1.Pending}
+			vmExport.Status = &exportv1.VirtualMachineExportStatus{Phase: exportv1.Pending, ServiceName: "test-svc"}
 			controller.vmExportStore.Add(vmExport)
 
 			_, err := syncBackup(backup)
@@ -1716,7 +1716,7 @@ var _ = Describe("Backup Controller", func() {
 				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportInitiated, ""))
 
 			vmExport := createBackupVMExport(backup)
-			vmExport.Status = &exportv1.VirtualMachineExportStatus{Phase: exportv1.Ready}
+			vmExport.Status = &exportv1.VirtualMachineExportStatus{Phase: exportv1.Ready, ServiceName: "test-svc"}
 			controller.vmExportStore.Add(vmExport)
 
 			volume := backupv1.BackupVolumeInfo{
@@ -1738,7 +1738,7 @@ var _ = Describe("Backup Controller", func() {
 				VolumeName: "datadisk",
 				DiskTarget: "vda",
 			})
-			vmExport.Status = &exportv1.VirtualMachineExportStatus{Phase: exportv1.Ready, Links: nil}
+			vmExport.Status = &exportv1.VirtualMachineExportStatus{Phase: exportv1.Ready, ServiceName: "test-svc", Links: nil}
 			controller.vmExportStore.Add(vmExport)
 
 			_, err := syncBackup(backup)
@@ -1754,7 +1754,8 @@ var _ = Describe("Backup Controller", func() {
 				DiskTarget: "vda",
 			})
 			vmExport.Status = &exportv1.VirtualMachineExportStatus{
-				Phase: exportv1.Ready,
+				Phase:       exportv1.Ready,
+				ServiceName: "test-svc",
 				Links: &exportv1.VirtualMachineExportLinks{
 					Internal: &exportv1.VirtualMachineExportLink{
 						Cert: "",
@@ -1780,7 +1781,8 @@ var _ = Describe("Backup Controller", func() {
 				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportInitiated, ""))
 			backup.Status.IncludedVolumes = []backupv1.BackupVolumeInfo{{VolumeName: pvcName}}
 			vmExport.Status = &exportv1.VirtualMachineExportStatus{
-				Phase: exportv1.Ready,
+				Phase:       exportv1.Ready,
+				ServiceName: "test-svc",
 				Links: &exportv1.VirtualMachineExportLinks{
 					Internal: &exportv1.VirtualMachineExportLink{
 						Cert: "test",
@@ -1813,7 +1815,8 @@ var _ = Describe("Backup Controller", func() {
 				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, backupv1.ReasonExportInitiated, ""))
 			backup.Status.IncludedVolumes = []backupv1.BackupVolumeInfo{{VolumeName: pvcName}}
 			vmExport.Status = &exportv1.VirtualMachineExportStatus{
-				Phase: exportv1.Ready,
+				Phase:       exportv1.Ready,
+				ServiceName: "test-svc",
 				Links: &exportv1.VirtualMachineExportLinks{
 					Internal: &exportv1.VirtualMachineExportLink{
 						Cert: "test",
@@ -1857,7 +1860,8 @@ var _ = Describe("Backup Controller", func() {
 				{VolumeName: "datadisk"},
 			}
 			vmExport.Status = &exportv1.VirtualMachineExportStatus{
-				Phase: exportv1.Ready,
+				Phase:       exportv1.Ready,
+				ServiceName: "test-svc",
 				Links: &exportv1.VirtualMachineExportLinks{
 					Internal: &exportv1.VirtualMachineExportLink{
 						Cert: pvcName,
