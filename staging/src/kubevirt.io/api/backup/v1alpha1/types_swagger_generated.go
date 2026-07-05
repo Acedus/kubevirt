@@ -13,7 +13,8 @@ func (BackupVolumeInfo) SwaggerDoc() map[string]string {
 
 func (BackupCheckpoint) SwaggerDoc() map[string]string {
 	return map[string]string{
-		"volumes": "Volumes lists volumes included in the backup\n+optional\n+listType=atomic",
+		"type":    "Type indicates whether the backup that created this checkpoint was Full or Incremental\n+optional",
+		"volumes": "Volumes lists volume names included in the backup\n+optional\n+listType=atomic",
 	}
 }
 
@@ -32,15 +33,17 @@ func (VirtualMachineBackupTracker) SwaggerDoc() map[string]string {
 
 func (VirtualMachineBackupTrackerSpec) SwaggerDoc() map[string]string {
 	return map[string]string{
-		"":       "VirtualMachineBackupTrackerSpec is the spec for a VirtualMachineBackupTracker resource\n+kubebuilder:validation:XValidation:rule=\"self == oldSelf\",message=\"spec is immutable after creation\"",
-		"source": "Source specifies the VM that this backupTracker is associated with\n+kubebuilder:validation:XValidation:rule=\"has(self.apiGroup) && self.apiGroup == 'kubevirt.io'\",message=\"apiGroup must be kubevirt.io\"\n+kubebuilder:validation:XValidation:rule=\"self.kind == 'VirtualMachine'\",message=\"kind must be VirtualMachine\"\n+kubebuilder:validation:XValidation:rule=\"self.name != ''\",message=\"name is required\"",
+		"":                  "VirtualMachineBackupTrackerSpec is the spec for a VirtualMachineBackupTracker resource\n+kubebuilder:validation:XValidation:rule=\"self.source == oldSelf.source\",message=\"source is immutable after creation\"",
+		"source":            "Source specifies the VM that this backupTracker is associated with\n+kubebuilder:validation:XValidation:rule=\"has(self.apiGroup) && self.apiGroup == 'kubevirt.io'\",message=\"apiGroup must be kubevirt.io\"\n+kubebuilder:validation:XValidation:rule=\"self.kind == 'VirtualMachine'\",message=\"kind must be VirtualMachine\"\n+kubebuilder:validation:XValidation:rule=\"self.name != ''\",message=\"name is required\"",
+		"retainCheckpoints": "RetainCheckpoints specifies the maximum number of checkpoints to retain.\nWhen exceeded, oldest checkpoints are pruned (bitmaps removed from qcow2).\n+optional\n+kubebuilder:default=1\n+kubebuilder:validation:Minimum=1",
 	}
 }
 
 func (VirtualMachineBackupTrackerStatus) SwaggerDoc() map[string]string {
 	return map[string]string{
-		"latestCheckpoint":               "+optional\nLatestCheckpoint is the metadata of the checkpoint of\nthe latest performed backup",
-		"checkpointRedefinitionRequired": "+optional\nCheckpointRedefinitionRequired is set to true by virt-handler when the VM\nrestarts and has a checkpoint that needs to be redefined in libvirt.\nvirt-controller will process this flag, attempt redefinition, and clear it.",
+		"latestCheckpoint":               "LatestCheckpoint is the most recent checkpoint — a permanent convenience\nfield for clients that only need the current state. Computed by the\ncontroller as Checkpoints[len-1] on every status write.\n+optional",
+		"checkpoints":                    "Checkpoints is an ordered list of retained checkpoints, oldest first.\n+optional\n+listType=atomic",
+		"checkpointRedefinitionRequired": "+optional\nCheckpointRedefinitionRequired is set to true by virt-handler when the VM\nrestarts and has checkpoints that need to be redefined in libvirt.\nvirt-controller will process this flag, attempt redefinition, and clear it.",
 	}
 }
 

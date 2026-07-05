@@ -209,10 +209,10 @@ var _ = Describe("Backup Controller", func() {
 			Status: &backupv1.VirtualMachineBackupTrackerStatus{},
 		}
 		if checkpointName != "" {
-			tracker.Status.LatestCheckpoint = &backupv1.BackupCheckpoint{
+			tracker.Status.Checkpoints = []backupv1.BackupCheckpoint{{
 				Name:         checkpointName,
 				CreationTime: &metav1.Time{Time: metav1.Now().Time},
-			}
+			}}
 		}
 		return tracker
 	}
@@ -1517,7 +1517,7 @@ var _ = Describe("Backup Controller", func() {
 		Expect(backupCopy.Status.Type).To(Equal(backupv1.Full))
 	})
 
-	It("should initiate full backup when backupTracker exists but has no LatestCheckpoint", func() {
+	It("should initiate full backup when backupTracker exists but has no checkpoints", func() {
 		backupTracker := createBackupTracker(backupTrackerName, vmName, "")
 		backupTracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
 		controller.backupTrackerInformer.GetStore().Add(backupTracker)
@@ -1554,7 +1554,7 @@ var _ = Describe("Backup Controller", func() {
 		Expect(backupCopy.Status.Type).To(Equal(backupv1.Full))
 	})
 
-	It("should initiate incremental backup when backupTracker has LatestCheckpoint", func() {
+	It("should initiate incremental backup when backupTracker has checkpoints", func() {
 		backupTracker := createBackupTracker(backupTrackerName, vmName, checkpointName)
 		backupTracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
 		controller.backupTrackerInformer.GetStore().Add(backupTracker)
@@ -1592,7 +1592,7 @@ var _ = Describe("Backup Controller", func() {
 		Expect(backupCopy.Status.Type).To(Equal(backupv1.Incremental))
 	})
 
-	It("should initiate full backup with ForceFullBackup even with LatestCheckpoint", func() {
+	It("should initiate full backup with ForceFullBackup even with checkpoints", func() {
 		backupTracker := createBackupTracker(backupTrackerName, vmName, checkpointName)
 		backupTracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
 		controller.backupTrackerInformer.GetStore().Add(backupTracker)
@@ -1758,11 +1758,13 @@ var _ = Describe("Backup Controller", func() {
 				updatedTracker := updateAction.GetObject().(*backupv1.VirtualMachineBackupTracker)
 				trackerPatched = true
 				Expect(updatedTracker.Status).ToNot(BeNil())
-				Expect(updatedTracker.Status.LatestCheckpoint).ToNot(BeNil())
-				Expect(updatedTracker.Status.LatestCheckpoint.Name).To(Equal(checkpointName))
-				Expect(updatedTracker.Status.LatestCheckpoint.Volumes).To(HaveLen(2))
-				Expect(updatedTracker.Status.LatestCheckpoint.Volumes[0].VolumeName).To(Equal("rootdisk"))
-				Expect(updatedTracker.Status.LatestCheckpoint.Volumes[1].VolumeName).To(Equal("datadisk"))
+				Expect(updatedTracker.Status.Checkpoints).ToNot(BeEmpty())
+				latestCp := updatedTracker.Status.LatestCheckpoint
+				Expect(latestCp).ToNot(BeNil())
+				Expect(latestCp.Name).To(Equal(checkpointName))
+				Expect(latestCp.Volumes).To(HaveLen(2))
+				Expect(latestCp.Volumes[0]).To(Equal("rootdisk"))
+				Expect(latestCp.Volumes[1]).To(Equal("datadisk"))
 				return true, updatedTracker, nil
 			})
 

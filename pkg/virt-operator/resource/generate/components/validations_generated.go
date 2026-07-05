@@ -9780,6 +9780,14 @@ var CRDsValidation map[string]string = map[string]string{
       description: VirtualMachineBackupTrackerSpec is the spec for a VirtualMachineBackupTracker
         resource
       properties:
+        retainCheckpoints:
+          default: 1
+          description: |-
+            RetainCheckpoints specifies the maximum number of checkpoints to retain.
+            When exceeded, oldest checkpoints are pruned (bitmaps removed from qcow2).
+          format: int32
+          minimum: 1
+          type: integer
         source:
           description: Source specifies the VM that this backupTracker is associated
             with
@@ -9812,46 +9820,58 @@ var CRDsValidation map[string]string = map[string]string{
       - source
       type: object
       x-kubernetes-validations:
-      - message: spec is immutable after creation
-        rule: self == oldSelf
+      - message: source is immutable after creation
+        rule: self.source == oldSelf.source
     status:
       properties:
         checkpointRedefinitionRequired:
           description: |-
             CheckpointRedefinitionRequired is set to true by virt-handler when the VM
-            restarts and has a checkpoint that needs to be redefined in libvirt.
+            restarts and has checkpoints that need to be redefined in libvirt.
             virt-controller will process this flag, attempt redefinition, and clear it.
           type: boolean
+        checkpoints:
+          description: Checkpoints is an ordered list of retained checkpoints, oldest
+            first.
+          items:
+            properties:
+              creationTime:
+                format: date-time
+                type: string
+              name:
+                type: string
+              type:
+                description: Type indicates whether the backup that created this checkpoint
+                  was Full or Incremental
+                type: string
+              volumes:
+                description: Volumes lists volume names included in the backup
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
+            type: object
+          type: array
+          x-kubernetes-list-type: atomic
         latestCheckpoint:
           description: |-
-            LatestCheckpoint is the metadata of the checkpoint of
-            the latest performed backup
+            LatestCheckpoint is the most recent checkpoint — a permanent convenience
+            field for clients that only need the current state. Computed by the
+            controller as Checkpoints[len-1] on every status write.
           properties:
             creationTime:
               format: date-time
               type: string
             name:
               type: string
+            type:
+              description: Type indicates whether the backup that created this checkpoint
+                was Full or Incremental
+              type: string
             volumes:
-              description: Volumes lists volumes included in the backup
+              description: Volumes lists volume names included in the backup
               items:
-                description: BackupVolumeInfo contains information about a volume
-                  included in a backup
-                properties:
-                  dataEndpoint:
-                    description: DataEndpoint is the URL of the endpoint for read
-                      for pull mode
-                    type: string
-                  mapEndpoint:
-                    description: MapEndpoint is the URL of the endpoint for map for
-                      pull mode
-                    type: string
-                  volumeName:
-                    description: VolumeName is the volume name from VMI spec
-                    type: string
-                required:
-                - volumeName
-                type: object
+                type: string
               type: array
               x-kubernetes-list-type: atomic
           type: object

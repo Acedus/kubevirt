@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -45,8 +46,7 @@ func trackerNeedsCheckpointRedefinition(tracker *backupv1.VirtualMachineBackupTr
 		tracker.Status != nil &&
 		tracker.Status.CheckpointRedefinitionRequired != nil &&
 		*tracker.Status.CheckpointRedefinitionRequired &&
-		tracker.Status.LatestCheckpoint != nil &&
-		tracker.Status.LatestCheckpoint.Name != ""
+		len(tracker.Status.Checkpoints) > 0
 }
 
 func (ctrl *VMBackupController) runTrackerWorker() {
@@ -133,22 +133,27 @@ func (ctrl *VMBackupController) syncBackupTracker(tracker *backupv1.VirtualMachi
 		return fmt.Errorf("VMI %s/%s not found", tracker.Namespace, vmiName)
 	}
 
-	checkpoint := tracker.Status.LatestCheckpoint
-	logger.Infof("Calling RedefineCheckpoint for VMI %s with checkpoint %s", vmiName, checkpoint.Name)
+	cp := tracker.Status.LatestCheckpoint
+	logger.Infof("Calling RedefineCheckpoint for VMI %s with checkpoint %s", vmiName, cp.Name)
 
-	err = ctrl.client.VirtualMachineInstance(tracker.Namespace).RedefineCheckpoint(context.Background(), vmiName, checkpoint)
+	err = ctrl.client.VirtualMachineInstance(tracker.Namespace).RedefineCheckpoint(context.Background(), vmiName, cp)
 	if err != nil && !isCheckpointInvalidError(err) {
 		return err
 	}
 
 	if err != nil {
-		logger.Warningf("Checkpoint invalid, clearing latestcheckpoint: %v", err)
+		logger.Warningf("Checkpoint invalid, clearing checkpoints: %v", err)
 		ctrl.recorder.Eventf(tracker, corev1.EventTypeWarning, "CheckpointRedefinitionFailed",
-			"Failed to redefine checkpoint %s: %v. Checkpoint cleared, next backup will be full.",
-			tracker.Status.LatestCheckpoint.Name, err)
-		tracker.Status.LatestCheckpoint = nil
+			"Failed to redefine checkpoint %s: %v. Checkpoints cleared, next backup will be full.",
+			cp.Name, err)
+		tracker.Status.Checkpoints = nil
 	}
 
+	if len(tracker.Status.Checkpoints) > 0 {
+		tracker.Status.LatestCheckpoint = &tracker.Status.Checkpoints[len(tracker.Status.Checkpoints)-1]
+	} else {
+		tracker.Status.LatestCheckpoint = nil
+	}
 	tracker.Status.CheckpointRedefinitionRequired = nil
 
 	return nil
@@ -196,7 +201,7 @@ func (ctrl *VMBackupController) trackerHasActiveBackups(tracker *backupv1.Virtua
 	return false, nil
 }
 
-func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *backupv1.VirtualMachineBackupTracker, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
+func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *backupv1.VirtualMachineBackupTracker, backupType backupv1.BackupType, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
 	if tracker == nil {
 		return nil
 	}
@@ -205,10 +210,22 @@ func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *b
 	if trackerCopy.Status == nil {
 		trackerCopy.Status = &backupv1.VirtualMachineBackupTrackerStatus{}
 	}
-	trackerCopy.Status.LatestCheckpoint = &backupv1.BackupCheckpoint{
+
+	newCp := backupv1.BackupCheckpoint{
 		Name:         *backupStatus.CheckpointName,
 		CreationTime: backupStatus.StartTimestamp,
-		Volumes:      toBackupVolumeInfo(backupStatus.Volumes),
+		Type:         backupType,
+		Volumes:      toVolumeNames(backupStatus.Volumes),
+	}
+	if slices.ContainsFunc(trackerCopy.Status.Checkpoints, func(cp backupv1.BackupCheckpoint) bool { return cp.Name == newCp.Name }) {
+		return nil
+	}
+
+	trackerCopy.Status.Checkpoints = append(trackerCopy.Status.Checkpoints, newCp)
+	if len(trackerCopy.Status.Checkpoints) > 0 {
+		trackerCopy.Status.LatestCheckpoint = &trackerCopy.Status.Checkpoints[len(trackerCopy.Status.Checkpoints)-1]
+	} else {
+		trackerCopy.Status.LatestCheckpoint = nil
 	}
 
 	_, err := ctrl.client.VirtualMachineBackupTracker(namespace).UpdateStatus(
@@ -217,8 +234,8 @@ func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *b
 		return fmt.Errorf("failed to update BackupTracker status: %w", err)
 	}
 
-	log.Log.Infof("Successfully updated BackupTracker %s/%s with checkpoint %s",
-		namespace, tracker.Name, trackerCopy.Status.LatestCheckpoint.Name)
+	log.Log.Infof("Successfully updated BackupTracker %s/%s with checkpoint %s (type=%s)",
+		namespace, tracker.Name, newCp.Name, newCp.Type)
 	return nil
 }
 

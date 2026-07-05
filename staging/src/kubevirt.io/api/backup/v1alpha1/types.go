@@ -55,10 +55,13 @@ type BackupVolumeInfo struct {
 type BackupCheckpoint struct {
 	Name         string       `json:"name,omitempty"`
 	CreationTime *metav1.Time `json:"creationTime,omitempty"`
-	// Volumes lists volumes included in the backup
+	// Type indicates whether the backup that created this checkpoint was Full or Incremental
+	// +optional
+	Type BackupType `json:"type,omitempty"`
+	// Volumes lists volume names included in the backup
 	// +optional
 	// +listType=atomic
-	Volumes []BackupVolumeInfo `json:"volumes,omitempty"`
+	Volumes []string `json:"volumes,omitempty"`
 }
 
 // BackupType is the const type for the backup possible types
@@ -113,24 +116,36 @@ type VirtualMachineBackupTracker struct {
 }
 
 // VirtualMachineBackupTrackerSpec is the spec for a VirtualMachineBackupTracker resource
-// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="self.source == oldSelf.source",message="source is immutable after creation"
 type VirtualMachineBackupTrackerSpec struct {
 	// Source specifies the VM that this backupTracker is associated with
 	// +kubebuilder:validation:XValidation:rule="has(self.apiGroup) && self.apiGroup == 'kubevirt.io'",message="apiGroup must be kubevirt.io"
 	// +kubebuilder:validation:XValidation:rule="self.kind == 'VirtualMachine'",message="kind must be VirtualMachine"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="name is required"
 	Source corev1.TypedLocalObjectReference `json:"source"`
+	// RetainCheckpoints specifies the maximum number of checkpoints to retain.
+	// When exceeded, oldest checkpoints are pruned (bitmaps removed from qcow2).
+	// +optional
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	RetainCheckpoints *int32 `json:"retainCheckpoints,omitempty"`
 }
 
 type VirtualMachineBackupTrackerStatus struct {
+	// LatestCheckpoint is the most recent checkpoint — a permanent convenience
+	// field for clients that only need the current state. Computed by the
+	// controller as Checkpoints[len-1] on every status write.
 	// +optional
-	// LatestCheckpoint is the metadata of the checkpoint of
-	// the latest performed backup
 	LatestCheckpoint *BackupCheckpoint `json:"latestCheckpoint,omitempty"`
+
+	// Checkpoints is an ordered list of retained checkpoints, oldest first.
+	// +optional
+	// +listType=atomic
+	Checkpoints []BackupCheckpoint `json:"checkpoints,omitempty"`
 
 	// +optional
 	// CheckpointRedefinitionRequired is set to true by virt-handler when the VM
-	// restarts and has a checkpoint that needs to be redefined in libvirt.
+	// restarts and has checkpoints that need to be redefined in libvirt.
 	// virt-controller will process this flag, attempt redefinition, and clear it.
 	CheckpointRedefinitionRequired *bool `json:"checkpointRedefinitionRequired,omitempty"`
 }

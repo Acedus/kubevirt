@@ -399,9 +399,7 @@ func (ctrl *VMBackupController) Execute() bool {
 
 func isIncrementalBackup(backup *backupv1.VirtualMachineBackup, backupTracker *backupv1.VirtualMachineBackupTracker) bool {
 	return !backup.Spec.ForceFullBackup &&
-		backupTracker != nil && backupTracker.Status != nil &&
-		backupTracker.Status.LatestCheckpoint != nil &&
-		backupTracker.Status.LatestCheckpoint.Name != ""
+		backupTracker != nil && backupTracker.Status != nil && backupTracker.Status.LatestCheckpoint != nil
 }
 
 func (ctrl *VMBackupController) execute(key string) error {
@@ -600,7 +598,7 @@ func (ctrl *VMBackupController) reconcileActive(backup *backupv1.VirtualMachineB
 
 func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, backupTracker *backupv1.VirtualMachineBackupTracker, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
 	if backupTracker != nil && backupStatus.CheckpointName != nil && !backupStatus.Failed {
-		if err := ctrl.updateBackupTracker(backup.Namespace, backupTracker, backupStatus); err != nil {
+		if err := ctrl.updateBackupTracker(backup.Namespace, backupTracker, backup.Status.Type, backupStatus); err != nil {
 			log.Log.Object(backup).Reason(err).Error("Failed to update BackupTracker")
 			return err
 		}
@@ -677,7 +675,7 @@ func (ctrl *VMBackupController) startBackup(backup *backupv1.VirtualMachineBacku
 	if isIncrementalBackup(backup, backupTracker) {
 		backupOptions.Incremental = pointer.P(backupTracker.Status.LatestCheckpoint.Name)
 		backupType = backupv1.Incremental
-		log.Log.Object(backup).Infof("Setting incremental backup from checkpoint: %s", backupTracker.Status.LatestCheckpoint.Name)
+		log.Log.Object(backup).Infof("Setting incremental backup from checkpoint: %s", *backupOptions.Incremental)
 	}
 
 	if err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, &backupOptions); err != nil {
@@ -1118,4 +1116,12 @@ func toBackupVolumeInfo(vols []v1.VirtualMachineInstanceBackupVolumeInfo) []back
 		out[i] = backupv1.BackupVolumeInfo{VolumeName: v.VolumeName}
 	}
 	return out
+}
+
+func toVolumeNames(vols []v1.VirtualMachineInstanceBackupVolumeInfo) []string {
+	volNames := make([]string, len(vols))
+	for i, v := range vols {
+		volNames[i] = v.VolumeName
+	}
+	return volNames
 }

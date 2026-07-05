@@ -80,9 +80,9 @@ var _ = Describe("CBTHandler", func() {
 		}
 		if hasCheckpoint {
 			tracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
-				LatestCheckpoint: &backupv1.BackupCheckpoint{
+				Checkpoints: []backupv1.BackupCheckpoint{{
 					Name: "checkpoint-1",
-				},
+				}},
 				CheckpointRedefinitionRequired: pointer.P(alreadyMarked),
 			}
 		}
@@ -221,16 +221,14 @@ var _ = Describe("CBTHandler", func() {
 			Entry("without status", func(t *backupv1.VirtualMachineBackupTracker) {
 				t.Status = nil
 			}),
-			Entry("without latest checkpoint", func(t *backupv1.VirtualMachineBackupTracker) {
-				t.Status = &backupv1.VirtualMachineBackupTrackerStatus{
-					LatestCheckpoint: nil,
-				}
+			Entry("without checkpoints", func(t *backupv1.VirtualMachineBackupTracker) {
+				t.Status = &backupv1.VirtualMachineBackupTrackerStatus{}
 			}),
 			Entry("already marked for redefinition", func(t *backupv1.VirtualMachineBackupTracker) {
 				t.Status = &backupv1.VirtualMachineBackupTrackerStatus{
-					LatestCheckpoint: &backupv1.BackupCheckpoint{
+					Checkpoints: []backupv1.BackupCheckpoint{{
 						Name: "checkpoint-1",
-					},
+					}},
 					CheckpointRedefinitionRequired: pointer.P(true),
 				}
 			}),

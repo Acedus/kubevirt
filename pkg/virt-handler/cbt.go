@@ -124,7 +124,7 @@ func (h *CBTHandler) markTrackersForRedefinition(vmi *v1.VirtualMachineInstance)
 	trackers := h.backupTrackersForVMI(vmi)
 
 	for _, tracker := range trackers {
-		if tracker.Status == nil || tracker.Status.LatestCheckpoint == nil {
+		if tracker.Status == nil || len(tracker.Status.Checkpoints) == 0 {
 			continue
 		}
 		if tracker.Status.CheckpointRedefinitionRequired != nil && *tracker.Status.CheckpointRedefinitionRequired {

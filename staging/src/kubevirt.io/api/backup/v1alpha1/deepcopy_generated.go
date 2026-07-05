@@ -38,7 +38,7 @@ func (in *BackupCheckpoint) DeepCopyInto(out *BackupCheckpoint) {
 	}
 	if in.Volumes != nil {
 		in, out := &in.Volumes, &out.Volumes
-		*out = make([]BackupVolumeInfo, len(*in))
+		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
 	return
@@ -334,6 +334,11 @@ func (in *VirtualMachineBackupTrackerList) DeepCopyObject() runtime.Object {
 func (in *VirtualMachineBackupTrackerSpec) DeepCopyInto(out *VirtualMachineBackupTrackerSpec) {
 	*out = *in
 	in.Source.DeepCopyInto(&out.Source)
+	if in.RetainCheckpoints != nil {
+		in, out := &in.RetainCheckpoints, &out.RetainCheckpoints
+		*out = new(int32)
+		**out = **in
+	}
 	return
 }
 
@@ -354,6 +359,13 @@ func (in *VirtualMachineBackupTrackerStatus) DeepCopyInto(out *VirtualMachineBac
 		in, out := &in.LatestCheckpoint, &out.LatestCheckpoint
 		*out = new(BackupCheckpoint)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.Checkpoints != nil {
+		in, out := &in.Checkpoints, &out.Checkpoints
+		*out = make([]BackupCheckpoint, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 	if in.CheckpointRedefinitionRequired != nil {
 		in, out := &in.CheckpointRedefinitionRequired, &out.CheckpointRedefinitionRequired

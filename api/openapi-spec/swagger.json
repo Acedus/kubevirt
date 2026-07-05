@@ -20607,12 +20607,16 @@
      "name": {
       "type": "string"
      },
+     "type": {
+      "description": "Type indicates whether the backup that created this checkpoint was Full or Incremental",
+      "type": "string"
+     },
      "volumes": {
-      "description": "Volumes lists volumes included in the backup",
+      "description": "Volumes lists volume names included in the backup",
       "type": "array",
       "items": {
-       "default": {},
-       "$ref": "#/definitions/v1alpha1.BackupVolumeInfo"
+       "type": "string",
+       "default": ""
       },
       "x-kubernetes-list-type": "atomic"
      }

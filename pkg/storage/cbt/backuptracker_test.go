@@ -65,9 +65,9 @@ var _ = Describe("VMBackupController", func() {
 				&backupv1.VirtualMachineBackupTracker{
 					Status: &backupv1.VirtualMachineBackupTrackerStatus{
 						CheckpointRedefinitionRequired: pointer.P(true),
-						LatestCheckpoint: &backupv1.BackupCheckpoint{
+						Checkpoints: []backupv1.BackupCheckpoint{{
 							Name: "checkpoint-1",
-						},
+						}},
 					},
 				},
 				true,
@@ -86,9 +86,9 @@ var _ = Describe("VMBackupController", func() {
 				&backupv1.VirtualMachineBackupTracker{
 					Status: &backupv1.VirtualMachineBackupTrackerStatus{
 						CheckpointRedefinitionRequired: nil,
-						LatestCheckpoint: &backupv1.BackupCheckpoint{
+						Checkpoints: []backupv1.BackupCheckpoint{{
 							Name: "checkpoint-1",
-						},
+						}},
 					},
 				},
 				false,
@@ -97,29 +97,26 @@ var _ = Describe("VMBackupController", func() {
 				&backupv1.VirtualMachineBackupTracker{
 					Status: &backupv1.VirtualMachineBackupTrackerStatus{
 						CheckpointRedefinitionRequired: pointer.P(false),
-						LatestCheckpoint: &backupv1.BackupCheckpoint{
+						Checkpoints: []backupv1.BackupCheckpoint{{
 							Name: "checkpoint-1",
-						},
+						}},
 					},
 				},
 				false,
 			),
-			Entry("does not need redefinition when checkpoint is nil",
+			Entry("does not need redefinition when checkpoints is nil",
 				&backupv1.VirtualMachineBackupTracker{
 					Status: &backupv1.VirtualMachineBackupTrackerStatus{
 						CheckpointRedefinitionRequired: pointer.P(true),
-						LatestCheckpoint:               nil,
 					},
 				},
 				false,
 			),
-			Entry("does not need redefinition when checkpoint name is empty",
+			Entry("does not need redefinition when checkpoints is empty",
 				&backupv1.VirtualMachineBackupTracker{
 					Status: &backupv1.VirtualMachineBackupTrackerStatus{
 						CheckpointRedefinitionRequired: pointer.P(true),
-						LatestCheckpoint: &backupv1.BackupCheckpoint{
-							Name: "",
-						},
+						Checkpoints:                    []backupv1.BackupCheckpoint{},
 					},
 				},
 				false,
@@ -317,7 +314,7 @@ var _ = Describe("VMBackupController", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
 			// Checkpoint should still exist
-			Expect(updated.Status.LatestCheckpoint).ToNot(BeNil())
+			Expect(updated.Status.Checkpoints).ToNot(BeEmpty())
 		})
 
 		It("should clear checkpoint on permanent error (HTTP 422)", func() {
@@ -345,7 +342,7 @@ var _ = Describe("VMBackupController", func() {
 				context.Background(), "tracker1", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
-			Expect(updated.Status.LatestCheckpoint).To(BeNil())
+			Expect(updated.Status.Checkpoints).To(BeEmpty())
 
 			// Verify event was emitted
 			Eventually(recorder.Events).Should(Receive(ContainSubstring("CheckpointRedefinitionFailed")))
@@ -376,7 +373,7 @@ var _ = Describe("VMBackupController", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(updated.Status.CheckpointRedefinitionRequired).ToNot(BeNil())
 			Expect(*updated.Status.CheckpointRedefinitionRequired).To(BeTrue())
-			Expect(updated.Status.LatestCheckpoint).ToNot(BeNil())
+			Expect(updated.Status.Checkpoints).ToNot(BeEmpty())
 
 			// Verify no event was emitted
 			Consistently(recorder.Events).ShouldNot(Receive())
@@ -399,7 +396,7 @@ var _ = Describe("VMBackupController", func() {
 			backupStatus := &v1.VirtualMachineInstanceBackupStatus{
 				CheckpointName: new("cp-1"),
 			}
-			err := ctrl.updateBackupTracker(testNamespace, nil, backupStatus)
+			err := ctrl.updateBackupTracker(testNamespace, nil, backupv1.Full, backupStatus)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -418,17 +415,18 @@ var _ = Describe("VMBackupController", func() {
 					{VolumeName: "rootdisk"},
 				},
 			}
-			err = ctrl.updateBackupTracker(testNamespace, tracker, backupStatus)
+			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus)
 			Expect(err).ToNot(HaveOccurred())
 
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
 				context.Background(), "tracker1", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(updated.Status).ToNot(BeNil())
+			Expect(updated.Status.Checkpoints).To(HaveLen(1))
 			Expect(updated.Status.LatestCheckpoint).ToNot(BeNil())
 			Expect(updated.Status.LatestCheckpoint.Name).To(Equal("cp-1"))
 			Expect(updated.Status.LatestCheckpoint.Volumes).To(HaveLen(1))
-			Expect(updated.Status.LatestCheckpoint.Volumes[0].VolumeName).To(Equal("rootdisk"))
+			Expect(updated.Status.LatestCheckpoint.Volumes[0]).To(Equal("rootdisk"))
 		})
 
 		It("should preserve existing status fields when updating checkpoint", func() {
@@ -446,15 +444,36 @@ var _ = Describe("VMBackupController", func() {
 					{VolumeName: "datadisk"},
 				},
 			}
-			err = ctrl.updateBackupTracker(testNamespace, tracker, backupStatus)
+			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus)
 			Expect(err).ToNot(HaveOccurred())
 
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
 				context.Background(), "tracker1", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.Checkpoints).To(HaveLen(2))
+			Expect(updated.Status.Checkpoints[0].Name).To(Equal("checkpoint-1"))
 			Expect(updated.Status.LatestCheckpoint.Name).To(Equal("cp-2"))
 			Expect(updated.Status.CheckpointRedefinitionRequired).ToNot(BeNil())
 			Expect(*updated.Status.CheckpointRedefinitionRequired).To(BeTrue())
+		})
+
+		It("should be idempotent when checkpoint already exists", func() {
+			tracker = createTracker("tracker1", "test-vmi", true, false)
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			backupStatus := &v1.VirtualMachineInstanceBackupStatus{
+				CheckpointName: new(tracker.Status.LatestCheckpoint.Name),
+			}
+			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus)
+			Expect(err).ToNot(HaveOccurred())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.Checkpoints).To(HaveLen(1))
+			Expect(updated.Status.Checkpoints[0].Name).To(Equal(tracker.Status.LatestCheckpoint.Name))
 		})
 
 		It("should not mutate the original tracker", func() {
@@ -473,7 +492,7 @@ var _ = Describe("VMBackupController", func() {
 					{VolumeName: "rootdisk"},
 				},
 			}
-			err = ctrl.updateBackupTracker(testNamespace, tracker, backupStatus)
+			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus)
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(originalCheckpointName))
@@ -497,9 +516,9 @@ func createTracker(name, vmName string, hasCheckpoint bool, redefinitionRequired
 	}
 	if hasCheckpoint {
 		tracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
-			LatestCheckpoint: &backupv1.BackupCheckpoint{
+			Checkpoints: []backupv1.BackupCheckpoint{{
 				Name: "checkpoint-1",
-			},
+			}},
 			CheckpointRedefinitionRequired: pointer.P(redefinitionRequired),
 		}
 	}

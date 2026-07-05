@@ -147,7 +147,7 @@ var _ = Describe("CRDs", func() {
 		Entry("for VirtualMachineClone", NewVirtualMachineCloneCrd, "Phase", "SourceVirtualMachine", "TargetVirtualMachine"),
 		Entry("for MigrationPolicy", NewMigrationPolicyCrd),
 		Entry("for VirtualMachineBackup", NewVirtualMachineBackupCrd, "SourceKind", "SourceName", "Type", "CheckpointName"),
-		Entry("for VirtualMachineBackupTracker", NewVirtualMachineBackupTrackerCrd, "SourceKind", "SourceName", "LatestCheckpoint", "CheckpointTime"),
+		Entry("for VirtualMachineBackupTracker", NewVirtualMachineBackupTrackerCrd, "SourceKind", "SourceName", "Checkpoints"),
 	)
 
 	DescribeTable("Additional printer columns map to expected value", func(crdFunc func() (*extv1.CustomResourceDefinition, error), obj any, expected ...string) {
@@ -361,13 +361,13 @@ var _ = Describe("CRDs", func() {
 					},
 				},
 				Status: &backupv1alpha1.VirtualMachineBackupTrackerStatus{
-					LatestCheckpoint: &backupv1alpha1.BackupCheckpoint{
+					Checkpoints: []backupv1alpha1.BackupCheckpoint{{
 						Name:         "test-checkpoint",
 						CreationTime: pointer.P(createTime()),
-					},
+					}},
 				},
 			},
-			"VirtualMachine", "test-vm", "test-checkpoint", timestamp,
+			"VirtualMachine", "test-vm", `[{"creationTime":"2025-01-01T12:34:56Z","name":"test-checkpoint"}]`,
 		),
 	)
 })

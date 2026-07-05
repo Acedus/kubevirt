@@ -17276,6 +17276,13 @@ func schema_kubevirtio_api_backup_v1alpha1_BackupCheckpoint(ref common.Reference
 							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type indicates whether the backup that created this checkpoint was Full or Incremental",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"volumes": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -17283,13 +17290,14 @@ func schema_kubevirtio_api_backup_v1alpha1_BackupCheckpoint(ref common.Reference
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Volumes lists volumes included in the backup",
+							Description: "Volumes lists volume names included in the backup",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("kubevirt.io/api/backup/v1alpha1.BackupVolumeInfo"),
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
 									},
 								},
 							},
@@ -17299,7 +17307,7 @@ func schema_kubevirtio_api_backup_v1alpha1_BackupCheckpoint(ref common.Reference
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.Time", "kubevirt.io/api/backup/v1alpha1.BackupVolumeInfo"},
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
@@ -17788,6 +17796,13 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupTrackerSpec(ref c
 							Ref:         ref("k8s.io/api/core/v1.TypedLocalObjectReference"),
 						},
 					},
+					"retainCheckpoints": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RetainCheckpoints specifies the maximum number of checkpoints to retain. When exceeded, oldest checkpoints are pruned (bitmaps removed from qcow2).",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
 				},
 				Required: []string{"source"},
 			},
@@ -17805,13 +17820,32 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupTrackerStatus(ref
 				Properties: map[string]spec.Schema{
 					"latestCheckpoint": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LatestCheckpoint is the metadata of the checkpoint of the latest performed backup",
+							Description: "LatestCheckpoint is the most recent checkpoint — a permanent convenience field for clients that only need the current state. Computed by the controller as Checkpoints[len-1] on every status write.",
 							Ref:         ref("kubevirt.io/api/backup/v1alpha1.BackupCheckpoint"),
+						},
+					},
+					"checkpoints": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Checkpoints is an ordered list of retained checkpoints, oldest first.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("kubevirt.io/api/backup/v1alpha1.BackupCheckpoint"),
+									},
+								},
+							},
 						},
 					},
 					"checkpointRedefinitionRequired": {
 						SchemaProps: spec.SchemaProps{
-							Description: "CheckpointRedefinitionRequired is set to true by virt-handler when the VM restarts and has a checkpoint that needs to be redefined in libvirt. virt-controller will process this flag, attempt redefinition, and clear it.",
+							Description: "CheckpointRedefinitionRequired is set to true by virt-handler when the VM restarts and has checkpoints that need to be redefined in libvirt. virt-controller will process this flag, attempt redefinition, and clear it.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},

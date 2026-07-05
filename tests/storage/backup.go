@@ -264,11 +264,12 @@ var _ = Describe(SIG("Backup", func() {
 		By("Verifying BackupTracker was updated with new checkpoint")
 		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil(), "Tracker should have checkpoint after second backup")
-		Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(*incrementalBackup.Status.CheckpointName), "Second checkpoint should match backup checkpoint")
-		Expect(tracker.Status.LatestCheckpoint.Name).ToNot(Equal(firstCheckpoint.Name), "Second checkpoint should have a different name")
-		Expect(tracker.Status.LatestCheckpoint.CreationTime).ToNot(BeNil())
-		Expect(tracker.Status.LatestCheckpoint.CreationTime).ToNot(Equal(firstCheckpoint.CreationTime))
+		latestCheckpoint := tracker.Status.LatestCheckpoint
+		Expect(latestCheckpoint).ToNot(BeNil(), "Tracker should have checkpoint after second backup")
+		Expect(latestCheckpoint.Name).To(Equal(*incrementalBackup.Status.CheckpointName), "Second checkpoint should match backup checkpoint")
+		Expect(latestCheckpoint.Name).ToNot(Equal(firstCheckpoint.Name), "Second checkpoint should have a different name")
+		Expect(latestCheckpoint.CreationTime).ToNot(BeNil())
+		Expect(latestCheckpoint.CreationTime).ToNot(Equal(firstCheckpoint.CreationTime))
 
 		By("Verifying incremental backup size matches the amount of data written")
 		// Expected size should be around the amount of data we wrote
@@ -368,9 +369,10 @@ var _ = Describe(SIG("Backup", func() {
 		By("Verifying BackupTracker was updated with new checkpoint")
 		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil(), "Tracker should have checkpoint after second backup")
-		Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(*incrementalBackup.Status.CheckpointName), "Second checkpoint should match backup checkpoint")
-		Expect(tracker.Status.LatestCheckpoint.Name).ToNot(Equal(firstCheckpoint.Name), "Second checkpoint should have a different name")
+		latestCheckpoint := tracker.Status.LatestCheckpoint
+		Expect(latestCheckpoint).ToNot(BeNil(), "Tracker should have checkpoint after second backup")
+		Expect(latestCheckpoint.Name).To(Equal(*incrementalBackup.Status.CheckpointName), "Second checkpoint should match backup checkpoint")
+		Expect(latestCheckpoint.Name).ToNot(Equal(firstCheckpoint.Name), "Second checkpoint should have a different name")
 
 		By("Verifying incremental backup has 2 qcow2 files with sizes matching data written")
 		// Both disks should have approximately testDataSizeBytes of changed data
@@ -461,8 +463,9 @@ var _ = Describe(SIG("Backup", func() {
 		By("Verifying BackupTracker still has the checkpoint after VM restart")
 		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil(), "Tracker should still have checkpoint after VM restart")
-		Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(firstCheckpoint.Name), "Checkpoint should be the same after restart")
+		latestCheckpoint := tracker.Status.LatestCheckpoint
+		Expect(latestCheckpoint).ToNot(BeNil(), "Tracker should still have checkpoint after VM restart")
+		Expect(latestCheckpoint.Name).To(Equal(firstCheckpoint.Name), "Checkpoint should be the same after restart")
 
 		By("Verifying checkpoint was redefined in libvirt after VM restart")
 		vmi, err = virtClient.VirtualMachineInstance(vm.Namespace).Get(context.Background(), vm.Name, metav1.GetOptions{})
@@ -481,9 +484,10 @@ var _ = Describe(SIG("Backup", func() {
 		By("Verifying BackupTracker was updated with new checkpoint")
 		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil(), "Tracker should have checkpoint after second backup")
-		Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(*incrementalBackup.Status.CheckpointName), "Second checkpoint should match backup checkpoint")
-		Expect(tracker.Status.LatestCheckpoint.Name).ToNot(Equal(firstCheckpoint.Name), "Second checkpoint should have a different name")
+		latestCheckpoint = tracker.Status.LatestCheckpoint
+		Expect(latestCheckpoint).ToNot(BeNil(), "Tracker should have checkpoint after second backup")
+		Expect(latestCheckpoint.Name).To(Equal(*incrementalBackup.Status.CheckpointName), "Second checkpoint should match backup checkpoint")
+		Expect(latestCheckpoint.Name).ToNot(Equal(firstCheckpoint.Name), "Second checkpoint should have a different name")
 
 		By("Verifying incremental backup size matches the amount of data written")
 		verifyBackupTargetPVCOutput(virtClient, incrementalBackupPVC, vm.Name, 1, []int64{testDataSizeBytes})
@@ -525,8 +529,9 @@ var _ = Describe(SIG("Backup", func() {
 		By("Verifying BackupTracker has checkpoint")
 		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil())
-		Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(checkpointName))
+		latestCheckpoint := tracker.Status.LatestCheckpoint
+		Expect(latestCheckpoint).ToNot(BeNil())
+		Expect(latestCheckpoint.Name).To(Equal(checkpointName))
 
 		By("Stopping the VM to access the disk")
 		vmi, err := virtClient.VirtualMachineInstance(vm.Namespace).Get(context.Background(), vm.Name, metav1.GetOptions{})
@@ -559,7 +564,7 @@ var _ = Describe(SIG("Backup", func() {
 		By("Verifying checkpoint redefinition failed and checkpoint was cleared")
 		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(tracker.Status.LatestCheckpoint).To(BeNil(),
+		Expect(tracker.Status.Checkpoints).To(BeEmpty(),
 			"BackupTracker checkpoint should be cleared after bitmap corruption detected")
 
 		By("Creating second backup - should be Full since checkpoint was corrupted")
@@ -673,12 +678,8 @@ var _ = Describe(SIG("Backup", func() {
 		Expect(hotplugDiskTarget).ToNot(BeEmpty(), "Hotplug disk target should be found in VMI status")
 
 		By("Verifying tracker checkpoint has matching volume names")
-		trackerVolumeNames := make(map[string]bool)
-		for _, vol := range firstCheckpoint.Volumes {
-			trackerVolumeNames[vol.VolumeName] = true
-		}
-		Expect(trackerVolumeNames).To(HaveKey(bootDiskName), "Tracker checkpoint should have boot disk volume")
-		Expect(trackerVolumeNames).To(HaveKey(hotplugVolumeName), "Tracker checkpoint should have hotplug disk volume")
+		Expect(firstCheckpoint.Volumes).To(ContainElement(bootDiskName), "Tracker checkpoint should have boot disk volume")
+		Expect(firstCheckpoint.Volumes).To(ContainElement(hotplugVolumeName), "Tracker checkpoint should have hotplug disk volume")
 
 		By("Listing checkpoints before VM stop")
 		checkpointsBeforeStop := listDomainCheckpoints(vmi)
@@ -707,11 +708,11 @@ var _ = Describe(SIG("Backup", func() {
 		By("Verifying checkpoint redefinition succeeded")
 		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil(),
-			"Checkpoint should not change after VM restart")
-		Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(firstCheckpoint.Name),
+		latestCheckpoint := tracker.Status.LatestCheckpoint
+		Expect(latestCheckpoint).ToNot(BeNil(), "Checkpoint should not change after VM restart")
+		Expect(latestCheckpoint.Name).To(Equal(firstCheckpoint.Name),
 			"Checkpoint name should be the same after restart")
-		Expect(tracker.Status.LatestCheckpoint.Volumes).To(Equal(firstCheckpoint.Volumes),
+		Expect(latestCheckpoint.Volumes).To(Equal(firstCheckpoint.Volumes),
 			"Checkpoint volumes should be the same after restart even if one of them is not redefined")
 
 		By("Verifying checkpoint was redefined in libvirt with remaining disk")
@@ -738,9 +739,10 @@ var _ = Describe(SIG("Backup", func() {
 		By("Verifying BackupTracker was updated with new checkpoint")
 		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil())
-		Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(*incrementalBackup.Status.CheckpointName))
-		Expect(tracker.Status.LatestCheckpoint.Name).ToNot(Equal(firstCheckpoint.Name),
+		latestCheckpoint = tracker.Status.LatestCheckpoint
+		Expect(latestCheckpoint).ToNot(BeNil())
+		Expect(latestCheckpoint.Name).To(Equal(*incrementalBackup.Status.CheckpointName))
+		Expect(latestCheckpoint.Name).ToNot(Equal(firstCheckpoint.Name),
 			"Second checkpoint should have a different name")
 	})
 
@@ -944,7 +946,7 @@ var _ = Describe(SIG("Backup", func() {
 		By("Verifying BackupTracker was updated with first checkpoint")
 		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil(), "Tracker should have checkpoint after first backup deletion")
+		Expect(tracker.Status.Checkpoints).ToNot(BeEmpty(), "Tracker should have checkpoint after first backup deletion")
 
 		By(fmt.Sprintf("Writing %dMB of data to VM disk before incremental backup", testDataSizeMB))
 		vmi, err := virtClient.VirtualMachineInstance(vm.Namespace).Get(context.Background(), vm.Name, metav1.GetOptions{})
@@ -1066,7 +1068,7 @@ var _ = Describe(SIG("Backup", func() {
 		By("Verifying BackupTracker was updated with first checkpoint")
 		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil(), "Tracker should have checkpoint after first backup deletion")
+		Expect(tracker.Status.Checkpoints).ToNot(BeEmpty(), "Tracker should have checkpoint after first backup deletion")
 
 		By("Creating Incremental Pull Mode Backup")
 		incBackup := newBackupWithTracker(backupName(vm.Name), vm.Namespace, scratchPVC.Name, tracker.Name)
@@ -1358,8 +1360,9 @@ var _ = Describe("Backup with migration", func() {
 			By("Verifying BackupTracker still has the checkpoint after migration")
 			tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil(), "Tracker should still have checkpoint after migration")
-			Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(firstCheckpoint.Name), "Checkpoint should be the same after migration")
+			latestCheckpoint := tracker.Status.LatestCheckpoint
+			Expect(latestCheckpoint).ToNot(BeNil(), "Tracker should still have checkpoint after migration")
+			Expect(latestCheckpoint.Name).To(Equal(firstCheckpoint.Name), "Checkpoint should be the same after migration")
 
 			By("Creating second backup after migration - this should be incremental")
 			incrementalBackup := createAndVerifyBackupWithTracker(virtClient, backupName(vm.Name), vm.Namespace, incrementalBackupPVC.Name, tracker.Name, waitBackupSucceeded)
@@ -1371,9 +1374,10 @@ var _ = Describe("Backup with migration", func() {
 			By("Verifying BackupTracker was updated with new checkpoint")
 			tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil(), "Tracker should have checkpoint after second backup")
-			Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(*incrementalBackup.Status.CheckpointName), "Second checkpoint should match backup checkpoint")
-			Expect(tracker.Status.LatestCheckpoint.Name).ToNot(Equal(firstCheckpoint.Name), "Second checkpoint should have a different name")
+			latestCheckpoint = tracker.Status.LatestCheckpoint
+			Expect(latestCheckpoint).ToNot(BeNil(), "Tracker should have checkpoint after second backup")
+			Expect(latestCheckpoint.Name).To(Equal(*incrementalBackup.Status.CheckpointName), "Second checkpoint should match backup checkpoint")
+			Expect(latestCheckpoint.Name).ToNot(Equal(firstCheckpoint.Name), "Second checkpoint should have a different name")
 
 			By("Verifying incremental backup size matches the amount of data written (not full disk size)")
 			verifyBackupTargetPVCOutput(virtClient, incrementalBackupPVC, vm.Name, 1, []int64{testDataSizeBytes})
