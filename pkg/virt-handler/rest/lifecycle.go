@@ -420,3 +420,50 @@ func (lh *LifecycleHandler) RedefineCheckpointHandler(request *restful.Request, 
 
 	response.WriteHeader(http.StatusOK)
 }
+
+type deleteCheckpointRequest struct {
+	CheckpointName string `json:"checkpointName"`
+}
+
+func (lh *LifecycleHandler) DeleteCheckpointHandler(request *restful.Request, response *restful.Response) {
+	vmi, client, err := lh.getVMILauncherClient(request, response)
+	if err != nil {
+		return
+	}
+
+	if request.Request.Body == nil {
+		log.Log.Object(vmi).Error("Request with no body: checkpoint name is required")
+		response.WriteError(http.StatusBadRequest, fmt.Errorf("failed to retrieve checkpoint name from request"))
+		return
+	}
+
+	var req deleteCheckpointRequest
+	err = yaml.NewYAMLOrJSONDecoder(request.Request.Body, 1024).Decode(&req)
+	switch err {
+	case io.EOF, nil:
+		break
+	default:
+		log.Log.Object(vmi).Reason(err).Error("Failed to decode delete checkpoint request")
+		response.WriteError(http.StatusBadRequest, err)
+		return
+	}
+
+	if req.CheckpointName == "" {
+		log.Log.Object(vmi).Error("Request missing checkpointName")
+		response.WriteError(http.StatusBadRequest, fmt.Errorf("checkpointName is required"))
+		return
+	}
+	if len(req.CheckpointName) > 63 {
+		response.WriteError(http.StatusBadRequest, fmt.Errorf("checkpoint name exceeds maximum length of 63 characters"))
+		return
+	}
+
+	err = client.DeleteCheckpoint(vmi, req.CheckpointName)
+	if err != nil {
+		log.Log.Object(vmi).Reason(err).Errorf("Failed to delete checkpoint %s", req.CheckpointName)
+		response.WriteError(http.StatusInternalServerError, err)
+		return
+	}
+
+	response.WriteHeader(http.StatusOK)
+}

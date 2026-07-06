@@ -188,3 +188,10 @@ func (c *fakeVirtualMachineInstances) RedefineCheckpoint(ctx context.Context, na
 
 	return err
 }
+
+func (c *fakeVirtualMachineInstances) DeleteCheckpoint(ctx context.Context, name string, checkpointName string) error {
+	_, err := c.Fake.
+		Invokes(fake2.NewPutSubresourceAction(c.Resource(), c.Namespace(), "delete-checkpoint", name, checkpointName), nil)
+
+	return err
+}

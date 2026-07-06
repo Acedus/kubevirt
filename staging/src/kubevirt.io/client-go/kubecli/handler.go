@@ -9,9 +9,11 @@ import (
 	"strconv"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	netutils "k8s.io/utils/net"
 
 	virtv1 "kubevirt.io/api/core/v1"
@@ -28,6 +30,7 @@ const (
 	unpauseTemplateURI            = "https://%s:%v/v1/namespaces/%s/virtualmachineinstances/%s/unpause"
 	backupTemplateURI             = "https://%s:%v/v1/namespaces/%s/virtualmachineinstances/%s/backup"
 	redefineCheckpointTemplateURI = "https://%s:%v/v1/namespaces/%s/virtualmachineinstances/%s/redefine-checkpoint"
+	deleteCheckpointTemplateURI   = "https://%s:%v/v1/namespaces/%s/virtualmachineinstances/%s/delete-checkpoint"
 	freezeTemplateURI             = "https://%s:%v/v1/namespaces/%s/virtualmachineinstances/%s/freeze"
 	unfreezeTemplateURI           = "https://%s:%v/v1/namespaces/%s/virtualmachineinstances/%s/unfreeze"
 	resetTemplateURI              = "https://%s:%v/v1/namespaces/%s/virtualmachineinstances/%s/reset"
@@ -81,6 +84,7 @@ type VirtHandlerConn interface {
 	FilesystemListURI(vmi *virtv1.VirtualMachineInstance) (string, error)
 	BackupURI(vmi *virtv1.VirtualMachineInstance) (string, error)
 	RedefineCheckpointURI(vmi *virtv1.VirtualMachineInstance) (string, error)
+	DeleteCheckpointURI(vmi *virtv1.VirtualMachineInstance) (string, error)
 }
 
 type virtHandler struct {
@@ -226,6 +230,10 @@ func (v *virtHandlerConn) RedefineCheckpointURI(vmi *virtv1.VirtualMachineInstan
 	return v.formatURI(redefineCheckpointTemplateURI, vmi)
 }
 
+func (v *virtHandlerConn) DeleteCheckpointURI(vmi *virtv1.VirtualMachineInstance) (string, error) {
+	return v.formatURI(deleteCheckpointTemplateURI, vmi)
+}
+
 func (v *virtHandlerConn) FreezeURI(vmi *virtv1.VirtualMachineInstance) (string, error) {
 	return v.formatURI(freezeTemplateURI, vmi)
 }
@@ -266,11 +274,11 @@ func (v *virtHandlerConn) doRequest(req *http.Request) (response string, err err
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		responseBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return "", fmt.Errorf("unexpected return code %d (%s)", resp.StatusCode, resp.Status)
-		}
-		return "", fmt.Errorf("unexpected return code %d (%s), message: %s", resp.StatusCode, resp.Status, string(responseBytes))
+		responseBytes, _ := io.ReadAll(resp.Body)
+		return "", apierrors.NewGenericServerResponse(
+			resp.StatusCode, req.Method, schema.GroupResource{},
+			"", string(responseBytes), 0, true,
+		)
 	}
 
 	responseBytes, err := io.ReadAll(resp.Body)

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -55,6 +56,33 @@ var _ = Describe("Backup", func() {
 	)
 
 	const backupName = "test-backup"
+
+	type testBlockNode struct {
+		NodeName string
+		File     string
+		Bitmaps  []qmpBitmapInfo
+	}
+	qmpBlockNodesJSON := func(nodes []testBlockNode) string {
+		var items []string
+		for _, n := range nodes {
+			var bitmaps []string
+			for _, bm := range n.Bitmaps {
+				bitmaps = append(bitmaps, fmt.Sprintf(
+					`{"name":"%s","recording":true,"persistent":true,"busy":false,"inconsistent":%t}`,
+					bm.Name, bm.Inconsistent))
+			}
+			bitmapJSON := ""
+			if len(bitmaps) > 0 {
+				bitmapJSON = fmt.Sprintf(`,"dirty-bitmaps":[%s]`, strings.Join(bitmaps, ","))
+			}
+			items = append(items, fmt.Sprintf(`{"node-name":"%s","file":"%s"%s}`, n.NodeName, n.File, bitmapJSON))
+		}
+		return fmt.Sprintf(`{"return":[%s]}`, strings.Join(items, ","))
+	}
+	mockQMPBlockNodes := func(mockDomain *cli.MockVirDomain, nodes []testBlockNode) {
+		mockDomain.EXPECT().QemuMonitorCommand(qmpQueryBlockNodesCmd, libvirt.DOMAIN_QEMU_MONITOR_COMMAND_DEFAULT).
+			Return(qmpBlockNodesJSON(nodes), nil)
+	}
 
 	BeforeEach(func() {
 		ctrl = gomock.NewController(GinkgoT())
@@ -829,6 +857,91 @@ var _ = Describe("Backup", func() {
 		})
 	})
 
+	Describe("DeleteCheckpoint", func() {
+		It("should return error when domain lookup fails", func() {
+			mockConn.EXPECT().LookupDomainByName("default_test-vmi").Return(nil, fmt.Errorf("domain not found"))
+			err := manager.DeleteCheckpoint(vmi, "cp-1")
+			Expect(err).To(MatchError(ContainSubstring("failed to lookup domain")))
+		})
+
+		It("should return error on non-checkpoint-not-found lookup error", func() {
+			mockConn.EXPECT().LookupDomainByName("default_test-vmi").Return(mockDomain, nil)
+			mockDomain.EXPECT().Free()
+			mockDomain.EXPECT().CheckpointLookupByName("cp-1", uint32(0)).Return(nil,
+				libvirt.Error{Code: libvirt.ERR_INTERNAL_ERROR, Message: "internal error"})
+
+			err := manager.DeleteCheckpoint(vmi, "cp-1")
+			Expect(err).To(MatchError(ContainSubstring("failed to lookup checkpoint")))
+		})
+
+		Context("when checkpoint not found in libvirt (redefine+delete)", func() {
+			checkpointNotFoundErr := libvirt.Error{Code: libvirt.ERR_NO_DOMAIN_CHECKPOINT}
+
+			domainXML := `<domain>
+				<devices>
+					<disk type="file" device="disk">
+						<source file="/var/run/kubevirt-private/vmi-disks/disk1/disk.qcow2">
+							<dataStore>
+								<source file="/var/lib/kubevirt/disks/disk1-backing.qcow2"/>
+							</dataStore>
+						</source>
+						<target dev="vda"/>
+					</disk>
+					<disk type="file" device="disk">
+						<source file="/var/run/kubevirt-private/vmi-disks/disk2/disk.qcow2">
+							<dataStore>
+								<source file="/var/lib/kubevirt/disks/disk2-backing.qcow2"/>
+							</dataStore>
+						</source>
+						<target dev="vdb"/>
+					</disk>
+				</devices>
+			</domain>`
+
+			It("should succeed when no bitmaps are found (idempotent)", func() {
+				mockConn.EXPECT().LookupDomainByName("default_test-vmi").Return(mockDomain, nil)
+				mockDomain.EXPECT().Free()
+				mockDomain.EXPECT().CheckpointLookupByName("cp-1", uint32(0)).Return(nil, checkpointNotFoundErr)
+				mockDomain.EXPECT().GetXMLDesc(gomock.Any()).Return(domainXML, nil)
+
+				mockQMPBlockNodes(mockDomain, []testBlockNode{
+					{File: "/var/run/kubevirt-private/vmi-disks/disk1/disk.qcow2", Bitmaps: []qmpBitmapInfo{{Name: "other-cp"}}},
+				})
+
+				err := manager.DeleteCheckpoint(vmi, "cp-1")
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("should return error when bitmap discovery fails", func() {
+				mockConn.EXPECT().LookupDomainByName("default_test-vmi").Return(mockDomain, nil)
+				mockDomain.EXPECT().Free()
+				mockDomain.EXPECT().CheckpointLookupByName("cp-1", uint32(0)).Return(nil, checkpointNotFoundErr)
+				mockDomain.EXPECT().GetXMLDesc(gomock.Any()).Return("", fmt.Errorf("xml error"))
+
+				err := manager.DeleteCheckpoint(vmi, "cp-1")
+				Expect(err).To(MatchError(ContainSubstring("failed to find checkpoint bitmaps")))
+			})
+
+			It("should return error when checkpoint redefine fails", func() {
+				mockConn.EXPECT().LookupDomainByName("default_test-vmi").Return(mockDomain, nil)
+				mockDomain.EXPECT().Free()
+				mockDomain.EXPECT().CheckpointLookupByName("cp-1", uint32(0)).Return(nil, checkpointNotFoundErr)
+				mockDomain.EXPECT().GetXMLDesc(gomock.Any()).Return(domainXML, nil)
+
+				mockQMPBlockNodes(mockDomain, []testBlockNode{
+					{File: "/var/run/kubevirt-private/vmi-disks/disk1/disk.qcow2", Bitmaps: []qmpBitmapInfo{{Name: "cp-1"}}},
+				})
+
+				redefineFlags := libvirt.DOMAIN_CHECKPOINT_CREATE_REDEFINE | libvirt.DOMAIN_CHECKPOINT_CREATE_REDEFINE_VALIDATE
+				mockDomain.EXPECT().CreateCheckpointXML(gomock.Any(), redefineFlags).
+					Return(nil, fmt.Errorf("redefine failed"))
+
+				err := manager.DeleteCheckpoint(vmi, "cp-1")
+				Expect(err).To(MatchError(ContainSubstring("failed to redefine checkpoint cp-1 for deletion")))
+			})
+		})
+	})
+
 	Describe("utility functions", func() {
 		Describe("getBackupPath", func() {
 			It("should create correct path", func() {
@@ -939,8 +1052,8 @@ var _ = Describe("Backup", func() {
 			</domain>`
 
 			mockDomain.EXPECT().GetXMLDesc(gomock.Any()).Return(domainXML, nil)
-			queryBitmaps = mockQueryBitmaps(map[string]string{
-				"/var/run/kubevirt-private/vmi-disks/disk1/disk.qcow2": checkpointName,
+			mockQMPBlockNodes(mockDomain, []testBlockNode{
+				{File: "/var/run/kubevirt-private/vmi-disks/disk1/disk.qcow2", Bitmaps: []qmpBitmapInfo{{Name: checkpointName}}},
 			})
 
 			result, disksWithoutBitmap, err := findDisksWithCheckpointBitmap(mockDomain, checkpointName)
@@ -967,8 +1080,8 @@ var _ = Describe("Backup", func() {
 			</domain>`
 
 			mockDomain.EXPECT().GetXMLDesc(gomock.Any()).Return(domainXML, nil)
-			queryBitmaps = mockQueryBitmaps(map[string]string{
-				"/var/run/kubevirt-private/vmi-disks/disk1/disk.qcow2": "other-checkpoint",
+			mockQMPBlockNodes(mockDomain, []testBlockNode{
+				{File: "/var/run/kubevirt-private/vmi-disks/disk1/disk.qcow2", Bitmaps: []qmpBitmapInfo{{Name: "other-checkpoint"}}},
 			})
 
 			result, disksWithoutBitmap, err := findDisksWithCheckpointBitmap(mockDomain, checkpointName)
@@ -994,13 +1107,9 @@ var _ = Describe("Backup", func() {
 			</domain>`
 
 			mockDomain.EXPECT().GetXMLDesc(gomock.Any()).Return(domainXML, nil)
-			queryBitmaps = func(dom cli.VirDomain) (map[string][]qmpBitmapInfo, error) {
-				return map[string][]qmpBitmapInfo{
-					"/var/run/kubevirt-private/vmi-disks/disk1/disk.qcow2": {
-						{Name: checkpointName, Inconsistent: true},
-					},
-				}, nil
-			}
+			mockQMPBlockNodes(mockDomain, []testBlockNode{
+				{File: "/var/run/kubevirt-private/vmi-disks/disk1/disk.qcow2", Bitmaps: []qmpBitmapInfo{{Name: checkpointName, Inconsistent: true}}},
+			})
 
 			result, disksWithoutBitmap, err := findDisksWithCheckpointBitmap(mockDomain, checkpointName)
 
@@ -1033,9 +1142,9 @@ var _ = Describe("Backup", func() {
 			</domain>`
 
 			mockDomain.EXPECT().GetXMLDesc(gomock.Any()).Return(domainXML, nil)
-			queryBitmaps = mockQueryBitmaps(map[string]string{
-				"/var/run/kubevirt-private/vmi-disks/disk1/disk.qcow2": checkpointName,
-				"/var/run/kubevirt-private/vmi-disks/disk2/disk.qcow2": checkpointName,
+			mockQMPBlockNodes(mockDomain, []testBlockNode{
+				{File: "/var/run/kubevirt-private/vmi-disks/disk1/disk.qcow2", Bitmaps: []qmpBitmapInfo{{Name: checkpointName}}},
+				{File: "/var/run/kubevirt-private/vmi-disks/disk2/disk.qcow2", Bitmaps: []qmpBitmapInfo{{Name: checkpointName}}},
 			})
 
 			result, disksWithoutBitmap, err := findDisksWithCheckpointBitmap(mockDomain, checkpointName)
@@ -1048,15 +1157,3 @@ var _ = Describe("Backup", func() {
 		})
 	})
 })
-
-func mockQueryBitmaps(fileToBitmap map[string]string) func(dom cli.VirDomain) (map[string][]qmpBitmapInfo, error) {
-	return func(dom cli.VirDomain) (map[string][]qmpBitmapInfo, error) {
-		result := make(map[string][]qmpBitmapInfo)
-		for file, bitmapName := range fileToBitmap {
-			if bitmapName != "" {
-				result[file] = []qmpBitmapInfo{{Name: bitmapName}}
-			}
-		}
-		return result, nil
-	}
-}

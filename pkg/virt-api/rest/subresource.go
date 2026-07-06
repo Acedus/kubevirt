@@ -22,6 +22,7 @@ package rest
 import (
 	"context"
 	"crypto/tls"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -175,7 +176,12 @@ func (app *SubresourceAPIApp) putRequestHandlerWithErrorPostProcessing(request *
 	err := conn.Put(url, request.Request.Body)
 	if err != nil {
 		err = errorPostProcessing(vmi, err)
-		writeError(errors.NewInternalError(err), response)
+		var statusErr *errors.StatusError
+		if stderrors.As(err, &statusErr) {
+			writeError(statusErr, response)
+		} else {
+			writeError(errors.NewInternalError(err), response)
+		}
 		return
 	}
 }

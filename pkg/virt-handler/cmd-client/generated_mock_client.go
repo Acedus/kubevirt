@@ -71,6 +71,20 @@ func (mr *MockLauncherClientMockRecorder) Close() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockLauncherClient)(nil).Close))
 }
 
+// DeleteCheckpoint mocks base method.
+func (m *MockLauncherClient) DeleteCheckpoint(vmi *v1.VirtualMachineInstance, checkpointName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteCheckpoint", vmi, checkpointName)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteCheckpoint indicates an expected call of DeleteCheckpoint.
+func (mr *MockLauncherClientMockRecorder) DeleteCheckpoint(vmi, checkpointName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteCheckpoint", reflect.TypeOf((*MockLauncherClient)(nil).DeleteCheckpoint), vmi, checkpointName)
+}
+
 // DeleteDomain mocks base method.
 func (m *MockLauncherClient) DeleteDomain(vmi *v1.VirtualMachineInstance) error {
 	m.ctrl.T.Helper()

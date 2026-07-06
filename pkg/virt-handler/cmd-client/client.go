@@ -130,6 +130,7 @@ type LauncherClient interface {
 	GetScreenshot(*v1.VirtualMachineInstance) (*cmdv1.ScreenshotResponse, error)
 	VirtualMachineBackup(vmi *v1.VirtualMachineInstance, options *backupv1.BackupOptions) error
 	RedefineCheckpoint(vmi *v1.VirtualMachineInstance, checkpoint *backupv1.BackupCheckpoint) (checkpointInvalid bool, err error)
+	DeleteCheckpoint(vmi *v1.VirtualMachineInstance, checkpointName string) error
 	GetVMStats(request *cmdv1.VMStatsRequest) (*stats.VMStats, error)
 }
 
@@ -901,4 +902,27 @@ func (c *VirtLauncherClient) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, 
 		return false, err
 	}
 	return false, nil
+}
+
+func (c *VirtLauncherClient) DeleteCheckpoint(vmi *v1.VirtualMachineInstance, checkpointName string) error {
+	vmiJson, err := json.Marshal(vmi)
+	if err != nil {
+		return err
+	}
+
+	request := &cmdv1.DeleteCheckpointRequest{
+		Vmi: &cmdv1.VMI{
+			VmiJson: vmiJson,
+		},
+		CheckpointName: checkpointName,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), longTimeout)
+	defer cancel()
+	response, err := c.v1client.DeleteCheckpoint(ctx, request)
+	if err != nil {
+		return fmt.Errorf("DeleteCheckpoint call failed: %v", err)
+	}
+
+	return handleError(err, "DeleteCheckpoint", response.Response)
 }

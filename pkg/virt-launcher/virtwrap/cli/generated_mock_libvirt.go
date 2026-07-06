@@ -526,6 +526,21 @@ func (mr *MockVirDomainMockRecorder) BlockResize(disk, size, flags any) *gomock.
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BlockResize", reflect.TypeOf((*MockVirDomain)(nil).BlockResize), disk, size, flags)
 }
 
+// CheckpointLookupByName mocks base method.
+func (m *MockVirDomain) CheckpointLookupByName(name string, flags uint32) (*libvirt.DomainCheckpoint, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CheckpointLookupByName", name, flags)
+	ret0, _ := ret[0].(*libvirt.DomainCheckpoint)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CheckpointLookupByName indicates an expected call of CheckpointLookupByName.
+func (mr *MockVirDomainMockRecorder) CheckpointLookupByName(name, flags any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckpointLookupByName", reflect.TypeOf((*MockVirDomain)(nil).CheckpointLookupByName), name, flags)
+}
+
 // CoreDumpWithFormat mocks base method.
 func (m *MockVirDomain) CoreDumpWithFormat(to string, format libvirt.DomainCoreDumpFormat, flags libvirt.DomainCoreDumpFlags) error {
 	m.ctrl.T.Helper()

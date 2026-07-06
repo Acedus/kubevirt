@@ -648,6 +648,16 @@ func (app *virtAPIApp) composeSubresources() {
 			Returns(http.StatusNotFound, httpStatusNotFoundMessage, "").
 			Returns(http.StatusBadRequest, httpStatusBadRequestMessage, ""))
 
+		subws.Route(subws.PUT(definitions.NamespacedResourcePath(subresourcesvmiGVR)+definitions.SubResourcePath("delete-checkpoint")).
+			To(subresourceApp.DeleteCheckpointVMIRequestHandler).
+			Consumes(mime.MIME_ANY).
+			Param(definitions.NamespaceParam(subws)).Param(definitions.NameParam(subws)).
+			Operation(version.Version+"DeleteCheckpoint").
+			Doc("Delete a checkpoint and its bitmaps from a VirtualMachineInstance.").
+			Returns(http.StatusOK, "OK", "").
+			Returns(http.StatusNotFound, httpStatusNotFoundMessage, "").
+			Returns(http.StatusBadRequest, httpStatusBadRequestMessage, ""))
+
 		// Return empty api resource list.
 		// K8s expects to be able to retrieve a resource list for each aggregated
 		// app in order to discover what resources it provides. Without returning
@@ -688,6 +698,10 @@ func (app *virtAPIApp) composeSubresources() {
 					},
 					{
 						Name:       "virtualmachineinstances/redefine-checkpoint",
+						Namespaced: true,
+					},
+					{
+						Name:       "virtualmachineinstances/delete-checkpoint",
 						Namespaced: true,
 					},
 					{

@@ -1506,6 +1506,20 @@ func (mr *MockVirtualMachineInstanceInterfaceMockRecorder) Delete(ctx, name, opt
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Delete", reflect.TypeOf((*MockVirtualMachineInstanceInterface)(nil).Delete), ctx, name, opts)
 }
 
+// DeleteCheckpoint mocks base method.
+func (m *MockVirtualMachineInstanceInterface) DeleteCheckpoint(ctx context.Context, name, checkpointName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteCheckpoint", ctx, name, checkpointName)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteCheckpoint indicates an expected call of DeleteCheckpoint.
+func (mr *MockVirtualMachineInstanceInterfaceMockRecorder) DeleteCheckpoint(ctx, name, checkpointName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteCheckpoint", reflect.TypeOf((*MockVirtualMachineInstanceInterface)(nil).DeleteCheckpoint), ctx, name, checkpointName)
+}
+
 // DeleteCollection mocks base method.
 func (m *MockVirtualMachineInstanceInterface) DeleteCollection(ctx context.Context, opts v12.DeleteOptions, listOpts v12.ListOptions) error {
 	m.ctrl.T.Helper()

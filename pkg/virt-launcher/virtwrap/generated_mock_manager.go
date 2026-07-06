@@ -75,6 +75,20 @@ func (mr *MockDomainManagerMockRecorder) CancelVMIMigration(arg0 any) *gomock.Ca
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CancelVMIMigration", reflect.TypeOf((*MockDomainManager)(nil).CancelVMIMigration), arg0)
 }
 
+// DeleteCheckpoint mocks base method.
+func (m *MockDomainManager) DeleteCheckpoint(arg0 *v1.VirtualMachineInstance, arg1 string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteCheckpoint", arg0, arg1)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteCheckpoint indicates an expected call of DeleteCheckpoint.
+func (mr *MockDomainManagerMockRecorder) DeleteCheckpoint(arg0, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteCheckpoint", reflect.TypeOf((*MockDomainManager)(nil).DeleteCheckpoint), arg0, arg1)
+}
+
 // DeleteVMI mocks base method.
 func (m *MockDomainManager) DeleteVMI(arg0 *v1.VirtualMachineInstance) error {
 	m.ctrl.T.Helper()

@@ -1014,3 +1014,35 @@ func (l *Launcher) RedefineCheckpoint(_ context.Context, request *cmdv1.Redefine
 		},
 	}, nil
 }
+
+func (l *Launcher) DeleteCheckpoint(_ context.Context, request *cmdv1.DeleteCheckpointRequest) (*cmdv1.DeleteCheckpointResponse, error) {
+	vmi, response := getVMIFromRequest(request.Vmi)
+	if !response.Success {
+		return &cmdv1.DeleteCheckpointResponse{Response: response}, nil
+	}
+
+	if !storage.IsChangedBlockTrackingEnabled(vmi) {
+		return &cmdv1.DeleteCheckpointResponse{
+			Response: &cmdv1.Response{
+				Success: false,
+				Message: "Delete checkpoint failed: ChangedBlockTracking is not enabled",
+			},
+		}, nil
+	}
+
+	err := l.domainManager.DeleteCheckpoint(vmi, request.CheckpointName)
+	if err != nil {
+		log.Log.Object(vmi).Reason(err).Errorf("Failed to delete checkpoint %s", request.CheckpointName)
+		return &cmdv1.DeleteCheckpointResponse{
+			Response: &cmdv1.Response{
+				Success: false,
+				Message: err.Error(),
+			},
+		}, nil
+	}
+
+	log.Log.Object(vmi).Infof("Checkpoint %s deleted successfully", request.CheckpointName)
+	return &cmdv1.DeleteCheckpointResponse{
+		Response: &cmdv1.Response{Success: true},
+	}, nil
+}

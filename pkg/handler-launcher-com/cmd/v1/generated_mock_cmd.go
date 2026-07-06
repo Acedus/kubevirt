@@ -81,6 +81,26 @@ func (mr *MockCmdClientMockRecorder) CancelVirtualMachineMigration(ctx, in any, 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CancelVirtualMachineMigration", reflect.TypeOf((*MockCmdClient)(nil).CancelVirtualMachineMigration), varargs...)
 }
 
+// DeleteCheckpoint mocks base method.
+func (m *MockCmdClient) DeleteCheckpoint(ctx context.Context, in *DeleteCheckpointRequest, opts ...grpc.CallOption) (*DeleteCheckpointResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "DeleteCheckpoint", varargs...)
+	ret0, _ := ret[0].(*DeleteCheckpointResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteCheckpoint indicates an expected call of DeleteCheckpoint.
+func (mr *MockCmdClientMockRecorder) DeleteCheckpoint(ctx, in any, opts ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteCheckpoint", reflect.TypeOf((*MockCmdClient)(nil).DeleteCheckpoint), varargs...)
+}
+
 // DeleteVirtualMachine mocks base method.
 func (m *MockCmdClient) DeleteVirtualMachine(ctx context.Context, in *VMIRequest, opts ...grpc.CallOption) (*Response, error) {
 	m.ctrl.T.Helper()
@@ -813,6 +833,21 @@ func (m *MockCmdServer) CancelVirtualMachineMigration(arg0 context.Context, arg1
 func (mr *MockCmdServerMockRecorder) CancelVirtualMachineMigration(arg0, arg1 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CancelVirtualMachineMigration", reflect.TypeOf((*MockCmdServer)(nil).CancelVirtualMachineMigration), arg0, arg1)
+}
+
+// DeleteCheckpoint mocks base method.
+func (m *MockCmdServer) DeleteCheckpoint(arg0 context.Context, arg1 *DeleteCheckpointRequest) (*DeleteCheckpointResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteCheckpoint", arg0, arg1)
+	ret0, _ := ret[0].(*DeleteCheckpointResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteCheckpoint indicates an expected call of DeleteCheckpoint.
+func (mr *MockCmdServerMockRecorder) DeleteCheckpoint(arg0, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteCheckpoint", reflect.TypeOf((*MockCmdServer)(nil).DeleteCheckpoint), arg0, arg1)
 }
 
 // DeleteVirtualMachine mocks base method.

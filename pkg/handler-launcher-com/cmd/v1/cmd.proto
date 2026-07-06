@@ -39,6 +39,7 @@ service Cmd {
   rpc GetScreenshot(VMIRequest) returns (ScreenshotResponse) {}
   rpc BackupVirtualMachine(BackupRequest) returns (Response) {}
   rpc RedefineCheckpoint(RedefineCheckpointRequest) returns (RedefineCheckpointResponse) {}
+  rpc DeleteCheckpoint(DeleteCheckpointRequest) returns (DeleteCheckpointResponse) {}
   rpc GetVMStats(VMStatsRequest) returns (VMStatsResponse) {}
 }
 
@@ -237,11 +238,21 @@ message BackupRequest {
 message RedefineCheckpointRequest {
   VMI vmi = 1;
   bytes checkpoint = 2;
+  string parent_name = 3;
 }
 
 message RedefineCheckpointResponse {
   Response response = 1;
   bool checkpointInvalid = 2;
+}
+
+message DeleteCheckpointRequest {
+  VMI vmi = 1;
+  string checkpoint_name = 2;
+}
+
+message DeleteCheckpointResponse {
+  Response response = 1;
 }
 
 message DomainStatsRequest {}

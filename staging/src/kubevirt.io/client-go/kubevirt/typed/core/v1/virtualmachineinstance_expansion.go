@@ -46,6 +46,7 @@ type VirtualMachineInstanceExpansion interface {
 	PortForward(name string, port int, protocol string) (StreamInterface, error)
 	Backup(ctx context.Context, name string, backupOptions *backupv1.BackupOptions) error
 	RedefineCheckpoint(ctx context.Context, name string, checkpoint *backupv1.BackupCheckpoint) error
+	DeleteCheckpoint(ctx context.Context, name string, checkpointName string) error
 	Pause(ctx context.Context, name string, pauseOptions *v1.PauseOptions) error
 	Unpause(ctx context.Context, name string, unpauseOptions *v1.UnpauseOptions) error
 	Freeze(ctx context.Context, name string, unfreezeTimeout time.Duration) error
@@ -143,6 +144,25 @@ func (c *virtualMachineInstances) RedefineCheckpoint(ctx context.Context, name s
 		Resource("virtualmachineinstances").
 		Name(name).
 		SubResource("redefine-checkpoint").
+		Body(body).
+		Do(ctx).
+		Error()
+}
+
+func (c *virtualMachineInstances) DeleteCheckpoint(ctx context.Context, name string, checkpointName string) error {
+	log.Log.Infof("DeleteCheckpoint VMI %s checkpoint %s", name, checkpointName)
+
+	body, err := json.Marshal(map[string]string{"checkpointName": checkpointName})
+	if err != nil {
+		return err
+	}
+
+	return c.GetClient().Put().
+		AbsPath(fmt.Sprintf(vmiSubresourceURL, v1.ApiStorageVersion)).
+		Namespace(c.GetNamespace()).
+		Resource("virtualmachineinstances").
+		Name(name).
+		SubResource("delete-checkpoint").
 		Body(body).
 		Do(ctx).
 		Error()

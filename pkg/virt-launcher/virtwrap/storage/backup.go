@@ -48,7 +48,7 @@ const (
 	backupTimeXMLFormat               = "2006-01-02_15-04-05"
 	freezeFailedMsg                   = "Failed freezing guest filesystem: %s"
 	unfreezeFailedMsg                 = "Failed to unfreeze filesystem after backup completion"
-	qmpQueryBlockNodesCmd             = `{"execute":"query-named-block-nodes"}`
+	qmpQueryBlockNodesCmd             = `{"execute":"query-named-block-nodes","arguments":{"flat":true}}`
 	operationCanceledMsg              = "Operation canceled"
 
 	pullBackupSocketDir  = "/var/run/kubevirt/sockets"
@@ -517,6 +517,76 @@ func (m *StorageManager) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, chec
 	return false, nil
 }
 
+// DeleteCheckpoint removes a checkpoint's bitmaps from qcow2 overlays.
+// It tries libvirt first (virDomainCheckpointDelete), which handles bitmap
+// removal internally. If the checkpoint doesn't exist in libvirt (e.g. after
+// VM restart without redefinition), it redefines the checkpoint from the
+// on-disk bitmaps and then deletes it through libvirt.
+// Returns nil if the checkpoint/bitmap doesn't exist anywhere (idempotent).
+func (m *StorageManager) DeleteCheckpoint(vmi *v1.VirtualMachineInstance, checkpointName string) error {
+	logger := log.Log.With("checkpointName", checkpointName)
+	logger.Info("Deleting checkpoint")
+
+	domName := api.VMINamespaceKeyFunc(vmi)
+	dom, err := m.virConn.LookupDomainByName(domName)
+	if err != nil {
+		return fmt.Errorf("failed to lookup domain %s: %v", domName, err)
+	}
+	defer dom.Free()
+
+	cp, err := dom.CheckpointLookupByName(checkpointName, 0)
+	if err == nil {
+		defer cp.Free()
+		if err := cp.Delete(0); err != nil {
+			return fmt.Errorf("failed to delete checkpoint %s via libvirt: %v", checkpointName, err)
+		}
+		logger.Info("Checkpoint deleted via libvirt")
+		return nil
+	}
+
+	if libvirtErr, ok := errors.AsType[libvirt.Error](err); !ok || libvirtErr.Code != libvirt.ERR_NO_DOMAIN_CHECKPOINT {
+		return fmt.Errorf("failed to lookup checkpoint %s: %v", checkpointName, err)
+	}
+
+	// Checkpoint not in libvirt (e.g. post-restart). Redefine it from the
+	// on-disk bitmaps so libvirt can handle the deletion properly.
+	logger.V(3).Info("Checkpoint not in libvirt, redefining from disk bitmaps before deletion")
+	return m.redefineAndDeleteCheckpoint(dom, checkpointName)
+}
+
+func (m *StorageManager) redefineAndDeleteCheckpoint(dom cli.VirDomain, checkpointName string) error {
+	checkpointDisks, _, err := findDisksWithCheckpointBitmap(dom, checkpointName)
+	if err != nil {
+		return fmt.Errorf("failed to find checkpoint bitmaps: %w", err)
+	}
+	if len(checkpointDisks.Disks) == 0 {
+		log.Log.V(3).Infof("No bitmaps found for checkpoint %s, nothing to delete (idempotent)", checkpointName)
+		return nil
+	}
+
+	checkpointXML, err := xml.Marshal(&api.DomainCheckpoint{
+		Name:            checkpointName,
+		CheckpointDisks: checkpointDisks,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal checkpoint XML: %w", err)
+	}
+
+	redefineFlags := libvirt.DOMAIN_CHECKPOINT_CREATE_REDEFINE | libvirt.DOMAIN_CHECKPOINT_CREATE_REDEFINE_VALIDATE
+	cp, err := dom.CreateCheckpointXML(string(checkpointXML), redefineFlags)
+	if err != nil {
+		return fmt.Errorf("failed to redefine checkpoint %s for deletion: %w", checkpointName, err)
+	}
+	defer cp.Free()
+
+	if err := cp.Delete(0); err != nil {
+		return fmt.Errorf("failed to delete checkpoint %s via libvirt: %w", checkpointName, err)
+	}
+
+	log.Log.Infof("Checkpoint %s redefined and deleted via libvirt", checkpointName)
+	return nil
+}
+
 // findDisksWithCheckpointBitmap iterates over all domain disks and returns those
 // that have the specified checkpoint bitmap in their qcow2 file.
 func findDisksWithCheckpointBitmap(dom cli.VirDomain, checkpointName string) (*api.CheckpointDisks, []string, error) {
@@ -578,6 +648,7 @@ type qmpBitmapInfo struct {
 }
 
 type qmpBlockNodeInfo struct {
+	NodeName     string          `json:"node-name"`
 	File         string          `json:"file,omitempty"`
 	DirtyBitmaps []qmpBitmapInfo `json:"dirty-bitmaps,omitempty"`
 }
@@ -586,11 +657,22 @@ type qmpQueryBlockNodesResponse struct {
 	Return []qmpBlockNodeInfo `json:"return"`
 }
 
-// queryBitmaps queries QEMU for bitmap information via QMP.
-// Returns a map of file path to list of bitmaps on that file.
-// This is used instead of qemu-img info because qemu-img info doesn't see
-// updated bitmap state unless the VM was shutdown.
-var queryBitmaps = func(dom cli.VirDomain) (map[string][]qmpBitmapInfo, error) {
+func queryBitmaps(dom cli.VirDomain) (map[string][]qmpBitmapInfo, error) {
+	nodes, err := queryBlockNodes(dom)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string][]qmpBitmapInfo)
+	for _, node := range nodes {
+		if node.File != "" && len(node.DirtyBitmaps) > 0 {
+			result[node.File] = append(result[node.File], node.DirtyBitmaps...)
+		}
+	}
+	return result, nil
+}
+
+func queryBlockNodes(dom cli.VirDomain) ([]qmpBlockNodeInfo, error) {
 	output, err := dom.QemuMonitorCommand(qmpQueryBlockNodesCmd, libvirt.DOMAIN_QEMU_MONITOR_COMMAND_DEFAULT)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute QMP query-named-block-nodes: %w", err)
@@ -600,15 +682,7 @@ var queryBitmaps = func(dom cli.VirDomain) (map[string][]qmpBitmapInfo, error) {
 	if err := json.Unmarshal([]byte(output), &resp); err != nil {
 		return nil, fmt.Errorf("failed to parse QMP response: %w", err)
 	}
-
-	result := make(map[string][]qmpBitmapInfo)
-	for _, node := range resp.Return {
-		if node.File != "" && len(node.DirtyBitmaps) > 0 {
-			result[node.File] = append(result[node.File], node.DirtyBitmaps...)
-		}
-	}
-
-	return result, nil
+	return resp.Return, nil
 }
 
 func checkBackupEligibility(exists bool, backupMetadata api.BackupMetadata, backupOptions *backupv1.BackupOptions) error {
