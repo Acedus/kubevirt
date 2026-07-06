@@ -72,6 +72,7 @@ const (
 	backupTrackerNotFoundMsg             = "BackupTracker %s does not exist"
 	trackerDeletingMsg                   = "tracker %s is being deleted"
 	trackerCheckpointRedefinitionPending = "Waiting for checkpoint redefinition on tracker %s"
+	trackerPruningPendingMsg             = "Waiting for checkpoint pruning on tracker %s"
 	invalidBackupModeMsg                 = "invalid backup mode: %s"
 	vmMigrationInProgressMsg             = "vm %s is currently migrating, waiting for migration to complete before starting backup"
 
@@ -275,6 +276,9 @@ func (ctrl *VMBackupController) handleBackupTracker(obj interface{}) {
 		ctrl.trackerQueue.Add(key)
 	} else if trackerNeedsCheckpointRedefinition(tracker) {
 		log.Log.V(3).Infof("enqueued tracker %q for checkpoint redefinition", key)
+		ctrl.trackerQueue.Add(key)
+	} else if trackerNeedsPruning(tracker) {
+		log.Log.V(3).Infof("enqueued tracker %q for pruning", key)
 		ctrl.trackerQueue.Add(key)
 	}
 
@@ -553,6 +557,9 @@ func (ctrl *VMBackupController) checkPrerequisites(backup *backupv1.VirtualMachi
 	}
 	if trackerNeedsCheckpointRedefinition(backupTracker) {
 		return fmt.Sprintf(trackerCheckpointRedefinitionPending, backupTracker.Name), nil
+	}
+	if trackerNeedsPruning(backupTracker) {
+		return fmt.Sprintf(trackerPruningPendingMsg, backupTracker.Name), nil
 	}
 	if migrations.IsMigrating(vmi) {
 		return fmt.Sprintf(vmMigrationInProgressMsg, vmi.Name), nil

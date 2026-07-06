@@ -1225,6 +1225,76 @@ var _ = Describe(SIG("Backup", func() {
 		By("Verifying endpoints are accessible again after recreation")
 		verifyPullEndpoints(virtClient, backup, backup.Status.Type, tokenValue)
 	})
+
+	It("Checkpoint pruning removes oldest checkpoint bitmaps when RetainCheckpoints is exceeded", func() {
+		dv := libdv.NewDataVolume(
+			libdv.WithRegistryURLSource(cd.DataVolumeImportUrlForContainerDisk(cd.ContainerDiskAlpineTestTooling)),
+			libdv.WithNamespace(testsuite.GetTestNamespace(nil)),
+			libdv.WithStorage(
+				libdv.StorageWithVolumeSize(cd.AlpineVolumeSize),
+			),
+		)
+		vm = libstorage.RenderVMWithDataVolumeTemplate(dv,
+			libvmi.WithLabels(cbt.CBTLabel),
+			libvmi.WithRunStrategy(v1.RunStrategyAlways),
+			withCloudInitNoCloudDummy(),
+		)
+
+		By(fmt.Sprintf("Creating VM %s", vm.Name))
+		vm, err = virtClient.VirtualMachine(vm.Namespace).Create(context.Background(), vm, metav1.CreateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		Eventually(matcher.ThisVMIWith(vm.Namespace, vm.Name), 12*time.Minute, 2*time.Second).Should(matcher.HaveConditionTrue(v1.VirtualMachineInstanceAgentConnected))
+		libstorage.WaitForCBTEnabled(virtClient, vm.Namespace, vm.Name)
+
+		backupPVC1 := libstorage.CreateFSPVC("backup-pvc-1", testsuite.GetTestNamespace(vm), getTargetPVCSizeWithOverhead(cd.AlpineVolumeSize), libstorage.WithStorageProfile())
+		backupPVC2 := libstorage.CreateFSPVC("backup-pvc-2", testsuite.GetTestNamespace(vm), getTargetPVCSizeWithOverhead(cd.AlpineVolumeSize), libstorage.WithStorageProfile())
+
+		By("Creating BackupTracker with RetainCheckpoints=1")
+		tracker := createBackupTracker(virtClient, vm)
+		tracker.Spec.RetainCheckpoints = new(int32(1))
+		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Update(context.Background(), tracker, metav1.UpdateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		By("Creating first full backup")
+		fullBackup := createAndVerifyBackupWithTracker(virtClient, backupName(vm.Name), vm.Namespace, backupPVC1.Name, tracker.Name, waitBackupSucceeded)
+		Expect(fullBackup.Status.Type).To(Equal(backupv1.Full))
+		Expect(fullBackup.Status.CheckpointName).ToNot(BeNil())
+		firstCheckpointName := *fullBackup.Status.CheckpointName
+
+		By("Verifying tracker has exactly 1 checkpoint (within retain limit)")
+		tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(tracker.Status.Checkpoints).To(HaveLen(1))
+
+		By("Verifying libvirt has the checkpoint")
+		vmi, err := virtClient.VirtualMachineInstance(vm.Namespace).Get(context.Background(), vm.Name, metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		checkpoints := listDomainCheckpoints(vmi)
+		Expect(checkpoints).To(ContainElement(firstCheckpointName))
+
+		By("Creating second incremental backup (triggers pruning of first checkpoint)")
+		incrementalBackup := createAndVerifyBackupWithTracker(virtClient, backupName(vm.Name), vm.Namespace, backupPVC2.Name, tracker.Name, waitBackupSucceeded)
+		Expect(incrementalBackup.Status.Type).To(Equal(backupv1.Incremental))
+		secondCheckpointName := *incrementalBackup.Status.CheckpointName
+
+		By("Waiting for pruning to complete — tracker should have exactly 1 checkpoint (the latest)")
+		Eventually(func() []backupv1.BackupCheckpoint {
+			tracker, err = virtClient.VirtualMachineBackupTracker(tracker.Namespace).Get(context.Background(), tracker.Name, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			return tracker.Status.Checkpoints
+		}, 60*time.Second, 2*time.Second).Should(HaveLen(1))
+		Expect(tracker.Status.Checkpoints[0].Name).To(Equal(secondCheckpointName),
+			"Only the latest checkpoint should remain after pruning")
+
+		By("Verifying the old checkpoint bitmap was removed from libvirt")
+		vmi, err = virtClient.VirtualMachineInstance(vm.Namespace).Get(context.Background(), vm.Name, metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		checkpoints = listDomainCheckpoints(vmi)
+		Expect(checkpoints).ToNot(ContainElement(firstCheckpointName),
+			"Pruned checkpoint should no longer exist in libvirt")
+		Expect(checkpoints).To(ContainElement(secondCheckpointName),
+			"Latest checkpoint should still exist in libvirt")
+	})
 }))
 
 func getPodByVMI(vmi *v1.VirtualMachineInstance) *corev1.Pod {

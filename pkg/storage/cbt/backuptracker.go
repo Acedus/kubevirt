@@ -35,6 +35,7 @@ import (
 	"kubevirt.io/client-go/log"
 
 	"kubevirt.io/kubevirt/pkg/controller"
+	migrations "kubevirt.io/kubevirt/pkg/util/migrations"
 )
 
 func isTrackerDeleting(tracker *backupv1.VirtualMachineBackupTracker) bool {
@@ -47,6 +48,14 @@ func trackerNeedsCheckpointRedefinition(tracker *backupv1.VirtualMachineBackupTr
 		tracker.Status.CheckpointRedefinitionRequired != nil &&
 		*tracker.Status.CheckpointRedefinitionRequired &&
 		len(tracker.Status.Checkpoints) > 0
+}
+
+func trackerNeedsPruning(tracker *backupv1.VirtualMachineBackupTracker) bool {
+	if tracker == nil || tracker.Status == nil {
+		return false
+	}
+	retain := tracker.Spec.RetainCheckpoints
+	return retain != nil && int32(len(tracker.Status.Checkpoints)) > *retain
 }
 
 func (ctrl *VMBackupController) runTrackerWorker() {
@@ -96,18 +105,10 @@ func (ctrl *VMBackupController) executeTracker(key string) error {
 		return fmt.Errorf("unexpected resource %+v", storeObj)
 	}
 
-	if isTrackerDeleting(tracker) && controller.HasFinalizer(tracker, backupv1.VirtualMachineBackupTrackerFinalizer) {
-		return ctrl.handleTrackerDeletion(tracker)
-	}
-
-	if !trackerNeedsCheckpointRedefinition(tracker) {
-		return nil
-	}
-
 	trackerCopy := tracker.DeepCopy()
-	syncErr := ctrl.syncBackupTracker(trackerCopy)
+	syncErr := ctrl.syncTracker(trackerCopy)
 	if syncErr != nil {
-		logger.V(3).Infof("Reconciling VirtualMachineBackupTracker %s failed", key)
+		logger.V(3).Infof("Reconciling VirtualMachineBackupTracker %s failed: %v", key, syncErr)
 	}
 
 	if !equality.Semantic.DeepEqual(tracker.Status, trackerCopy.Status) {
@@ -121,8 +122,16 @@ func (ctrl *VMBackupController) executeTracker(key string) error {
 	return syncErr
 }
 
-func (ctrl *VMBackupController) syncBackupTracker(tracker *backupv1.VirtualMachineBackupTracker) error {
-	logger := log.Log.With("VirtualMachineBackupTracker", tracker.Name)
+func (ctrl *VMBackupController) syncTracker(tracker *backupv1.VirtualMachineBackupTracker) error {
+	if isTrackerDeleting(tracker) && controller.HasFinalizer(tracker, backupv1.VirtualMachineBackupTrackerFinalizer) {
+		return ctrl.handleTrackerDeletion(tracker)
+	}
+
+	needsRedefinition := trackerNeedsCheckpointRedefinition(tracker)
+	needsPruning := trackerNeedsPruning(tracker)
+	if !needsRedefinition && !needsPruning {
+		return nil
+	}
 
 	vmiName := tracker.Spec.Source.Name
 	vmi, exists, err := ctrl.getVMI(tracker.Namespace, vmiName)
@@ -130,13 +139,35 @@ func (ctrl *VMBackupController) syncBackupTracker(tracker *backupv1.VirtualMachi
 		return fmt.Errorf("failed to get VMI %s/%s: %w", tracker.Namespace, vmiName, err)
 	}
 	if !exists || vmi == nil {
-		return fmt.Errorf("VMI %s/%s not found", tracker.Namespace, vmiName)
+		return fmt.Errorf("VMI %s/%s not found, deferring tracker operations", tracker.Namespace, vmiName)
+	}
+	if migrations.IsMigrating(vmi) {
+		return fmt.Errorf("VMI %s/%s is migrating, deferring tracker operations", tracker.Namespace, vmiName)
 	}
 
+	if needsRedefinition {
+		if err := ctrl.syncBackupTracker(tracker); err != nil {
+			return err
+		}
+	}
+
+	if needsPruning {
+		if err := ctrl.pruneExcessCheckpoints(tracker); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (ctrl *VMBackupController) syncBackupTracker(tracker *backupv1.VirtualMachineBackupTracker) error {
+	logger := log.Log.With("VirtualMachineBackupTracker", tracker.Name)
+
+	vmiName := tracker.Spec.Source.Name
 	cp := tracker.Status.LatestCheckpoint
 	logger.Infof("Calling RedefineCheckpoint for VMI %s with checkpoint %s", vmiName, cp.Name)
 
-	err = ctrl.client.VirtualMachineInstance(tracker.Namespace).RedefineCheckpoint(context.Background(), vmiName, cp)
+	err := ctrl.client.VirtualMachineInstance(tracker.Namespace).RedefineCheckpoint(context.Background(), vmiName, cp)
 	if err != nil && !isCheckpointInvalidError(err) {
 		return err
 	}
@@ -156,6 +187,47 @@ func (ctrl *VMBackupController) syncBackupTracker(tracker *backupv1.VirtualMachi
 	}
 	tracker.Status.CheckpointRedefinitionRequired = nil
 
+	return nil
+}
+
+func (ctrl *VMBackupController) pruneExcessCheckpoints(tracker *backupv1.VirtualMachineBackupTracker) error {
+	retain := tracker.Spec.RetainCheckpoints
+	if retain == nil {
+		return nil
+	}
+
+	excess := int32(len(tracker.Status.Checkpoints)) - *retain
+	if excess <= 0 {
+		return nil
+	}
+
+	hasActive, err := ctrl.trackerHasActiveBackups(tracker)
+	if err != nil {
+		return fmt.Errorf("failed to check active backups: %w", err)
+	}
+	if hasActive {
+		return fmt.Errorf("tracker %s/%s has active backups, deferring checkpoint pruning", tracker.Namespace, tracker.Name)
+	}
+
+	vmiName := tracker.Spec.Source.Name
+
+	for excess > 0 {
+		cp := tracker.Status.Checkpoints[0]
+		log.Log.Infof("Pruning checkpoint %s from tracker %s/%s via DeleteCheckpoint RPC",
+			cp.Name, tracker.Namespace, tracker.Name)
+		if err := ctrl.client.VirtualMachineInstance(tracker.Namespace).DeleteCheckpoint(
+			context.Background(), vmiName, cp.Name); err != nil {
+			return fmt.Errorf("failed to delete checkpoint %s: %w", cp.Name, err)
+		}
+		tracker.Status.Checkpoints = tracker.Status.Checkpoints[1:]
+		excess--
+	}
+
+	if len(tracker.Status.Checkpoints) > 0 {
+		tracker.Status.LatestCheckpoint = &tracker.Status.Checkpoints[len(tracker.Status.Checkpoints)-1]
+	} else {
+		tracker.Status.LatestCheckpoint = nil
+	}
 	return nil
 }
 
