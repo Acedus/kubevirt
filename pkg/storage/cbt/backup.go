@@ -424,21 +424,23 @@ func (ctrl *VMBackupController) execute(key string) error {
 	}
 
 	backupCopy := backup.DeepCopy()
-	syncErr := ctrl.sync(backupCopy)
+	syncErr := ctrl.syncBackup(backupCopy)
+	if syncErr != nil {
+		logger.V(3).Infof("Reconciling VirtualMachineBackup %s failed", key)
+	}
 
 	if !equality.Semantic.DeepEqual(backup.Status, backupCopy.Status) {
 		if _, err := ctrl.client.VirtualMachineBackup(backupCopy.Namespace).UpdateStatus(
 			context.Background(), backupCopy, metav1.UpdateOptions{}); err != nil {
-			logger.Reason(err).Errorf("Updating the VirtualMachineBackup status failed")
+			logger.Reason(err).Errorf("Updating VirtualMachineBackup %s status failed", key)
 			return err
 		}
 	}
 
-	logger.V(4).Infof("Successfully processed backup %s", key)
 	return syncErr
 }
 
-func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) error {
+func (ctrl *VMBackupController) syncBackup(backup *backupv1.VirtualMachineBackup) error {
 	if backup.Status == nil {
 		backup.Status = &backupv1.VirtualMachineBackupStatus{}
 	}
@@ -963,53 +965,6 @@ func (ctrl *VMBackupController) resolveCompletion(backup *backupv1.VirtualMachin
 	log.Log.Object(backup).Info(backupCompleted)
 	setComplete(backup)
 	ctrl.recorder.Eventf(backup, corev1.EventTypeNormal, backupCompletedEvent, backupCompleted)
-}
-
-func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *backupv1.VirtualMachineBackupTracker, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
-	if tracker == nil {
-		return nil
-	}
-
-	newCheckpoint := backupv1.BackupCheckpoint{
-		Name:         *backupStatus.CheckpointName,
-		CreationTime: backupStatus.StartTimestamp,
-		Volumes:      toBackupVolumeInfo(backupStatus.Volumes),
-	}
-
-	newStatus := &backupv1.VirtualMachineBackupTrackerStatus{
-		LatestCheckpoint: &newCheckpoint,
-	}
-
-	patchSet := patch.New()
-	if tracker.Status == nil || tracker.Status.LatestCheckpoint == nil || tracker.Status.LatestCheckpoint.Name == "" {
-		patchSet.AddOption(patch.WithAdd("/status", newStatus))
-	} else {
-		patchSet.AddOption(patch.WithReplace("/status/latestCheckpoint", &newCheckpoint))
-	}
-
-	patchBytes, err := patchSet.GeneratePayload()
-	if err != nil {
-		return fmt.Errorf("failed to generate patch payload: %w", err)
-	}
-
-	_, err = ctrl.client.VirtualMachineBackupTracker(namespace).Patch(
-		context.Background(),
-		tracker.Name,
-		types.JSONPatchType,
-		patchBytes,
-		metav1.PatchOptions{},
-		"status",
-	)
-	if err != nil {
-		return fmt.Errorf("failed to patch BackupTracker status: %w", err)
-	}
-
-	log.Log.Infof("Successfully updated BackupTracker %s/%s with checkpoint %s",
-		namespace, tracker.Name, newCheckpoint.Name)
-	log.Log.V(3).Infof("Checkpoint details: name=%s, creationTime=%s, volumes=%d",
-		newCheckpoint.Name, newCheckpoint.CreationTime, len(newCheckpoint.Volumes))
-
-	return nil
 }
 
 func isPushMode(backup *backupv1.VirtualMachineBackup) bool {

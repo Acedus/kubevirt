@@ -26,13 +26,13 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 
 	backupv1 "kubevirt.io/api/backup/v1alpha1"
+	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/log"
 
-	"kubevirt.io/kubevirt/pkg/apimachinery/patch"
 	"kubevirt.io/kubevirt/pkg/controller"
 )
 
@@ -104,12 +104,25 @@ func (ctrl *VMBackupController) executeTracker(key string) error {
 		return nil
 	}
 
-	return ctrl.handleCheckpointRedefinition(tracker)
+	trackerCopy := tracker.DeepCopy()
+	syncErr := ctrl.syncBackupTracker(trackerCopy)
+	if syncErr != nil {
+		logger.V(3).Infof("Reconciling VirtualMachineBackupTracker %s failed", key)
+	}
+
+	if !equality.Semantic.DeepEqual(tracker.Status, trackerCopy.Status) {
+		if _, err := ctrl.client.VirtualMachineBackupTracker(trackerCopy.Namespace).UpdateStatus(
+			context.Background(), trackerCopy, metav1.UpdateOptions{}); err != nil {
+			logger.Reason(err).Errorf("Updating VirtualMachineBackupTracker %s status failed", key)
+			return err
+		}
+	}
+
+	return syncErr
 }
 
-func (ctrl *VMBackupController) handleCheckpointRedefinition(tracker *backupv1.VirtualMachineBackupTracker) error {
+func (ctrl *VMBackupController) syncBackupTracker(tracker *backupv1.VirtualMachineBackupTracker) error {
 	logger := log.Log.With("VirtualMachineBackupTracker", tracker.Name)
-	logger.Infof("Handling checkpoint redefinition for tracker %s/%s", tracker.Namespace, tracker.Name)
 
 	vmiName := tracker.Spec.Source.Name
 	vmi, exists, err := ctrl.getVMI(tracker.Namespace, vmiName)
@@ -124,12 +137,21 @@ func (ctrl *VMBackupController) handleCheckpointRedefinition(tracker *backupv1.V
 	logger.Infof("Calling RedefineCheckpoint for VMI %s with checkpoint %s", vmiName, checkpoint.Name)
 
 	err = ctrl.client.VirtualMachineInstance(tracker.Namespace).RedefineCheckpoint(context.Background(), vmiName, checkpoint)
-	if err != nil {
-		return ctrl.handleRedefinitionError(tracker, err)
+	if err != nil && !isCheckpointInvalidError(err) {
+		return err
 	}
 
-	logger.Infof("Checkpoint redefinition successful for tracker %s/%s", tracker.Namespace, tracker.Name)
-	return ctrl.clearRedefinitionFlag(tracker)
+	if err != nil {
+		logger.Warningf("Checkpoint invalid, clearing latestcheckpoint: %v", err)
+		ctrl.recorder.Eventf(tracker, corev1.EventTypeWarning, "CheckpointRedefinitionFailed",
+			"Failed to redefine checkpoint %s: %v. Checkpoint cleared, next backup will be full.",
+			tracker.Status.LatestCheckpoint.Name, err)
+		tracker.Status.LatestCheckpoint = nil
+	}
+
+	tracker.Status.CheckpointRedefinitionRequired = nil
+
+	return nil
 }
 
 func (ctrl *VMBackupController) handleTrackerDeletion(tracker *backupv1.VirtualMachineBackupTracker) error {
@@ -174,19 +196,30 @@ func (ctrl *VMBackupController) trackerHasActiveBackups(tracker *backupv1.Virtua
 	return false, nil
 }
 
-func (ctrl *VMBackupController) handleRedefinitionError(tracker *backupv1.VirtualMachineBackupTracker, err error) error {
-	logger := log.Log.With("VirtualMachineBackupTracker", tracker.Name)
-
-	if isCheckpointInvalidError(err) {
-		logger.Warningf("Checkpoint invalid, clearing latestcheckpoint: %v", err)
-		ctrl.recorder.Eventf(tracker, corev1.EventTypeWarning, "CheckpointRedefinitionFailed",
-			"Failed to redefine checkpoint %s: %v. Checkpoint cleared, next backup will be full.",
-			tracker.Status.LatestCheckpoint.Name, err)
-		return ctrl.clearCheckpointAndFlag(tracker)
+func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *backupv1.VirtualMachineBackupTracker, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
+	if tracker == nil {
+		return nil
 	}
 
-	logger.Errorf("Checkpoint redefinition failed: %v", err)
-	return err
+	trackerCopy := tracker.DeepCopy()
+	if trackerCopy.Status == nil {
+		trackerCopy.Status = &backupv1.VirtualMachineBackupTrackerStatus{}
+	}
+	trackerCopy.Status.LatestCheckpoint = &backupv1.BackupCheckpoint{
+		Name:         *backupStatus.CheckpointName,
+		CreationTime: backupStatus.StartTimestamp,
+		Volumes:      toBackupVolumeInfo(backupStatus.Volumes),
+	}
+
+	_, err := ctrl.client.VirtualMachineBackupTracker(namespace).UpdateStatus(
+		context.Background(), trackerCopy, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update BackupTracker status: %w", err)
+	}
+
+	log.Log.Infof("Successfully updated BackupTracker %s/%s with checkpoint %s",
+		namespace, tracker.Name, trackerCopy.Status.LatestCheckpoint.Name)
+	return nil
 }
 
 func isCheckpointInvalidError(err error) bool {
@@ -195,31 +228,4 @@ func isCheckpointInvalidError(err error) bool {
 	}
 	errStr := err.Error()
 	return strings.Contains(errStr, "422") && strings.Contains(errStr, "Unprocessable Entity")
-}
-
-func (ctrl *VMBackupController) clearRedefinitionFlag(tracker *backupv1.VirtualMachineBackupTracker) error {
-	return ctrl.patchTrackerStatus(tracker, patch.WithRemove("/status/checkpointRedefinitionRequired"))
-}
-
-func (ctrl *VMBackupController) clearCheckpointAndFlag(tracker *backupv1.VirtualMachineBackupTracker) error {
-	return ctrl.patchTrackerStatus(tracker,
-		patch.WithRemove("/status/checkpointRedefinitionRequired"),
-		patch.WithRemove("/status/latestCheckpoint"),
-	)
-}
-
-func (ctrl *VMBackupController) patchTrackerStatus(tracker *backupv1.VirtualMachineBackupTracker, opts ...patch.PatchOption) error {
-	patchBytes, err := patch.New(opts...).GeneratePayload()
-	if err != nil {
-		return err
-	}
-	_, err = ctrl.client.VirtualMachineBackupTracker(tracker.Namespace).Patch(
-		context.Background(),
-		tracker.Name,
-		types.JSONPatchType,
-		patchBytes,
-		metav1.PatchOptions{},
-		"status",
-	)
-	return err
 }

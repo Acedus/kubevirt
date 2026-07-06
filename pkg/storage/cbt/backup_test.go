@@ -277,7 +277,7 @@ var _ = Describe("Backup Controller", func() {
 		if backupCopy.Status == nil {
 			backupCopy.Status = &backupv1.VirtualMachineBackupStatus{}
 		}
-		err := controller.sync(backupCopy)
+		err := controller.syncBackup(backupCopy)
 		return backupCopy, err
 	}
 
@@ -885,7 +885,7 @@ var _ = Describe("Backup Controller", func() {
 				pvc := createPVC(pvcName)
 				controller.pvcStore.Add(pvc)
 
-				err := controller.sync(backup)
+				err := controller.syncBackup(backup)
 				Expect(err).ToNot(HaveOccurred())
 
 				condition := meta.FindStatusCondition(backup.Status.Conditions, string(backupv1.ConditionQuiesced))
@@ -930,7 +930,7 @@ var _ = Describe("Backup Controller", func() {
 				Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
 				Return(vmi, nil)
 
-			err := controller.sync(backup)
+			err := controller.syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
 
 			condition := meta.FindStatusCondition(backup.Status.Conditions, string(backupv1.ConditionQuiesced))
@@ -1204,9 +1204,12 @@ var _ = Describe("Backup Controller", func() {
 				Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
 				Return(vmiCanceled, nil)
 
-			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
-				Fail("Backup was canceled and failed, should not update the tracker")
-				return true, nil, nil
+			kubevirtClient.Fake.PrependReactor("update", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+				updateAction := action.(testing.UpdateAction)
+				if updateAction.GetSubresource() == "status" {
+					Fail("Backup was canceled and failed, should not update the tracker")
+				}
+				return false, nil, nil
 			})
 
 			backupCopy, err := syncBackup(backup)
@@ -1705,7 +1708,7 @@ var _ = Describe("Backup Controller", func() {
 	})
 
 	DescribeTable("should update backupTracker with checkpoint and volumes info when backup completes",
-		func(existingCheckpoint string, expectedOp string) {
+		func(existingCheckpoint string) {
 			backupTracker := createBackupTracker(backupTrackerName, vmName, existingCheckpoint)
 			controller.backupTrackerInformer.GetStore().Add(backupTracker)
 
@@ -1744,34 +1747,22 @@ var _ = Describe("Backup Controller", func() {
 				Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
 				Return(vmi, nil)
 
-			// Expect patch to update backupTracker with checkpoint and volumes info
+			// Expect UpdateStatus to update backupTracker with checkpoint and volumes info
 			trackerPatched := false
-			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
-				patchAction := action.(testing.PatchAction)
-				Expect(patchAction.GetName()).To(Equal(backupTrackerName))
-				Expect(patchAction.GetSubresource()).To(Equal("status"))
-
-				patchBytes := patchAction.GetPatch()
-				trackerPatched = true
-				Expect(string(patchBytes)).To(ContainSubstring(expectedOp))
-				Expect(string(patchBytes)).To(ContainSubstring("latestCheckpoint"))
-				Expect(string(patchBytes)).To(ContainSubstring(checkpointName))
-				Expect(string(patchBytes)).To(ContainSubstring("volumes"))
-				Expect(string(patchBytes)).To(ContainSubstring("rootdisk"))
-				Expect(string(patchBytes)).To(ContainSubstring("rootdisk"))
-				Expect(string(patchBytes)).To(ContainSubstring("datadisk"))
-
-				updatedTracker := backupTracker.DeepCopy()
-				updatedTracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
-					LatestCheckpoint: &backupv1.BackupCheckpoint{
-						Name:         checkpointName,
-						CreationTime: &metav1.Time{Time: metav1.Now().Time},
-						Volumes: []backupv1.BackupVolumeInfo{
-							{VolumeName: "rootdisk"},
-							{VolumeName: "datadisk"},
-						},
-					},
+			kubevirtClient.Fake.PrependReactor("update", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+				updateAction := action.(testing.UpdateAction)
+				if updateAction.GetSubresource() != "status" {
+					return false, nil, nil
 				}
+
+				updatedTracker := updateAction.GetObject().(*backupv1.VirtualMachineBackupTracker)
+				trackerPatched = true
+				Expect(updatedTracker.Status).ToNot(BeNil())
+				Expect(updatedTracker.Status.LatestCheckpoint).ToNot(BeNil())
+				Expect(updatedTracker.Status.LatestCheckpoint.Name).To(Equal(checkpointName))
+				Expect(updatedTracker.Status.LatestCheckpoint.Volumes).To(HaveLen(2))
+				Expect(updatedTracker.Status.LatestCheckpoint.Volumes[0].VolumeName).To(Equal("rootdisk"))
+				Expect(updatedTracker.Status.LatestCheckpoint.Volumes[1].VolumeName).To(Equal("datadisk"))
 				return true, updatedTracker, nil
 			})
 
@@ -1786,8 +1777,8 @@ var _ = Describe("Backup Controller", func() {
 			Expect(backupCopy.Status.IncludedVolumes[0].VolumeName).To(Equal("rootdisk"))
 			Expect(backupCopy.Status.IncludedVolumes[1].VolumeName).To(Equal("datadisk"))
 		},
-		Entry("when tracker has no previous checkpoint", "", "\"op\":\"add\""),
-		Entry("when tracker already has a checkpoint", "old-checkpoint", "\"op\":\"replace\""),
+		Entry("when tracker has no previous checkpoint", ""),
+		Entry("when tracker already has a checkpoint", "old-checkpoint"),
 	)
 
 	It("should update backupTracker even when cleanup returns early", func() {
@@ -1815,13 +1806,15 @@ var _ = Describe("Backup Controller", func() {
 		pvc := createPVC(pvcName)
 		controller.pvcStore.Add(pvc)
 
-		// Expect backupTracker to be patched
+		// Expect backupTracker to be updated
 		trackerPatched := false
-		kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
-			patchAction := action.(testing.PatchAction)
-			Expect(patchAction.GetName()).To(Equal(backupTrackerName))
+		kubevirtClient.Fake.PrependReactor("update", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			updateAction := action.(testing.UpdateAction)
+			if updateAction.GetSubresource() != "status" {
+				return false, nil, nil
+			}
 			trackerPatched = true
-			return true, backupTracker, nil
+			return true, updateAction.GetObject(), nil
 		})
 
 		virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
