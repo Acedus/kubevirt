@@ -192,7 +192,7 @@ type DomainManager interface {
 	GuestPing(string) error
 	MemoryDump(vmi *v1.VirtualMachineInstance, dumpPath string) error
 	BackupVirtualMachine(*v1.VirtualMachineInstance, *backupv1.BackupOptions) error
-	RedefineCheckpoint(*v1.VirtualMachineInstance, *backupv1.BackupCheckpoint) (checkpointInvalid bool, err error)
+	RedefineCheckpoint(*v1.VirtualMachineInstance, *backupv1.BackupCheckpoint, string) (checkpointInvalid bool, err error)
 	DeleteCheckpoint(*v1.VirtualMachineInstance, string) error
 	GetQemuVersion() (string, error)
 	UpdateVCPUs(vmi *v1.VirtualMachineInstance, options *cmdv1.VirtualMachineOptions) error
@@ -3044,8 +3044,8 @@ func (l *LibvirtDomainManager) BackupVirtualMachine(vmi *v1.VirtualMachineInstan
 	}
 }
 
-func (l *LibvirtDomainManager) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, checkpoint *backupv1.BackupCheckpoint) (checkpointInvalid bool, err error) {
-	return l.storageManager.RedefineCheckpoint(vmi, checkpoint)
+func (l *LibvirtDomainManager) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, checkpoint *backupv1.BackupCheckpoint, parentName string) (checkpointInvalid bool, err error) {
+	return l.storageManager.RedefineCheckpoint(vmi, checkpoint, parentName)
 }
 
 func (l *LibvirtDomainManager) DeleteCheckpoint(vmi *v1.VirtualMachineInstance, checkpointName string) error {

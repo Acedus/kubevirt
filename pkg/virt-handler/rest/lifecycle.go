@@ -404,7 +404,8 @@ func (lh *LifecycleHandler) RedefineCheckpointHandler(request *restful.Request, 
 		return
 	}
 
-	checkpointInvalid, err := client.RedefineCheckpoint(vmi, checkpoint)
+	parentName := request.QueryParameter("parentName")
+	checkpointInvalid, err := client.RedefineCheckpoint(vmi, checkpoint, parentName)
 	if err != nil {
 		log.Log.Object(vmi).Reason(err).Errorf("Failed to redefine checkpoint %s", checkpoint.Name)
 		if checkpointInvalid {

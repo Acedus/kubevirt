@@ -29,6 +29,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 
@@ -301,7 +303,7 @@ var _ = Describe("VMBackupController", func() {
 			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
 
 			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface)
-			vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any()).Return(nil)
+			vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any(), gomock.Any()).Return(nil)
 			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
 				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
 
@@ -327,10 +329,15 @@ var _ = Describe("VMBackupController", func() {
 			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
 			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
 
-			invalidErr := errors.New("unexpected return code 422 (422 Unprocessable Entity), message: RedefineCheckpoint failed: virError(Code=109, Domain=10, Message='checkpoint inconsistent: missing or broken bitmap')")
+			invalidErr := apierrors.NewInvalid(
+				schema.GroupKind{Group: "kubevirt.io", Kind: "VirtualMachineInstance"},
+				"test-vmi",
+				field.ErrorList{field.Invalid(field.NewPath("checkpoint"), "checkpoint-1", "bitmap invalid")},
+			)
 
 			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface)
-			vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any()).Return(invalidErr)
+			vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any(), gomock.Any()).Return(invalidErr)
+			vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "checkpoint-1").Return(nil)
 			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
 				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
 
@@ -361,7 +368,7 @@ var _ = Describe("VMBackupController", func() {
 			transientErr := apierrors.NewServiceUnavailable("service temporarily unavailable")
 
 			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface)
-			vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any()).Return(transientErr)
+			vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any(), gomock.Any()).Return(transientErr)
 
 			err = ctrl.executeTracker(testNamespace + "/tracker1")
 			Expect(err).To(HaveOccurred())
@@ -376,6 +383,175 @@ var _ = Describe("VMBackupController", func() {
 			Expect(updated.Status.Checkpoints).ToNot(BeEmpty())
 
 			// Verify no event was emitted
+			Consistently(recorder.Events).ShouldNot(Receive())
+		})
+
+		It("should redefine multi-checkpoint chain with correct parent names", func() {
+			tracker := createTracker("tracker1", "test-vmi", false, false)
+			tracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
+				Checkpoints: []backupv1.BackupCheckpoint{
+					{Name: "cp-1"},
+					{Name: "cp-2"},
+					{Name: "cp-3"},
+				},
+				CheckpointRedefinitionRequired: new(true),
+			}
+			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface)
+			gomock.InOrder(
+				vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any(), "").Return(nil),
+				vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any(), "cp-1").Return(nil),
+				vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any(), "cp-2").Return(nil),
+			)
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			err = ctrl.executeTracker(testNamespace + "/tracker1")
+			Expect(err).ToNot(HaveOccurred())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
+			Expect(updated.Status.Checkpoints).To(HaveLen(3))
+		})
+
+		It("should truncate chain and delete orphans when middle checkpoint is invalid", func() {
+			tracker := createTracker("tracker1", "test-vmi", false, false)
+			tracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
+				Checkpoints: []backupv1.BackupCheckpoint{
+					{Name: "cp-1"},
+					{Name: "cp-2"},
+					{Name: "cp-3"},
+				},
+				CheckpointRedefinitionRequired: new(true),
+			}
+			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			invalidErr := apierrors.NewInvalid(
+				schema.GroupKind{Group: "kubevirt.io", Kind: "VirtualMachineInstance"},
+				"test-vmi",
+				field.ErrorList{field.Invalid(field.NewPath("checkpoint"), "cp-2", "bitmap invalid")},
+			)
+
+			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface)
+			gomock.InOrder(
+				vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any(), "").Return(nil),
+				vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any(), "cp-1").Return(invalidErr),
+			)
+			// Orphaned checkpoints deleted in reverse order (leaf-to-root)
+			gomock.InOrder(
+				vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-3").Return(nil),
+				vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-2").Return(nil),
+			)
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			err = ctrl.executeTracker(testNamespace + "/tracker1")
+			Expect(err).ToNot(HaveOccurred())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
+			Expect(updated.Status.Checkpoints).To(HaveLen(1))
+			Expect(updated.Status.Checkpoints[0].Name).To(Equal("cp-1"))
+
+			Eventually(recorder.Events).Should(Receive(ContainSubstring("CheckpointRedefinitionFailed")))
+		})
+
+		It("should clear all checkpoints when first checkpoint is invalid", func() {
+			tracker := createTracker("tracker1", "test-vmi", false, false)
+			tracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
+				Checkpoints: []backupv1.BackupCheckpoint{
+					{Name: "cp-1"},
+					{Name: "cp-2"},
+				},
+				CheckpointRedefinitionRequired: new(true),
+			}
+			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			invalidErr := apierrors.NewInvalid(
+				schema.GroupKind{Group: "kubevirt.io", Kind: "VirtualMachineInstance"},
+				"test-vmi",
+				field.ErrorList{field.Invalid(field.NewPath("checkpoint"), "cp-1", "bitmap invalid")},
+			)
+
+			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface)
+			vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any(), "").Return(invalidErr)
+			// Orphaned checkpoints deleted in reverse order
+			gomock.InOrder(
+				vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-2").Return(nil),
+				vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-1").Return(nil),
+			)
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			err = ctrl.executeTracker(testNamespace + "/tracker1")
+			Expect(err).ToNot(HaveOccurred())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
+			Expect(updated.Status.Checkpoints).To(BeEmpty())
+
+			Eventually(recorder.Events).Should(Receive(ContainSubstring("CheckpointRedefinitionFailed")))
+		})
+
+		It("should return transient error without truncation on non-invalid error", func() {
+			tracker := createTracker("tracker1", "test-vmi", false, false)
+			tracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
+				Checkpoints: []backupv1.BackupCheckpoint{
+					{Name: "cp-1"},
+					{Name: "cp-2"},
+					{Name: "cp-3"},
+				},
+				CheckpointRedefinitionRequired: new(true),
+			}
+			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			transientErr := apierrors.NewServiceUnavailable("service temporarily unavailable")
+
+			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface)
+			vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any(), "").Return(transientErr)
+
+			err = ctrl.executeTracker(testNamespace + "/tracker1")
+			Expect(err).To(HaveOccurred())
+			Expect(apierrors.IsServiceUnavailable(err)).To(BeTrue())
+
+			// Verify tracker was NOT modified — all 3 checkpoints still present
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.CheckpointRedefinitionRequired).ToNot(BeNil())
+			Expect(updated.Status.Checkpoints).To(HaveLen(3))
+
 			Consistently(recorder.Events).ShouldNot(Receive())
 		})
 	})

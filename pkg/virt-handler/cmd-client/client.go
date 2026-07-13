@@ -129,7 +129,7 @@ type LauncherClient interface {
 	GetDomainDirtyRateStats() (dirtyRateMbps int64, err error)
 	GetScreenshot(*v1.VirtualMachineInstance) (*cmdv1.ScreenshotResponse, error)
 	VirtualMachineBackup(vmi *v1.VirtualMachineInstance, options *backupv1.BackupOptions) error
-	RedefineCheckpoint(vmi *v1.VirtualMachineInstance, checkpoint *backupv1.BackupCheckpoint) (checkpointInvalid bool, err error)
+	RedefineCheckpoint(vmi *v1.VirtualMachineInstance, checkpoint *backupv1.BackupCheckpoint, parentName string) (checkpointInvalid bool, err error)
 	DeleteCheckpoint(vmi *v1.VirtualMachineInstance, checkpointName string) error
 	GetVMStats(request *cmdv1.VMStatsRequest) (*stats.VMStats, error)
 }
@@ -874,7 +874,7 @@ func (c *VirtLauncherClient) VirtualMachineBackup(vmi *v1.VirtualMachineInstance
 	return err
 }
 
-func (c *VirtLauncherClient) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, checkpoint *backupv1.BackupCheckpoint) (checkpointInvalid bool, err error) {
+func (c *VirtLauncherClient) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, checkpoint *backupv1.BackupCheckpoint, parentName string) (checkpointInvalid bool, err error) {
 	vmiJson, err := json.Marshal(vmi)
 	if err != nil {
 		return false, err
@@ -890,6 +890,7 @@ func (c *VirtLauncherClient) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, 
 			VmiJson: vmiJson,
 		},
 		Checkpoint: checkpointJson,
+		ParentName: parentName,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), longTimeout)

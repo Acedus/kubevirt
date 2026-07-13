@@ -995,7 +995,7 @@ func (l *Launcher) RedefineCheckpoint(_ context.Context, request *cmdv1.Redefine
 		}, nil
 	}
 
-	checkpointInvalid, err := l.domainManager.RedefineCheckpoint(vmi, checkpoint)
+	checkpointInvalid, err := l.domainManager.RedefineCheckpoint(vmi, checkpoint, request.ParentName)
 	if err != nil {
 		log.Log.Object(vmi).Reason(err).Errorf("Failed to redefine checkpoint %s", checkpoint.Name)
 		return &cmdv1.RedefineCheckpointResponse{

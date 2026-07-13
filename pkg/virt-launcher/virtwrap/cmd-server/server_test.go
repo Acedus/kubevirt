@@ -367,8 +367,8 @@ var _ = Describe("Virt remote commands", func() {
 			})
 
 			It("should redefine checkpoint successfully", func() {
-				domainManager.EXPECT().RedefineCheckpoint(gomock.Any(), gomock.Any()).DoAndReturn(
-					func(vmiArg *v1.VirtualMachineInstance, cpArg *backupv1.BackupCheckpoint) (bool, error) {
+				domainManager.EXPECT().RedefineCheckpoint(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+					func(vmiArg *v1.VirtualMachineInstance, cpArg *backupv1.BackupCheckpoint, parentName string) (bool, error) {
 						Expect(vmiArg.Name).To(Equal("testvmi"))
 						Expect(cpArg.Name).To(Equal("checkpoint-1"))
 						Expect(cpArg.Volumes).To(HaveLen(2))
@@ -377,24 +377,24 @@ var _ = Describe("Virt remote commands", func() {
 						return false, nil
 					})
 
-				checkpointInvalid, err := client.RedefineCheckpoint(vmi, checkpoint)
+				checkpointInvalid, err := client.RedefineCheckpoint(vmi, checkpoint, "")
 				Expect(err).ToNot(HaveOccurred())
 				Expect(checkpointInvalid).To(BeFalse())
 			})
 
 			It("should return error when redefinition fails", func() {
-				domainManager.EXPECT().RedefineCheckpoint(gomock.Any(), gomock.Any()).Return(false, errors.New("redefinition failed"))
+				domainManager.EXPECT().RedefineCheckpoint(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, errors.New("redefinition failed"))
 
-				checkpointInvalid, err := client.RedefineCheckpoint(vmi, checkpoint)
+				checkpointInvalid, err := client.RedefineCheckpoint(vmi, checkpoint, "")
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("redefinition failed"))
 				Expect(checkpointInvalid).To(BeFalse())
 			})
 
 			It("should return checkpointInvalid=true when checkpoint is corrupt", func() {
-				domainManager.EXPECT().RedefineCheckpoint(gomock.Any(), gomock.Any()).Return(true, errors.New("bitmap invalid"))
+				domainManager.EXPECT().RedefineCheckpoint(gomock.Any(), gomock.Any(), gomock.Any()).Return(true, errors.New("bitmap invalid"))
 
-				checkpointInvalid, err := client.RedefineCheckpoint(vmi, checkpoint)
+				checkpointInvalid, err := client.RedefineCheckpoint(vmi, checkpoint, "")
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("bitmap invalid"))
 				Expect(checkpointInvalid).To(BeTrue())
@@ -403,7 +403,7 @@ var _ = Describe("Virt remote commands", func() {
 			It("should fail when CBT is not enabled", func() {
 				vmi.Status.ChangedBlockTracking = nil
 
-				checkpointInvalid, err := client.RedefineCheckpoint(vmi, checkpoint)
+				checkpointInvalid, err := client.RedefineCheckpoint(vmi, checkpoint, "")
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("ChangedBlockTracking is not enabled"))
 				Expect(checkpointInvalid).To(BeFalse())

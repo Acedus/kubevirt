@@ -409,18 +409,18 @@ func (mr *MockLauncherClientMockRecorder) Ping() *gomock.Call {
 }
 
 // RedefineCheckpoint mocks base method.
-func (m *MockLauncherClient) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, checkpoint *v1alpha1.BackupCheckpoint) (bool, error) {
+func (m *MockLauncherClient) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, checkpoint *v1alpha1.BackupCheckpoint, parentName string) (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RedefineCheckpoint", vmi, checkpoint)
+	ret := m.ctrl.Call(m, "RedefineCheckpoint", vmi, checkpoint, parentName)
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // RedefineCheckpoint indicates an expected call of RedefineCheckpoint.
-func (mr *MockLauncherClientMockRecorder) RedefineCheckpoint(vmi, checkpoint any) *gomock.Call {
+func (mr *MockLauncherClientMockRecorder) RedefineCheckpoint(vmi, checkpoint, parentName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RedefineCheckpoint", reflect.TypeOf((*MockLauncherClient)(nil).RedefineCheckpoint), vmi, checkpoint)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RedefineCheckpoint", reflect.TypeOf((*MockLauncherClient)(nil).RedefineCheckpoint), vmi, checkpoint, parentName)
 }
 
 // ResetVirtualMachine mocks base method.

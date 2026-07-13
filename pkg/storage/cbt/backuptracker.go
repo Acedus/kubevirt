@@ -24,10 +24,10 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	backupv1 "kubevirt.io/api/backup/v1alpha1"
@@ -164,20 +164,37 @@ func (ctrl *VMBackupController) syncBackupTracker(tracker *backupv1.VirtualMachi
 	logger := log.Log.With("VirtualMachineBackupTracker", tracker.Name)
 
 	vmiName := tracker.Spec.Source.Name
-	cp := tracker.Status.LatestCheckpoint
-	logger.Infof("Calling RedefineCheckpoint for VMI %s with checkpoint %s", vmiName, cp.Name)
+	vmiClient := ctrl.client.VirtualMachineInstance(tracker.Namespace)
+	checkpoints := tracker.Status.Checkpoints
 
-	err := ctrl.client.VirtualMachineInstance(tracker.Namespace).RedefineCheckpoint(context.Background(), vmiName, cp)
-	if err != nil && !isCheckpointInvalidError(err) {
-		return err
-	}
+	for i := range checkpoints {
+		parentName := ""
+		if i > 0 {
+			parentName = checkpoints[i-1].Name
+		}
 
-	if err != nil {
-		logger.Warningf("Checkpoint invalid, clearing checkpoints: %v", err)
+		logger.Infof("Redefining checkpoint %s (parent=%s) for VMI %s", checkpoints[i].Name, parentName, vmiName)
+		err := vmiClient.RedefineCheckpoint(context.Background(), vmiName, &checkpoints[i], parentName)
+		if err == nil {
+			continue
+		}
+
+		if !apierrors.IsInvalid(err) {
+			return err
+		}
+
+		truncated := checkpoints[i:]
+		tracker.Status.Checkpoints = checkpoints[:i]
+
+		for j := len(truncated) - 1; j >= 0; j-- {
+			logger.Infof("Deleting orphaned checkpoint %s from VMI %s", truncated[j].Name, vmiName)
+			_ = vmiClient.DeleteCheckpoint(context.Background(), vmiName, truncated[j].Name)
+		}
+
 		ctrl.recorder.Eventf(tracker, corev1.EventTypeWarning, "CheckpointRedefinitionFailed",
-			"Failed to redefine checkpoint %s: %v. Checkpoints cleared, next backup will be full.",
-			cp.Name, err)
-		tracker.Status.Checkpoints = nil
+			"Checkpoint %s invalid, truncated chain to %d checkpoints. Next backup will be full.",
+			checkpoints[i].Name, i)
+		break
 	}
 
 	if len(tracker.Status.Checkpoints) > 0 {
@@ -309,12 +326,4 @@ func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *b
 	log.Log.Infof("Successfully updated BackupTracker %s/%s with checkpoint %s (type=%s)",
 		namespace, tracker.Name, newCp.Name, newCp.Type)
 	return nil
-}
-
-func isCheckpointInvalidError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "422") && strings.Contains(errStr, "Unprocessable Entity")
 }

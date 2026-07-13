@@ -460,7 +460,7 @@ func isLibvirtCheckpointInvalidError(err error) bool {
 // RedefineCheckpoint redefines a checkpoint from a previous backup session.
 // This is used after VM restart to restore checkpoint metadata in libvirt.
 // It iterates over all domain disks and includes those that have the checkpoint bitmap.
-func (m *StorageManager) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, checkpoint *backupv1.BackupCheckpoint) (checkpointInvalid bool, err error) {
+func (m *StorageManager) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, checkpoint *backupv1.BackupCheckpoint, parentName string) (checkpointInvalid bool, err error) {
 	logger := log.Log.With("checkpointName", checkpoint.Name)
 	logger.Info("Redefining checkpoint")
 
@@ -489,6 +489,10 @@ func (m *StorageManager) RedefineCheckpoint(vmi *v1.VirtualMachineInstance, chec
 	domainCheckpoint := &api.DomainCheckpoint{
 		Name:            checkpoint.Name,
 		CheckpointDisks: checkpointDisks,
+	}
+
+	if parentName != "" {
+		domainCheckpoint.Parent = &api.CheckpointParent{Name: parentName}
 	}
 
 	if checkpoint.CreationTime != nil {

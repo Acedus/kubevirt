@@ -45,7 +45,7 @@ type VirtualMachineInstanceExpansion interface {
 	Screenshot(ctx context.Context, name string, options *v1.ScreenshotOptions) ([]byte, error)
 	PortForward(name string, port int, protocol string) (StreamInterface, error)
 	Backup(ctx context.Context, name string, backupOptions *backupv1.BackupOptions) error
-	RedefineCheckpoint(ctx context.Context, name string, checkpoint *backupv1.BackupCheckpoint) error
+	RedefineCheckpoint(ctx context.Context, name string, checkpoint *backupv1.BackupCheckpoint, parentName string) error
 	DeleteCheckpoint(ctx context.Context, name string, checkpointName string) error
 	Pause(ctx context.Context, name string, pauseOptions *v1.PauseOptions) error
 	Unpause(ctx context.Context, name string, unpauseOptions *v1.UnpauseOptions) error
@@ -131,22 +131,24 @@ func (c *virtualMachineInstances) Backup(ctx context.Context, name string, backu
 		Error()
 }
 
-func (c *virtualMachineInstances) RedefineCheckpoint(ctx context.Context, name string, checkpoint *backupv1.BackupCheckpoint) error {
-	log.Log.Infof("RedefineCheckpoint VMI %s with checkpoint %s", name, checkpoint.Name)
+func (c *virtualMachineInstances) RedefineCheckpoint(ctx context.Context, name string, checkpoint *backupv1.BackupCheckpoint, parentName string) error {
+	log.Log.Infof("RedefineCheckpoint VMI %s with checkpoint %s (parent=%s)", name, checkpoint.Name, parentName)
 	body, err := json.Marshal(checkpoint)
 	if err != nil {
 		return err
 	}
 
-	return c.GetClient().Put().
+	req := c.GetClient().Put().
 		AbsPath(fmt.Sprintf(vmiSubresourceURL, v1.ApiStorageVersion)).
 		Namespace(c.GetNamespace()).
 		Resource("virtualmachineinstances").
 		Name(name).
 		SubResource("redefine-checkpoint").
-		Body(body).
-		Do(ctx).
-		Error()
+		Body(body)
+	if parentName != "" {
+		req = req.Param("parentName", parentName)
+	}
+	return req.Do(ctx).Error()
 }
 
 func (c *virtualMachineInstances) DeleteCheckpoint(ctx context.Context, name string, checkpointName string) error {
