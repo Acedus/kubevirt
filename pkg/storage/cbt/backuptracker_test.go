@@ -22,6 +22,9 @@ package cbt
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -355,6 +358,39 @@ var _ = Describe("VMBackupController", func() {
 			Expect(updated.Status.LatestCheckpoint).To(BeNil())
 
 			// Verify event was emitted
+			Eventually(recorder.Events).Should(Receive(ContainSubstring("CheckpointRedefinitionFailed")))
+		})
+
+		It("should clear checkpoint chain on 422 Invalid error", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, true)
+			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			wrappedErr := apierrors.NewGenericServerResponse(
+				http.StatusUnprocessableEntity, "PUT", schema.GroupResource{}, "", "bitmap invalid", 0, true,
+			)
+
+			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface)
+			vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any(), gomock.Any()).Return(wrappedErr)
+			vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "checkpoint-1").Return(nil)
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			err = ctrl.executeTracker(testNamespace + "/tracker1")
+			Expect(err).ToNot(HaveOccurred())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
+			Expect(updated.Status.Checkpoints).To(BeEmpty())
+			Expect(updated.Status.LatestCheckpoint).To(BeNil())
+
 			Eventually(recorder.Events).Should(Receive(ContainSubstring("CheckpointRedefinitionFailed")))
 		})
 
@@ -733,6 +769,22 @@ var _ = Describe("VMBackupController", func() {
 
 			Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(originalCheckpointName))
 		})
+	})
+
+	Context("isCheckpointInvalidError", func() {
+		DescribeTable("should detect checkpoint invalid errors",
+			func(err error, expected bool) {
+				Expect(isCheckpointInvalidError(err)).To(Equal(expected))
+			},
+			Entry("apierrors.NewInvalid error",
+				apierrors.NewInvalid(schema.GroupKind{Group: "subresources.kubevirt.io", Kind: "checkpoint"}, "cp-1", field.ErrorList{}), true),
+			Entry("NewGenericServerResponse with 422",
+				apierrors.NewGenericServerResponse(http.StatusUnprocessableEntity, "PUT", schema.GroupResource{}, "", "checkpoint invalid", 0, true), true),
+			Entry("NewGenericServerResponse with 500",
+				apierrors.NewGenericServerResponse(http.StatusInternalServerError, "PUT", schema.GroupResource{}, "", "server error", 0, true), false),
+			Entry("generic error",
+				fmt.Errorf("connection refused"), false),
+		)
 	})
 
 	Context("trackerNeedsPruning", func() {

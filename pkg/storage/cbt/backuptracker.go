@@ -179,7 +179,7 @@ func (ctrl *VMBackupController) syncBackupTracker(tracker *backupv1.VirtualMachi
 			continue
 		}
 
-		if !apierrors.IsInvalid(err) {
+		if !isCheckpointInvalidError(err) {
 			return err
 		}
 
@@ -205,6 +205,10 @@ func (ctrl *VMBackupController) syncBackupTracker(tracker *backupv1.VirtualMachi
 	tracker.Status.CheckpointRedefinitionRequired = nil
 
 	return nil
+}
+
+func isCheckpointInvalidError(err error) bool {
+	return apierrors.IsInvalid(err)
 }
 
 func (ctrl *VMBackupController) pruneExcessCheckpoints(tracker *backupv1.VirtualMachineBackupTracker) error {

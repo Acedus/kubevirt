@@ -361,6 +361,7 @@ func baseControllerClusterRole() *rbacv1.ClusterRole {
 				Resources: []string{
 					"virtualmachinebackuptrackers",
 					"virtualmachinebackuptrackers/status",
+					"virtualmachinebackuptrackers/finalizers",
 				},
 				Verbs: []string{
 					"get", "list", "watch", "create", "update", "delete", "patch",

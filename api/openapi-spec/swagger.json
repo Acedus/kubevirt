@@ -20959,6 +20959,10 @@
       "description": "ForceFullBackup indicates that a full backup is desired",
       "type": "boolean"
      },
+     "fromCheckpoint": {
+      "description": "FromCheckpoint specifies the checkpoint to use as the incremental base. Must reference a checkpoint name in the VMBT's status.checkpoints list. If empty, defaults to the latest checkpoint. Only valid when source.kind is VirtualMachineBackupTracker.",
+      "type": "string"
+     },
      "mode": {
       "description": "Mode specifies the way the backup output will be recieved",
       "type": "string"
@@ -21012,6 +21016,10 @@
      },
      "exportUID": {
       "description": "ExportUID tracks the UID of the associated VMExport for pull-mode backups used to detect VMExport recreation and re-initiate the export handshake",
+      "type": "string"
+     },
+     "fromCheckpoint": {
+      "description": "FromCheckpoint records which checkpoint was used as the incremental base.",
       "type": "string"
      },
      "includedVolumes": {
