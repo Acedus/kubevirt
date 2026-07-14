@@ -17267,8 +17267,9 @@ func schema_kubevirtio_api_backup_v1alpha1_BackupCheckpoint(ref common.Reference
 				Properties: map[string]spec.Schema{
 					"name": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
 						},
 					},
 					"creationTime": {
@@ -17304,6 +17305,7 @@ func schema_kubevirtio_api_backup_v1alpha1_BackupCheckpoint(ref common.Reference
 						},
 					},
 				},
+				Required: []string{"name"},
 			},
 		},
 		Dependencies: []string{
@@ -17576,6 +17578,13 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupSpec(ref common.R
 							Format:      "",
 						},
 					},
+					"fromCheckpoint": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FromCheckpoint specifies the checkpoint to use as the incremental base. Must reference a checkpoint name in the VMBT's status.checkpoints list. If empty, defaults to the latest checkpoint. Only valid when source.kind is VirtualMachineBackupTracker.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"tokenSecretRef": {
 						SchemaProps: spec.SchemaProps{
 							Description: "TokenSecretRef is the name of the secret that will be used to pull the backup from an associated endpoint",
@@ -17669,6 +17678,13 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupStatus(ref common
 					"exportUID": {
 						SchemaProps: spec.SchemaProps{
 							Description: "ExportUID tracks the UID of the associated VMExport for pull-mode backups used to detect VMExport recreation and re-initiate the export handshake",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"fromCheckpoint": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FromCheckpoint records which checkpoint was used as the incremental base.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

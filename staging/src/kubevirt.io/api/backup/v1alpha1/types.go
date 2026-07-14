@@ -53,7 +53,7 @@ type BackupVolumeInfo struct {
 }
 
 type BackupCheckpoint struct {
-	Name         string       `json:"name,omitempty"`
+	Name         string       `json:"name"`
 	CreationTime *metav1.Time `json:"creationTime,omitempty"`
 	// Type indicates whether the backup that created this checkpoint was Full or Incremental
 	// +optional
@@ -140,7 +140,8 @@ type VirtualMachineBackupTrackerStatus struct {
 
 	// Checkpoints is an ordered list of retained checkpoints, oldest first.
 	// +optional
-	// +listType=atomic
+	// +listType=map
+	// +listMapKey=name
 	Checkpoints []BackupCheckpoint `json:"checkpoints,omitempty"`
 
 	// +optional
@@ -186,6 +187,8 @@ type VirtualMachineBackupList struct {
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="has(self.pvcName) && self.pvcName != \"\"",message="pvcName is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode != 'Pull' || (has(self.tokenSecretRef) && self.tokenSecretRef != \"\")",message="tokenSecretRef is required when mode is Pull"
+// +kubebuilder:validation:XValidation:rule="!has(self.fromCheckpoint) || (has(self.source.apiGroup) && self.source.apiGroup == 'backup.kubevirt.io')",message="fromCheckpoint is only valid when source is VirtualMachineBackupTracker"
+// +kubebuilder:validation:XValidation:rule="!self.forceFullBackup || (has(self.source.apiGroup) && self.source.apiGroup == 'backup.kubevirt.io')",message="forceFullBackup is only valid when source is VirtualMachineBackupTracker"
 type VirtualMachineBackupSpec struct {
 	// Source specifies the backup source - either a VirtualMachine or a VirtualMachineBackupTracker.
 	// When Kind is VirtualMachine: performs a backup of the specified VM.
@@ -211,6 +214,12 @@ type VirtualMachineBackupSpec struct {
 	// +optional
 	// ForceFullBackup indicates that a full backup is desired
 	ForceFullBackup bool `json:"forceFullBackup,omitempty"`
+	// FromCheckpoint specifies the checkpoint to use as the incremental base.
+	// Must reference a checkpoint name in the VMBT's status.checkpoints list.
+	// If empty, defaults to the latest checkpoint.
+	// Only valid when source.kind is VirtualMachineBackupTracker.
+	// +optional
+	FromCheckpoint *string `json:"fromCheckpoint,omitempty"`
 	// +optional
 	// TokenSecretRef is the name of the secret that
 	// will be used to pull the backup from an associated endpoint
@@ -260,6 +269,9 @@ type VirtualMachineBackupStatus struct {
 	// ExportUID tracks the UID of the associated VMExport for pull-mode backups
 	// used to detect VMExport recreation and re-initiate the export handshake
 	ExportUID *types.UID `json:"exportUID,omitempty"`
+	// FromCheckpoint records which checkpoint was used as the incremental base.
+	// +optional
+	FromCheckpoint *string `json:"fromCheckpoint,omitempty"`
 }
 
 // ConditionType is the const type for Conditions

@@ -9570,6 +9570,13 @@ var CRDsValidation map[string]string = map[string]string{
         forceFullBackup:
           description: ForceFullBackup indicates that a full backup is desired
           type: boolean
+        fromCheckpoint:
+          description: |-
+            FromCheckpoint specifies the checkpoint to use as the incremental base.
+            Must reference a checkpoint name in the VMBT's status.checkpoints list.
+            If empty, defaults to the latest checkpoint.
+            Only valid when source.kind is VirtualMachineBackupTracker.
+          type: string
         mode:
           description: Mode specifies the way the backup output will be recieved
           enum:
@@ -9646,6 +9653,12 @@ var CRDsValidation map[string]string = map[string]string{
       - message: tokenSecretRef is required when mode is Pull
         rule: '!has(self.mode) || self.mode != ''Pull'' || (has(self.tokenSecretRef)
           && self.tokenSecretRef != "")'
+      - message: fromCheckpoint is only valid when source is VirtualMachineBackupTracker
+        rule: '!has(self.fromCheckpoint) || (has(self.source.apiGroup) && self.source.apiGroup
+          == ''backup.kubevirt.io'')'
+      - message: forceFullBackup is only valid when source is VirtualMachineBackupTracker
+        rule: '!self.forceFullBackup || (has(self.source.apiGroup) && self.source.apiGroup
+          == ''backup.kubevirt.io'')'
     status:
       description: VirtualMachineBackupStatus is the status for a VirtualMachineBackup
         resource
@@ -9722,6 +9735,10 @@ var CRDsValidation map[string]string = map[string]string{
           description: |-
             ExportUID tracks the UID of the associated VMExport for pull-mode backups
             used to detect VMExport recreation and re-initiate the export handshake
+          type: string
+        fromCheckpoint:
+          description: FromCheckpoint records which checkpoint was used as the incremental
+            base.
           type: string
         includedVolumes:
           description: IncludedVolumes lists the volumes that were included in the
@@ -9850,6 +9867,8 @@ var CRDsValidation map[string]string = map[string]string{
                   type: string
                 type: array
                 x-kubernetes-list-type: atomic
+            required:
+            - name
             type: object
           type: array
           x-kubernetes-list-type: atomic
@@ -9874,6 +9893,8 @@ var CRDsValidation map[string]string = map[string]string{
                 type: string
               type: array
               x-kubernetes-list-type: atomic
+          required:
+          - name
           type: object
       type: object
   required:

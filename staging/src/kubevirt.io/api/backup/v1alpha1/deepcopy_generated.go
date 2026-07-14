@@ -204,6 +204,11 @@ func (in *VirtualMachineBackupSpec) DeepCopyInto(out *VirtualMachineBackupSpec) 
 		*out = new(string)
 		**out = **in
 	}
+	if in.FromCheckpoint != nil {
+		in, out := &in.FromCheckpoint, &out.FromCheckpoint
+		*out = new(string)
+		**out = **in
+	}
 	if in.TTLDuration != nil {
 		in, out := &in.TTLDuration, &out.TTLDuration
 		*out = new(v1.Duration)
@@ -250,6 +255,11 @@ func (in *VirtualMachineBackupStatus) DeepCopyInto(out *VirtualMachineBackupStat
 	if in.ExportUID != nil {
 		in, out := &in.ExportUID, &out.ExportUID
 		*out = new(types.UID)
+		**out = **in
+	}
+	if in.FromCheckpoint != nil {
+		in, out := &in.FromCheckpoint, &out.FromCheckpoint
+		*out = new(string)
 		**out = **in
 	}
 	return

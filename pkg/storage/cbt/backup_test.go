@@ -209,10 +209,12 @@ var _ = Describe("Backup Controller", func() {
 			Status: &backupv1.VirtualMachineBackupTrackerStatus{},
 		}
 		if checkpointName != "" {
-			tracker.Status.Checkpoints = []backupv1.BackupCheckpoint{{
+			cp := backupv1.BackupCheckpoint{
 				Name:         checkpointName,
 				CreationTime: &metav1.Time{Time: metav1.Now().Time},
-			}}
+			}
+			tracker.Status.Checkpoints = []backupv1.BackupCheckpoint{cp}
+			tracker.Status.LatestCheckpoint = &cp
 		}
 		return tracker
 	}
@@ -466,7 +468,7 @@ var _ = Describe("Backup Controller", func() {
 		Expect(statusUpdated).To(BeTrue())
 	})
 
-	It("should wait when backupTracker is being deleted", func() {
+	It("should fail when backupTracker is being deleted", func() {
 		backupTracker := createBackupTracker(backupTrackerName, vmName, "existing-checkpoint")
 		now := metav1.Now()
 		backupTracker.DeletionTimestamp = &now
@@ -491,16 +493,16 @@ var _ = Describe("Backup Controller", func() {
 			statusUpdated = true
 			updateObj := update.GetObject().(*backupv1.VirtualMachineBackup)
 
-			cond := meta.FindStatusCondition(updateObj.Status.Conditions, string(backupv1.ConditionProgressing))
+			cond := meta.FindStatusCondition(updateObj.Status.Conditions, string(backupv1.ConditionFailed))
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(cond.Reason).To(Equal(backupv1.ReasonInitializing))
-			Expect(cond.Message).To(ContainSubstring(fmt.Sprintf(trackerDeletingMsg, backupTrackerName)))
+			Expect(cond.Reason).To(Equal("TrackerDeleting"))
+			Expect(cond.Message).To(ContainSubstring(backupTrackerName))
 			return true, updateObj, nil
 		})
 
 		err := controller.execute(types.NamespacedName{Namespace: testNamespace, Name: backupName}.String())
-		Expect(err).ToNot(HaveOccurred())
+		Expect(err).To(HaveOccurred())
 		Expect(statusUpdated).To(BeTrue())
 	})
 
@@ -1370,6 +1372,107 @@ var _ = Describe("Backup Controller", func() {
 
 	})
 
+	Context("startBackup with FromCheckpoint", func() {
+		It("should use specified FromCheckpoint instead of latest", func() {
+			cp1 := backupv1.BackupCheckpoint{Name: "cp-1"}
+			cp2 := backupv1.BackupCheckpoint{Name: "cp-2"}
+			cp3 := backupv1.BackupCheckpoint{Name: "cp-3"}
+			backupTracker := createBackupTracker(backupTrackerName, vmName, "")
+			backupTracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
+				Checkpoints:      []backupv1.BackupCheckpoint{cp1, cp2, cp3},
+				LatestCheckpoint: &cp3,
+			}
+			controller.backupTrackerInformer.GetStore().Add(backupTracker)
+
+			backup := createBackupWithTracker(backupName, vmName, pvcName)
+			backup.Spec.FromCheckpoint = pointer.P("cp-2")
+			backup.Finalizers = []string{backupv1.VirtualMachineBackupFinalizer}
+
+			vmi := createVMIWithPVCAttached()
+			controller.vmiStore.Add(vmi)
+
+			vm := createVM(vmName)
+			controller.vmStore.Add(vm)
+
+			pvc := createPVC(pvcName)
+			controller.pvcStore.Add(pvc)
+
+			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+				patchAction := action.(testing.PatchAction)
+				if patchAction.GetSubresource() == "" {
+					updatedTracker := backupTracker.DeepCopy()
+					updatedTracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+					return true, updatedTracker, nil
+				}
+				return false, nil, nil
+			})
+
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtClient.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace)).AnyTimes()
+
+			var capturedOptions backupv1.BackupOptions
+			vmiInterface.EXPECT().
+				Backup(gomock.Any(), vmName, gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ string, opts *backupv1.BackupOptions) error {
+					capturedOptions = *opts
+					return nil
+				})
+			vmiInterface.EXPECT().
+				Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
+				Return(vmi, nil)
+
+			err := controller.startBackup(backup, vmi, backupTracker)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(capturedOptions.Incremental).ToNot(BeNil())
+			Expect(*capturedOptions.Incremental).To(Equal("cp-2"))
+			Expect(backup.Status.Type).To(Equal(backupv1.Incremental))
+			Expect(backup.Status.FromCheckpoint).ToNot(BeNil())
+			Expect(*backup.Status.FromCheckpoint).To(Equal("cp-2"))
+		})
+
+		It("should fail when FromCheckpoint references unknown checkpoint", func() {
+			cp1 := backupv1.BackupCheckpoint{Name: "cp-1"}
+			backupTracker := createBackupTracker(backupTrackerName, vmName, "")
+			backupTracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
+				Checkpoints:      []backupv1.BackupCheckpoint{cp1},
+				LatestCheckpoint: &cp1,
+			}
+			controller.backupTrackerInformer.GetStore().Add(backupTracker)
+
+			backup := createBackupWithTracker(backupName, vmName, pvcName)
+			backup.Spec.FromCheckpoint = pointer.P("cp-nonexistent")
+			backup.Finalizers = []string{backupv1.VirtualMachineBackupFinalizer}
+			backup.Status = &backupv1.VirtualMachineBackupStatus{}
+
+			vmi := createVMIWithPVCAttached()
+			controller.vmiStore.Add(vmi)
+
+			vm := createVM(vmName)
+			controller.vmStore.Add(vm)
+
+			pvc := createPVC(pvcName)
+			controller.pvcStore.Add(pvc)
+
+			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+				patchAction := action.(testing.PatchAction)
+				if patchAction.GetSubresource() == "" {
+					updatedTracker := backupTracker.DeepCopy()
+					updatedTracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+					return true, updatedTracker, nil
+				}
+				return false, nil, nil
+			})
+
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtClient.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace)).AnyTimes()
+
+			err := controller.startBackup(backup, vmi, backupTracker)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("cp-nonexistent"))
+			Expect(err.Error()).To(ContainSubstring("not found"))
+		})
+	})
+
 	Context("updateSourceBackupInProgress", func() {
 		It("should fail when another backup is already in progress", func() {
 			vmi := createVMI()
@@ -2198,6 +2301,96 @@ var _ = Describe("Backup Controller", func() {
 			_, err := syncBackup(backup)
 			Expect(err).To(MatchError(errCleanupPending))
 			Expect(deleteCalled).To(BeTrue())
+		})
+	})
+
+	Context("resolveFromCheckpoint", func() {
+		var tracker *backupv1.VirtualMachineBackupTracker
+
+		BeforeEach(func() {
+			tracker = &backupv1.VirtualMachineBackupTracker{
+				Status: &backupv1.VirtualMachineBackupTrackerStatus{
+					Checkpoints: []backupv1.BackupCheckpoint{
+						{Name: "cp-1"},
+						{Name: "cp-2"},
+						{Name: "cp-3"},
+					},
+					LatestCheckpoint: &backupv1.BackupCheckpoint{Name: "cp-3"},
+				},
+			}
+		})
+
+		It("should return latest when FromCheckpoint is nil", func() {
+			backup := &backupv1.VirtualMachineBackup{
+				Spec: backupv1.VirtualMachineBackupSpec{},
+			}
+			cp, err := resolveFromCheckpoint(backup, tracker)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cp).ToNot(BeNil())
+			Expect(cp.Name).To(Equal("cp-3"))
+		})
+
+		It("should return the matching checkpoint", func() {
+			backup := &backupv1.VirtualMachineBackup{
+				Spec: backupv1.VirtualMachineBackupSpec{
+					FromCheckpoint: pointer.P("cp-1"),
+				},
+			}
+			cp, err := resolveFromCheckpoint(backup, tracker)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cp).ToNot(BeNil())
+			Expect(cp.Name).To(Equal("cp-1"))
+		})
+
+		It("should return the middle checkpoint when specified", func() {
+			backup := &backupv1.VirtualMachineBackup{
+				Spec: backupv1.VirtualMachineBackupSpec{
+					FromCheckpoint: pointer.P("cp-2"),
+				},
+			}
+			cp, err := resolveFromCheckpoint(backup, tracker)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cp).ToNot(BeNil())
+			Expect(cp.Name).To(Equal("cp-2"))
+		})
+
+		It("should return error when checkpoint is not found", func() {
+			backup := &backupv1.VirtualMachineBackup{
+				Spec: backupv1.VirtualMachineBackupSpec{
+					FromCheckpoint: pointer.P("cp-gone"),
+				},
+			}
+			cp, err := resolveFromCheckpoint(backup, tracker)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("cp-gone"))
+			Expect(err.Error()).To(ContainSubstring("not found"))
+			Expect(cp).To(BeNil())
+		})
+	})
+
+	Context("checkPrerequisites", func() {
+		It("should block when tracker needs pruning", func() {
+			backupTracker := createBackupTracker(backupTrackerName, vmName, "existing-checkpoint")
+			backupTracker.Spec.RetainCheckpoints = pointer.P(int32(1))
+			backupTracker.Status.Checkpoints = []backupv1.BackupCheckpoint{
+				{Name: "cp-old"},
+				{Name: "cp-current"},
+			}
+			backupTracker.Status.LatestCheckpoint = &backupTracker.Status.Checkpoints[1]
+			controller.backupTrackerInformer.GetStore().Add(backupTracker)
+
+			backup := createBackupWithTracker(backupName, vmName, pvcName)
+
+			vm := createVM(vmName)
+			controller.vmStore.Add(vm)
+
+			vmi := createVMI()
+			controller.vmiStore.Add(vmi)
+
+			msg, err := controller.checkPrerequisites(backup, vmi, true, backupTracker, vmName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(msg).To(ContainSubstring("pruning"))
+			Expect(msg).To(ContainSubstring(backupTrackerName))
 		})
 	})
 })

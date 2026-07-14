@@ -406,6 +406,18 @@ func isIncrementalBackup(backup *backupv1.VirtualMachineBackup, backupTracker *b
 		backupTracker != nil && backupTracker.Status != nil && backupTracker.Status.LatestCheckpoint != nil
 }
 
+func resolveFromCheckpoint(backup *backupv1.VirtualMachineBackup, tracker *backupv1.VirtualMachineBackupTracker) (*backupv1.BackupCheckpoint, error) {
+	if backup.Spec.FromCheckpoint != nil {
+		for i := range tracker.Status.Checkpoints {
+			if tracker.Status.Checkpoints[i].Name == *backup.Spec.FromCheckpoint {
+				return &tracker.Status.Checkpoints[i], nil
+			}
+		}
+		return nil, fmt.Errorf("checkpoint %q not found in tracker %s/%s", *backup.Spec.FromCheckpoint, tracker.Namespace, tracker.Name)
+	}
+	return tracker.Status.LatestCheckpoint, nil
+}
+
 func (ctrl *VMBackupController) execute(key string) error {
 	logger := log.Log.With("VirtualMachineBackup", key)
 	logger.V(3).Infof("Processing VirtualMachineBackup %s", key)
@@ -553,7 +565,8 @@ func (ctrl *VMBackupController) checkPrerequisites(backup *backupv1.VirtualMachi
 		return reason, nil
 	}
 	if isTrackerDeleting(backupTracker) {
-		return fmt.Sprintf(trackerDeletingMsg, backupTracker.Name), nil
+		ctrl.setFailed(backup, "TrackerDeleting", fmt.Sprintf("cannot start backup: tracker %s is being deleted", backupTracker.Name))
+		return "", fmt.Errorf("tracker %s is being deleted, backup failed", backupTracker.Name)
 	}
 	if trackerNeedsCheckpointRedefinition(backupTracker) {
 		return fmt.Sprintf(trackerCheckpointRedefinitionPending, backupTracker.Name), nil
@@ -611,7 +624,6 @@ func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachi
 		}
 	}
 
-	log.Log.Object(backup).Info("Backup completed, performing cleanup")
 	done, err := ctrl.cleanupVMIState(backup, vmi)
 	if err != nil {
 		return err
@@ -620,6 +632,7 @@ func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachi
 		return fmt.Errorf("cleanup not complete for finished backup: %w", errCleanupPending)
 	}
 
+	log.Log.Object(backup).Info("Backup completed, cleanup finished")
 	ctrl.resolveCompletion(backup, backupStatus)
 
 	if backupTracker != nil && !backupStatus.Failed {
@@ -680,9 +693,15 @@ func (ctrl *VMBackupController) startBackup(backup *backupv1.VirtualMachineBacku
 	log.Log.Object(backup).Infof("Starting backup for VMI %s with mode %s", vmi.Name, backupOptions.Mode)
 	backupType := backupv1.Full
 	if isIncrementalBackup(backup, backupTracker) {
-		backupOptions.Incremental = pointer.P(backupTracker.Status.LatestCheckpoint.Name)
+		cp, err := resolveFromCheckpoint(backup, backupTracker)
+		if err != nil {
+			ctrl.setFailed(backup, "CheckpointNotFound", err.Error())
+			return err
+		}
+		backupOptions.Incremental = pointer.P(cp.Name)
 		backupType = backupv1.Incremental
-		log.Log.Object(backup).Infof("Setting incremental backup from checkpoint: %s", *backupOptions.Incremental)
+		backup.Status.FromCheckpoint = pointer.P(cp.Name)
+		log.Log.Object(backup).Infof("Setting incremental backup from checkpoint: %s", cp.Name)
 	}
 
 	if err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, &backupOptions); err != nil {

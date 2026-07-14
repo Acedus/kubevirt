@@ -20684,12 +20684,16 @@
    },
    "v1alpha1.BackupCheckpoint": {
     "type": "object",
+    "required": [
+     "name"
+    ],
     "properties": {
      "creationTime": {
       "$ref": "#/definitions/k8s.io.apimachinery.pkg.apis.meta.v1.Time"
      },
      "name": {
-      "type": "string"
+      "type": "string",
+      "default": ""
      },
      "type": {
       "description": "Type indicates whether the backup that created this checkpoint was Full or Incremental",

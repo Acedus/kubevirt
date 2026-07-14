@@ -36,6 +36,7 @@ import (
 	backupv1 "kubevirt.io/api/backup/v1alpha1"
 	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
+	kubevirtfake "kubevirt.io/client-go/kubevirt/fake"
 
 	"kubevirt.io/kubevirt/pkg/pointer"
 	"kubevirt.io/kubevirt/pkg/testutils"
@@ -251,6 +252,142 @@ var _ = Describe("Validating VirtualMachineBackup Admitter", func() {
 			resp := admitter.Admit(context.Background(), ar)
 			Expect(resp.Allowed).To(BeTrue())
 			Expect(resp.Result).To(BeNil())
+		})
+	})
+
+	Context("FromCheckpoint validation", func() {
+		const (
+			trackerName    = "test-tracker"
+			trackerGroup   = "backup.kubevirt.io"
+			checkpointName = "cp-1"
+		)
+
+		var (
+			kubevirtCli *kubevirtfake.Clientset
+			trackerRef  corev1.TypedLocalObjectReference
+		)
+
+		BeforeEach(func() {
+			kubevirtCli = kubevirtfake.NewSimpleClientset()
+			ctrl := gomock.NewController(GinkgoT())
+			mockClient := kubecli.NewMockKubevirtClient(ctrl)
+			mockClient.EXPECT().VirtualMachineBackupTracker("default").
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers("default")).
+				AnyTimes()
+			admitter.Client = mockClient
+			trackerRef = corev1.TypedLocalObjectReference{
+				APIGroup: pointer.P(trackerGroup),
+				Kind:     "VirtualMachineBackupTracker",
+				Name:     trackerName,
+			}
+		})
+
+		It("should allow when fromCheckpoint is nil", func() {
+			backup := &backupv1.VirtualMachineBackup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-backup", Namespace: "default"},
+				Spec: backupv1.VirtualMachineBackupSpec{
+					Source:  trackerRef,
+					PvcName: pointer.P("test-pvc"),
+				},
+			}
+
+			ar := createBackupAdmissionReview(backup)
+			resp := admitter.Admit(context.Background(), ar)
+			Expect(resp.Allowed).To(BeTrue())
+		})
+
+		It("should reject fromCheckpoint with non-tracker source", func() {
+			backup := &backupv1.VirtualMachineBackup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-backup", Namespace: "default"},
+				Spec: backupv1.VirtualMachineBackupSpec{
+					Source:         sourceRef,
+					PvcName:        pointer.P("test-pvc"),
+					FromCheckpoint: pointer.P(checkpointName),
+				},
+			}
+
+			ar := createBackupAdmissionReview(backup)
+			resp := admitter.Admit(context.Background(), ar)
+			Expect(resp.Allowed).To(BeFalse())
+			Expect(resp.Result.Details.Causes).To(HaveLen(1))
+			Expect(resp.Result.Details.Causes[0].Field).To(Equal("spec.fromCheckpoint"))
+			Expect(resp.Result.Details.Causes[0].Message).To(ContainSubstring("only valid when source references a VirtualMachineBackupTracker"))
+		})
+
+		It("should reject fromCheckpoint referencing non-existent checkpoint", func() {
+			tracker := &backupv1.VirtualMachineBackupTracker{
+				ObjectMeta: metav1.ObjectMeta{Name: trackerName, Namespace: "default"},
+				Status: &backupv1.VirtualMachineBackupTrackerStatus{
+					Checkpoints: []backupv1.BackupCheckpoint{
+						{Name: "other-cp"},
+					},
+				},
+			}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers("default").Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			backup := &backupv1.VirtualMachineBackup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-backup", Namespace: "default"},
+				Spec: backupv1.VirtualMachineBackupSpec{
+					Source:         trackerRef,
+					PvcName:        pointer.P("test-pvc"),
+					FromCheckpoint: pointer.P(checkpointName),
+				},
+			}
+
+			ar := createBackupAdmissionReview(backup)
+			resp := admitter.Admit(context.Background(), ar)
+			Expect(resp.Allowed).To(BeFalse())
+			Expect(resp.Result.Details.Causes).To(HaveLen(1))
+			Expect(resp.Result.Details.Causes[0].Field).To(Equal("spec.fromCheckpoint"))
+			Expect(resp.Result.Details.Causes[0].Message).To(ContainSubstring("does not exist"))
+		})
+
+		It("should reject fromCheckpoint when tracker does not exist", func() {
+			backup := &backupv1.VirtualMachineBackup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-backup", Namespace: "default"},
+				Spec: backupv1.VirtualMachineBackupSpec{
+					Source:         trackerRef,
+					PvcName:        pointer.P("test-pvc"),
+					FromCheckpoint: pointer.P(checkpointName),
+				},
+			}
+
+			ar := createBackupAdmissionReview(backup)
+			resp := admitter.Admit(context.Background(), ar)
+			Expect(resp.Allowed).To(BeFalse())
+			Expect(resp.Result.Details.Causes).To(HaveLen(1))
+			Expect(resp.Result.Details.Causes[0].Field).To(Equal("spec.fromCheckpoint"))
+			Expect(resp.Result.Details.Causes[0].Message).To(ContainSubstring("failed to look up"))
+		})
+
+		It("should allow fromCheckpoint referencing valid checkpoint", func() {
+			tracker := &backupv1.VirtualMachineBackupTracker{
+				ObjectMeta: metav1.ObjectMeta{Name: trackerName, Namespace: "default"},
+				Status: &backupv1.VirtualMachineBackupTrackerStatus{
+					Checkpoints: []backupv1.BackupCheckpoint{
+						{Name: checkpointName},
+						{Name: "cp-2"},
+					},
+				},
+			}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers("default").Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			backup := &backupv1.VirtualMachineBackup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-backup", Namespace: "default"},
+				Spec: backupv1.VirtualMachineBackupSpec{
+					Source:         trackerRef,
+					PvcName:        pointer.P("test-pvc"),
+					FromCheckpoint: pointer.P(checkpointName),
+				},
+			}
+
+			ar := createBackupAdmissionReview(backup)
+			resp := admitter.Admit(context.Background(), ar)
+			Expect(resp.Allowed).To(BeTrue())
 		})
 	})
 

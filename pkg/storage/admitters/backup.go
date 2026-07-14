@@ -86,7 +86,50 @@ func (admitter *VMBackupAdmitter) Admit(ctx context.Context, ar *admissionv1.Adm
 		return webhookutils.ToAdmissionResponse(causes)
 	}
 
+	if causes := admitter.validateFromCheckpoint(ctx, vmBackup, ar.Request.Namespace); len(causes) > 0 {
+		return webhookutils.ToAdmissionResponse(causes)
+	}
+
 	return &admissionv1.AdmissionResponse{Allowed: true}
+}
+
+func (admitter *VMBackupAdmitter) validateFromCheckpoint(ctx context.Context, vmBackup *backupv1.VirtualMachineBackup, namespace string) []metav1.StatusCause {
+	if vmBackup.Spec.FromCheckpoint == nil {
+		return nil
+	}
+
+	fromCheckpointField := k8sfield.NewPath("spec", "fromCheckpoint")
+
+	if vmBackup.Spec.Source.Kind != "VirtualMachineBackupTracker" {
+		return []metav1.StatusCause{{
+			Type:    metav1.CauseTypeFieldValueInvalid,
+			Message: "fromCheckpoint is only valid when source references a VirtualMachineBackupTracker",
+			Field:   fromCheckpointField.String(),
+		}}
+	}
+
+	tracker, err := admitter.Client.VirtualMachineBackupTracker(namespace).Get(ctx, vmBackup.Spec.Source.Name, metav1.GetOptions{})
+	if err != nil {
+		return []metav1.StatusCause{{
+			Type:    metav1.CauseTypeFieldValueNotFound,
+			Message: fmt.Sprintf("failed to look up VirtualMachineBackupTracker %q: %v", vmBackup.Spec.Source.Name, err),
+			Field:   fromCheckpointField.String(),
+		}}
+	}
+
+	if tracker.Status != nil {
+		for _, cp := range tracker.Status.Checkpoints {
+			if cp.Name == *vmBackup.Spec.FromCheckpoint {
+				return nil
+			}
+		}
+	}
+
+	return []metav1.StatusCause{{
+		Type:    metav1.CauseTypeFieldValueNotFound,
+		Message: fmt.Sprintf("fromCheckpoint %q does not exist in VirtualMachineBackupTracker %q", *vmBackup.Spec.FromCheckpoint, vmBackup.Spec.Source.Name),
+		Field:   fromCheckpointField.String(),
+	}}
 }
 
 func (admitter *VMBackupAdmitter) validateSingleBackup(vmBackup *backupv1.VirtualMachineBackup, namespace string) ([]metav1.StatusCause, error) {

@@ -317,6 +317,8 @@ var _ = Describe("VMBackupController", func() {
 			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
 			// Checkpoint should still exist
 			Expect(updated.Status.Checkpoints).ToNot(BeEmpty())
+			Expect(updated.Status.LatestCheckpoint).ToNot(BeNil())
+			Expect(updated.Status.LatestCheckpoint.Name).To(Equal("checkpoint-1"))
 		})
 
 		It("should clear checkpoint on permanent error (HTTP 422)", func() {
@@ -350,6 +352,7 @@ var _ = Describe("VMBackupController", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
 			Expect(updated.Status.Checkpoints).To(BeEmpty())
+			Expect(updated.Status.LatestCheckpoint).To(BeNil())
 
 			// Verify event was emitted
 			Eventually(recorder.Events).Should(Receive(ContainSubstring("CheckpointRedefinitionFailed")))
@@ -421,6 +424,8 @@ var _ = Describe("VMBackupController", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
 			Expect(updated.Status.Checkpoints).To(HaveLen(3))
+			Expect(updated.Status.LatestCheckpoint).ToNot(BeNil())
+			Expect(updated.Status.LatestCheckpoint.Name).To(Equal("cp-3"))
 		})
 
 		It("should truncate chain and delete orphans when middle checkpoint is invalid", func() {
@@ -469,6 +474,8 @@ var _ = Describe("VMBackupController", func() {
 			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
 			Expect(updated.Status.Checkpoints).To(HaveLen(1))
 			Expect(updated.Status.Checkpoints[0].Name).To(Equal("cp-1"))
+			Expect(updated.Status.LatestCheckpoint).ToNot(BeNil())
+			Expect(updated.Status.LatestCheckpoint.Name).To(Equal("cp-1"))
 
 			Eventually(recorder.Events).Should(Receive(ContainSubstring("CheckpointRedefinitionFailed")))
 		})
@@ -514,6 +521,7 @@ var _ = Describe("VMBackupController", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
 			Expect(updated.Status.Checkpoints).To(BeEmpty())
+			Expect(updated.Status.LatestCheckpoint).To(BeNil())
 
 			Eventually(recorder.Events).Should(Receive(ContainSubstring("CheckpointRedefinitionFailed")))
 		})
@@ -797,6 +805,8 @@ var _ = Describe("VMBackupController", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tracker.Status.Checkpoints).To(HaveLen(1))
 			Expect(tracker.Status.Checkpoints[0].Name).To(Equal("cp-latest"))
+			Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil())
+			Expect(tracker.Status.LatestCheckpoint.Name).To(Equal("cp-latest"))
 		})
 
 		It("should persist partial progress on failure", func() {
@@ -952,10 +962,10 @@ func createTracker(name, vmName string, hasCheckpoint bool, redefinitionRequired
 		},
 	}
 	if hasCheckpoint {
+		cp := backupv1.BackupCheckpoint{Name: "checkpoint-1"}
 		tracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
-			Checkpoints: []backupv1.BackupCheckpoint{{
-				Name: "checkpoint-1",
-			}},
+			Checkpoints:                    []backupv1.BackupCheckpoint{cp},
+			LatestCheckpoint:               &cp,
 			CheckpointRedefinitionRequired: pointer.P(redefinitionRequired),
 		}
 	}
