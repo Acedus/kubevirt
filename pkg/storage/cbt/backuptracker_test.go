@@ -133,6 +133,10 @@ var _ = Describe("VMBackupController", func() {
 		var (
 			ctrl           *VMBackupController
 			backupInformer cache.SharedIndexInformer
+			vmiInformer    cache.SharedIndexInformer
+			vmInformer     cache.SharedIndexInformer
+			vmiInterface   *kubecli.MockVirtualMachineInstanceInterface
+			rec            *record.FakeRecorder
 		)
 
 		BeforeEach(func() {
@@ -140,15 +144,23 @@ var _ = Describe("VMBackupController", func() {
 				&backupv1.VirtualMachineBackup{},
 				controller.GetVirtualMachineBackupInformerIndexers(),
 			)
+			vmiInformer, _ = testutils.NewFakeInformerFor(&v1.VirtualMachineInstance{})
+			vmInformer, _ = testutils.NewFakeInformerFor(&v1.VirtualMachine{})
+			vmiInterface = kubecli.NewMockVirtualMachineInstanceInterface(mockCtrl)
+			rec = record.NewFakeRecorder(100)
+			rec.IncludeObject = true
 
 			ctrl = &VMBackupController{
 				client:         virtClient,
 				backupInformer: backupInformer,
+				vmiStore:       vmiInformer.GetStore(),
+				vmStore:        vmInformer.GetStore(),
+				recorder:       rec,
 			}
 		})
 
-		It("should remove finalizer when no backups exist", func() {
-			tracker := createTracker("tracker1", "test-vmi", true, false)
+		It("should remove finalizer when no backups exist and no checkpoints", func() {
+			tracker := createTracker("tracker1", "test-vmi", false, false)
 			tracker.DeletionTimestamp = new(metav1.Now())
 			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
 			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
@@ -169,7 +181,7 @@ var _ = Describe("VMBackupController", func() {
 
 		DescribeTable("should remove finalizer only when all backups are terminal",
 			func(backup *backupv1.VirtualMachineBackup, shouldRemove bool) {
-				tracker := createTracker("tracker1", "test-vmi", true, false)
+				tracker := createTracker("tracker1", "test-vmi", false, false)
 				tracker.DeletionTimestamp = new(metav1.Now())
 				tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
 				_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
@@ -237,6 +249,322 @@ var _ = Describe("VMBackupController", func() {
 					},
 				}, true),
 		)
+
+		It("should clear checkpoints and remove finalizer when source VM is permanently deleted", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, false)
+			tracker.DeletionTimestamp = new(metav1.Now())
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			err = ctrl.handleTrackerDeletion(tracker)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tracker.Status.Checkpoints).To(BeNil())
+			Expect(tracker.Status.LatestCheckpoint).To(BeNil())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Finalizers).To(BeEmpty())
+		})
+
+		It("should requeue when VMI is gone but VM still exists (stopped)", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, false)
+			tracker.DeletionTimestamp = new(metav1.Now())
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVM := &v1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmi", Namespace: testNamespace},
+			}
+			Expect(vmInformer.GetStore().Add(testVM)).To(Succeed())
+
+			err = ctrl.handleTrackerDeletion(tracker)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("VM exists but stopped"))
+			Expect(tracker.Status.Checkpoints).ToNot(BeEmpty())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Finalizers).To(ContainElement(backupv1.VirtualMachineBackupTrackerFinalizer))
+		})
+
+		It("should return error when VM is not running", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, false)
+			tracker.DeletionTimestamp = new(metav1.Now())
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			testVMI.Status.Phase = v1.Scheduled
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			err = ctrl.handleTrackerDeletion(tracker)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not running"))
+			Expect(tracker.Status.Checkpoints).ToNot(BeEmpty())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Finalizers).To(ContainElement(backupv1.VirtualMachineBackupTrackerFinalizer))
+		})
+
+		It("should force-delete when VM stopped and default timeout exceeded", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, false)
+			pastTime := metav1.NewTime(time.Now().Add(-25 * time.Hour))
+			tracker.DeletionTimestamp = &pastTime
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVM := &v1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmi", Namespace: testNamespace},
+			}
+			Expect(vmInformer.GetStore().Add(testVM)).To(Succeed())
+
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			err = ctrl.handleTrackerDeletion(tracker)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tracker.Status.Checkpoints).To(BeNil())
+			Expect(tracker.Status.LatestCheckpoint).To(BeNil())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Finalizers).To(BeEmpty())
+		})
+
+		It("should force-delete when VMI not running and custom annotation timeout exceeded", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, false)
+			pastTime := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+			tracker.DeletionTimestamp = &pastTime
+			tracker.Annotations = map[string]string{ForceDeleteAfterAnnotation: "1h"}
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			testVMI.Status.Phase = v1.Scheduled
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			err = ctrl.handleTrackerDeletion(tracker)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tracker.Status.Checkpoints).To(BeNil())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Finalizers).To(BeEmpty())
+		})
+
+		It("should requeue when VMI not running and custom annotation timeout not exceeded", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, false)
+			pastTime := metav1.NewTime(time.Now().Add(-30 * time.Minute))
+			tracker.DeletionTimestamp = &pastTime
+			tracker.Annotations = map[string]string{ForceDeleteAfterAnnotation: "1h"}
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			testVMI.Status.Phase = v1.Scheduled
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			err = ctrl.handleTrackerDeletion(tracker)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not running"))
+			Expect(tracker.Status.Checkpoints).ToNot(BeEmpty())
+		})
+
+		It("should use default timeout when annotation has invalid value", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, false)
+			pastTime := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+			tracker.DeletionTimestamp = &pastTime
+			tracker.Annotations = map[string]string{ForceDeleteAfterAnnotation: "not-a-duration"}
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVM := &v1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmi", Namespace: testNamespace},
+			}
+			Expect(vmInformer.GetStore().Add(testVM)).To(Succeed())
+
+			err = ctrl.handleTrackerDeletion(tracker)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("VM exists but stopped"))
+			Expect(tracker.Status.Checkpoints).ToNot(BeEmpty())
+		})
+
+		It("should clear checkpoints and remove finalizer when CBT is disabled", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, false)
+			tracker.DeletionTimestamp = new(metav1.Now())
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			testVMI.Status.Phase = v1.Running
+			testVMI.Status.ChangedBlockTracking = &v1.ChangedBlockTrackingStatus{
+				State: v1.ChangedBlockTrackingDisabled,
+			}
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			err = ctrl.handleTrackerDeletion(tracker)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tracker.Status.Checkpoints).To(BeNil())
+			Expect(tracker.Status.LatestCheckpoint).To(BeNil())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Finalizers).To(BeEmpty())
+		})
+
+		It("should delete all checkpoints and remove finalizer when VM running and CBT enabled", func() {
+			tracker := createTracker("tracker1", "test-vmi", false, false)
+			tracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
+				Checkpoints: []backupv1.BackupCheckpoint{
+					{Name: "cp-1"},
+					{Name: "cp-2"},
+					{Name: "cp-3"},
+				},
+			}
+			tracker.Status.LatestCheckpoint = &tracker.Status.Checkpoints[2]
+			tracker.DeletionTimestamp = new(metav1.Now())
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			testVMI.Status.Phase = v1.Running
+			testVMI.Status.ChangedBlockTracking = &v1.ChangedBlockTrackingStatus{
+				State: v1.ChangedBlockTrackingEnabled,
+			}
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface).Times(3)
+			vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-1").Return(nil)
+			vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-2").Return(nil)
+			vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-3").Return(nil)
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			err = ctrl.handleTrackerDeletion(tracker)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tracker.Status.Checkpoints).To(BeNil())
+			Expect(tracker.Status.LatestCheckpoint).To(BeNil())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Finalizers).To(BeEmpty())
+
+			Eventually(rec.Events).Should(Receive(ContainSubstring("TrackerDeletionCleanup")))
+		})
+
+		It("should requeue with only failed checkpoints when some DeleteCheckpoint calls fail", func() {
+			tracker := createTracker("tracker1", "test-vmi", false, false)
+			tracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
+				Checkpoints: []backupv1.BackupCheckpoint{
+					{Name: "cp-1"},
+					{Name: "cp-2"},
+					{Name: "cp-3"},
+				},
+			}
+			tracker.Status.LatestCheckpoint = &tracker.Status.Checkpoints[2]
+			tracker.DeletionTimestamp = new(metav1.Now())
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			testVMI.Status.Phase = v1.Running
+			testVMI.Status.ChangedBlockTracking = &v1.ChangedBlockTrackingStatus{
+				State: v1.ChangedBlockTrackingEnabled,
+			}
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface).Times(3)
+			vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-1").Return(nil)
+			vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-2").Return(fmt.Errorf("rpc error"))
+			vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-3").Return(nil)
+
+			err = ctrl.handleTrackerDeletion(tracker)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to delete 1 checkpoints"))
+			Expect(tracker.Status.Checkpoints).To(HaveLen(1))
+			Expect(tracker.Status.Checkpoints[0].Name).To(Equal("cp-2"))
+			Expect(tracker.Status.LatestCheckpoint).ToNot(BeNil())
+			Expect(tracker.Status.LatestCheckpoint.Name).To(Equal("cp-2"))
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Finalizers).To(ContainElement(backupv1.VirtualMachineBackupTrackerFinalizer))
+
+			Eventually(rec.Events).Should(Receive(ContainSubstring("TrackerDeletionCleanup")))
+			Eventually(rec.Events).Should(Receive(ContainSubstring("TrackerDeletionCleanupPartial")))
+		})
+
+		It("should requeue with all checkpoints when all DeleteCheckpoint calls fail", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, false)
+			tracker.DeletionTimestamp = new(metav1.Now())
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			testVMI.Status.Phase = v1.Running
+			testVMI.Status.ChangedBlockTracking = &v1.ChangedBlockTrackingStatus{
+				State: v1.ChangedBlockTrackingEnabled,
+			}
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface)
+			vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "checkpoint-1").
+				Return(fmt.Errorf("rpc error"))
+
+			err = ctrl.handleTrackerDeletion(tracker)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to delete 1 checkpoints"))
+			Expect(tracker.Status.Checkpoints).To(HaveLen(1))
+			Expect(tracker.Status.Checkpoints[0].Name).To(Equal("checkpoint-1"))
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Finalizers).To(ContainElement(backupv1.VirtualMachineBackupTrackerFinalizer))
+
+			Eventually(rec.Events).Should(Receive(ContainSubstring("TrackerDeletionCleanup")))
+			Eventually(rec.Events).Should(Receive(ContainSubstring("TrackerDeletionCleanupPartial")))
+		})
 	})
 
 	Context("executeTracker", func() {
@@ -245,6 +573,7 @@ var _ = Describe("VMBackupController", func() {
 			trackerInformer cache.SharedIndexInformer
 			backupInformer  cache.SharedIndexInformer
 			vmiInformer     cache.SharedIndexInformer
+			vmInformer      cache.SharedIndexInformer
 			recorder        *record.FakeRecorder
 			vmiInterface    *kubecli.MockVirtualMachineInstanceInterface
 		)
@@ -259,6 +588,7 @@ var _ = Describe("VMBackupController", func() {
 				controller.GetVirtualMachineBackupInformerIndexers(),
 			)
 			vmiInformer, _ = testutils.NewFakeInformerFor(&v1.VirtualMachineInstance{})
+			vmInformer, _ = testutils.NewFakeInformerFor(&v1.VirtualMachine{})
 			recorder = record.NewFakeRecorder(100)
 			recorder.IncludeObject = true
 			vmiInterface = kubecli.NewMockVirtualMachineInstanceInterface(mockCtrl)
@@ -268,6 +598,7 @@ var _ = Describe("VMBackupController", func() {
 				backupTrackerInformer: trackerInformer,
 				backupInformer:        backupInformer,
 				vmiStore:              vmiInformer.GetStore(),
+				vmStore:               vmInformer.GetStore(),
 				recorder:              recorder,
 			}
 		})
@@ -598,6 +929,70 @@ var _ = Describe("VMBackupController", func() {
 
 			Consistently(recorder.Events).ShouldNot(Receive())
 		})
+
+		It("should delete checkpoints and update status on tracker deletion with VM running and CBT enabled", func() {
+			tracker := createTracker("tracker1", "test-vmi", false, false)
+			tracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
+				Checkpoints: []backupv1.BackupCheckpoint{
+					{Name: "cp-1"},
+					{Name: "cp-2"},
+				},
+			}
+			tracker.Status.LatestCheckpoint = &tracker.Status.Checkpoints[1]
+			tracker.DeletionTimestamp = new(metav1.Now())
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			testVMI.Status.Phase = v1.Running
+			testVMI.Status.ChangedBlockTracking = &v1.ChangedBlockTrackingStatus{
+				State: v1.ChangedBlockTrackingEnabled,
+			}
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface).Times(2)
+			vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-1").Return(nil)
+			vmiInterface.EXPECT().DeleteCheckpoint(gomock.Any(), "test-vmi", "cp-2").Return(nil)
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace)).Times(2)
+
+			err = ctrl.executeTracker(testNamespace + "/tracker1")
+			Expect(err).ToNot(HaveOccurred())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.Checkpoints).To(BeNil())
+			Expect(updated.Status.LatestCheckpoint).To(BeNil())
+			Expect(updated.Finalizers).To(BeEmpty())
+		})
+
+		It("should requeue deletion when VM is not running", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, false)
+			tracker.DeletionTimestamp = new(metav1.Now())
+			tracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			testVMI.Status.Phase = v1.Scheduled
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			err = ctrl.executeTracker(testNamespace + "/tracker1")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not running"))
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.Checkpoints).ToNot(BeEmpty())
+			Expect(updated.Finalizers).To(ContainElement(backupv1.VirtualMachineBackupTrackerFinalizer))
+		})
 	})
 
 	Context("updateBackupTracker", func() {
@@ -616,7 +1011,7 @@ var _ = Describe("VMBackupController", func() {
 			backupStatus := &v1.VirtualMachineInstanceBackupStatus{
 				CheckpointName: new("cp-1"),
 			}
-			err := ctrl.updateBackupTracker(testNamespace, nil, backupv1.Full, backupStatus)
+			err := ctrl.updateBackupTracker(testNamespace, nil, backupv1.Full, backupStatus, false)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -635,7 +1030,7 @@ var _ = Describe("VMBackupController", func() {
 					{VolumeName: "rootdisk"},
 				},
 			}
-			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus)
+			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
@@ -664,7 +1059,7 @@ var _ = Describe("VMBackupController", func() {
 					{VolumeName: "datadisk"},
 				},
 			}
-			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus)
+			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
@@ -696,7 +1091,7 @@ var _ = Describe("VMBackupController", func() {
 			backupStatus := &v1.VirtualMachineInstanceBackupStatus{
 				CheckpointName: new("cp-new"),
 			}
-			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Incremental, backupStatus)
+			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Incremental, backupStatus, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
@@ -720,7 +1115,7 @@ var _ = Describe("VMBackupController", func() {
 			backupStatus := &v1.VirtualMachineInstanceBackupStatus{
 				CheckpointName: new("cp-2"),
 			}
-			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus)
+			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
@@ -738,7 +1133,7 @@ var _ = Describe("VMBackupController", func() {
 			backupStatus := &v1.VirtualMachineInstanceBackupStatus{
 				CheckpointName: new(tracker.Status.LatestCheckpoint.Name),
 			}
-			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus)
+			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
@@ -764,7 +1159,7 @@ var _ = Describe("VMBackupController", func() {
 					{VolumeName: "rootdisk"},
 				},
 			}
-			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus)
+			err = ctrl.updateBackupTracker(testNamespace, tracker, backupv1.Full, backupStatus, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(tracker.Status.LatestCheckpoint.Name).To(Equal(originalCheckpointName))

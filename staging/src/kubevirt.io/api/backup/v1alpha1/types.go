@@ -189,6 +189,7 @@ type VirtualMachineBackupList struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode != 'Pull' || (has(self.tokenSecretRef) && self.tokenSecretRef != \"\")",message="tokenSecretRef is required when mode is Pull"
 // +kubebuilder:validation:XValidation:rule="!has(self.fromCheckpoint) || (has(self.source.apiGroup) && self.source.apiGroup == 'backup.kubevirt.io')",message="fromCheckpoint is only valid when source is VirtualMachineBackupTracker"
 // +kubebuilder:validation:XValidation:rule="!self.forceFullBackup || (has(self.source.apiGroup) && self.source.apiGroup == 'backup.kubevirt.io')",message="forceFullBackup is only valid when source is VirtualMachineBackupTracker"
+// +kubebuilder:validation:XValidation:rule="!self.forceFullBackup || !has(self.fromCheckpoint)",message="forceFullBackup and fromCheckpoint are mutually exclusive"
 type VirtualMachineBackupSpec struct {
 	// Source specifies the backup source - either a VirtualMachine or a VirtualMachineBackupTracker.
 	// When Kind is VirtualMachine: performs a backup of the specified VM.

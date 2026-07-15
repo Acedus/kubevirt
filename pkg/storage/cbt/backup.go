@@ -618,7 +618,13 @@ func (ctrl *VMBackupController) reconcileActive(backup *backupv1.VirtualMachineB
 
 func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, backupTracker *backupv1.VirtualMachineBackupTracker, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
 	if backupTracker != nil && backupStatus.CheckpointName != nil && !backupStatus.Failed {
-		if err := ctrl.updateBackupTracker(backup.Namespace, backupTracker, backup.Status.Type, backupStatus); err != nil {
+		if backup.Spec.ForceFullBackup {
+			if err := ctrl.purgeCheckpointChain(backupTracker, vmi); err != nil {
+				return err
+			}
+		}
+		clearExisting := backup.Spec.ForceFullBackup
+		if err := ctrl.updateBackupTracker(backup.Namespace, backupTracker, backup.Status.Type, backupStatus, clearExisting); err != nil {
 			log.Log.Object(backup).Reason(err).Error("Failed to update BackupTracker")
 			return err
 		}
@@ -644,6 +650,41 @@ func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachi
 		ctrl.setQuiescedCondition(backup, backupStatus.QuiesceStatus)
 	}
 
+	return nil
+}
+
+func (ctrl *VMBackupController) purgeCheckpointChain(tracker *backupv1.VirtualMachineBackupTracker, vmi *v1.VirtualMachineInstance) error {
+	if tracker.Status == nil || len(tracker.Status.Checkpoints) == 0 {
+		return nil
+	}
+
+	vmiName := tracker.Spec.Source.Name
+	checkpoints := tracker.Status.Checkpoints
+
+	deleted := make(map[int]bool)
+	for i := len(checkpoints) - 1; i >= 0; i-- {
+		log.Log.Infof("Purging checkpoint %s from tracker %s/%s via DeleteCheckpoint RPC",
+			checkpoints[i].Name, tracker.Namespace, tracker.Name)
+		if err := ctrl.client.VirtualMachineInstance(tracker.Namespace).DeleteCheckpoint(
+			context.Background(), vmiName, checkpoints[i].Name); err != nil {
+			log.Log.Reason(err).Warningf("DeleteCheckpoint failed for %s during chain purge, will retry", checkpoints[i].Name)
+		} else {
+			deleted[i] = true
+		}
+	}
+
+	var remaining []backupv1.BackupCheckpoint
+	for i, cp := range checkpoints {
+		if !deleted[i] {
+			remaining = append(remaining, cp)
+		}
+	}
+
+	if len(remaining) > 0 {
+		return fmt.Errorf("failed to purge %d of %d checkpoints, requeuing", len(remaining), len(checkpoints))
+	}
+
+	log.Log.Infof("Successfully purged checkpoint chain from tracker %s/%s", tracker.Namespace, tracker.Name)
 	return nil
 }
 
@@ -691,6 +732,7 @@ func (ctrl *VMBackupController) startBackup(backup *backupv1.VirtualMachineBacku
 	}
 
 	log.Log.Object(backup).Infof("Starting backup for VMI %s with mode %s", vmi.Name, backupOptions.Mode)
+
 	backupType := backupv1.Full
 	if isIncrementalBackup(backup, backupTracker) {
 		cp, err := resolveFromCheckpoint(backup, backupTracker)
@@ -819,6 +861,7 @@ func (ctrl *VMBackupController) removeTrackerFinalizer(tracker *backupv1.Virtual
 	if err != nil {
 		return fmt.Errorf("failed to remove tracker finalizer: %w", err)
 	}
+	controller.RemoveFinalizer(tracker, backupv1.VirtualMachineBackupTrackerFinalizer)
 	return nil
 }
 

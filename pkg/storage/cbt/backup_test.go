@@ -1387,6 +1387,7 @@ var _ = Describe("Backup Controller", func() {
 			backup := createBackupWithTracker(backupName, vmName, pvcName)
 			backup.Spec.FromCheckpoint = pointer.P("cp-2")
 			backup.Finalizers = []string{backupv1.VirtualMachineBackupFinalizer}
+			backup.Status = &backupv1.VirtualMachineBackupStatus{}
 
 			vmi := createVMIWithPVCAttached()
 			controller.vmiStore.Add(vmi)
@@ -1713,6 +1714,9 @@ var _ = Describe("Backup Controller", func() {
 		pvc := createPVC(pvcName)
 		controller.pvcStore.Add(pvc)
 
+		virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+			Return(kubevirtClient.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace)).AnyTimes()
+
 		vmiInterface.EXPECT().
 			Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
 			Return(vmi, nil)
@@ -1731,6 +1735,67 @@ var _ = Describe("Backup Controller", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionProgressing))).To(BeTrue())
 		Expect(backupCopy.Status.Type).To(Equal(backupv1.Full))
+	})
+
+	It("should purge checkpoint chain on successful ForceFullBackup completion", func() {
+		backupTracker := createBackupTracker(backupTrackerName, vmName, checkpointName)
+		backupTracker.Finalizers = []string{backupv1.VirtualMachineBackupTrackerFinalizer}
+		controller.backupTrackerInformer.GetStore().Add(backupTracker)
+
+		newCheckpointName := "new-cp"
+		backup := createBackupWithTracker(backupName, vmName, pvcName)
+		backup.Finalizers = []string{backupv1.VirtualMachineBackupFinalizer}
+		backup.Spec.ForceFullBackup = true
+		backup.Status = &backupv1.VirtualMachineBackupStatus{
+			Type: backupv1.Full,
+			Conditions: []metav1.Condition{
+				newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, "Progressing", ""),
+			},
+		}
+
+		vm := createVM(vmName)
+		controller.vmStore.Add(vm)
+
+		vmi := createVMIWithPVCAttached()
+		now := metav1.Now()
+		vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
+			BackupName:     backupName,
+			Completed:      true,
+			CheckpointName: &newCheckpointName,
+			StartTimestamp: &now,
+		}
+		controller.vmiStore.Add(vmi)
+
+		pvc := createPVC(pvcName)
+		controller.pvcStore.Add(pvc)
+
+		trackerStatusCleared := false
+		kubevirtClient.Fake.PrependReactor("update", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			updateAction := action.(testing.UpdateAction)
+			if updateAction.GetSubresource() != "status" {
+				return false, nil, nil
+			}
+			updatedTracker := updateAction.GetObject().(*backupv1.VirtualMachineBackupTracker)
+			if len(updatedTracker.Status.Checkpoints) == 1 && updatedTracker.Status.Checkpoints[0].Name == newCheckpointName {
+				trackerStatusCleared = true
+			}
+			return true, updatedTracker, nil
+		})
+
+		virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+			Return(kubevirtClient.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace)).AnyTimes()
+
+		vmiInterface.EXPECT().
+			DeleteCheckpoint(gomock.Any(), vmName, checkpointName).
+			Return(nil)
+		vmiInterface.EXPECT().
+			Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
+			Return(vmi, nil)
+
+		_, err := syncBackup(backup)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("cleanup"))
+		Expect(trackerStatusCleared).To(BeTrue())
 	})
 
 	It("should return error when cleanup not complete for finished backup", func() {
@@ -2391,6 +2456,93 @@ var _ = Describe("Backup Controller", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(msg).To(ContainSubstring("pruning"))
 			Expect(msg).To(ContainSubstring(backupTrackerName))
+		})
+	})
+
+	Context("purgeCheckpointChain", func() {
+		var (
+			tracker *backupv1.VirtualMachineBackupTracker
+			vmi     *v1.VirtualMachineInstance
+		)
+
+		BeforeEach(func() {
+			vmi = createVMI()
+			tracker = &backupv1.VirtualMachineBackupTracker{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      backupTrackerName,
+					Namespace: testNamespace,
+				},
+				Spec: backupv1.VirtualMachineBackupTrackerSpec{
+					Source: corev1.TypedLocalObjectReference{
+						APIGroup: pointer.P("kubevirt.io"),
+						Kind:     "VirtualMachine",
+						Name:     vmName,
+					},
+				},
+				Status: &backupv1.VirtualMachineBackupTrackerStatus{},
+			}
+		})
+
+		It("should delete checkpoints newest-to-oldest via RPCs", func() {
+			cp1 := backupv1.BackupCheckpoint{Name: "cp-1"}
+			cp2 := backupv1.BackupCheckpoint{Name: "cp-2"}
+			cp3 := backupv1.BackupCheckpoint{Name: "cp-3"}
+			tracker.Status.Checkpoints = []backupv1.BackupCheckpoint{cp1, cp2, cp3}
+			tracker.Status.LatestCheckpoint = &cp3
+
+			deletedOrder := []string{}
+			vmiInterface.EXPECT().
+				DeleteCheckpoint(gomock.Any(), vmName, gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ string, cpName string) error {
+					deletedOrder = append(deletedOrder, cpName)
+					return nil
+				}).Times(3)
+
+			controller.purgeCheckpointChain(tracker, vmi)
+			Expect(deletedOrder).To(Equal([]string{"cp-3", "cp-2", "cp-1"}))
+		})
+
+		It("should be a no-op when tracker has no checkpoints", func() {
+			tracker.Status.Checkpoints = nil
+			controller.purgeCheckpointChain(tracker, vmi)
+		})
+
+		It("should be a no-op when tracker status is nil", func() {
+			tracker.Status = nil
+			controller.purgeCheckpointChain(tracker, vmi)
+		})
+
+		It("should continue purging when some DeleteCheckpoint calls fail", func() {
+			cp1 := backupv1.BackupCheckpoint{Name: "cp-1"}
+			cp2 := backupv1.BackupCheckpoint{Name: "cp-2"}
+			cp3 := backupv1.BackupCheckpoint{Name: "cp-3"}
+			tracker.Status.Checkpoints = []backupv1.BackupCheckpoint{cp1, cp2, cp3}
+			tracker.Status.LatestCheckpoint = &cp3
+
+			vmiInterface.EXPECT().
+				DeleteCheckpoint(gomock.Any(), vmName, "cp-3").
+				Return(nil)
+			vmiInterface.EXPECT().
+				DeleteCheckpoint(gomock.Any(), vmName, "cp-2").
+				Return(fmt.Errorf("checkpoint not found"))
+			vmiInterface.EXPECT().
+				DeleteCheckpoint(gomock.Any(), vmName, "cp-1").
+				Return(nil)
+
+			controller.purgeCheckpointChain(tracker, vmi)
+		})
+
+		It("should attempt all DeleteCheckpoint RPCs even when all fail", func() {
+			cp1 := backupv1.BackupCheckpoint{Name: "cp-1"}
+			cp2 := backupv1.BackupCheckpoint{Name: "cp-2"}
+			tracker.Status.Checkpoints = []backupv1.BackupCheckpoint{cp1, cp2}
+			tracker.Status.LatestCheckpoint = &cp2
+
+			vmiInterface.EXPECT().
+				DeleteCheckpoint(gomock.Any(), vmName, gomock.Any()).
+				Return(fmt.Errorf("rpc error")).Times(2)
+
+			controller.purgeCheckpointChain(tracker, vmi)
 		})
 	})
 })

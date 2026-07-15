@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -36,6 +37,11 @@ import (
 
 	"kubevirt.io/kubevirt/pkg/controller"
 	migrations "kubevirt.io/kubevirt/pkg/util/migrations"
+)
+
+const (
+	DefaultForceDeleteTimeout  = 24 * time.Hour
+	ForceDeleteAfterAnnotation = "backup.kubevirt.io/force-delete-after"
 )
 
 func isTrackerDeleting(tracker *backupv1.VirtualMachineBackupTracker) bool {
@@ -211,6 +217,19 @@ func isCheckpointInvalidError(err error) bool {
 	return apierrors.IsInvalid(err)
 }
 
+func forceDeleteTimeout(tracker *backupv1.VirtualMachineBackupTracker) time.Duration {
+	if v, ok := tracker.Annotations[ForceDeleteAfterAnnotation]; ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			log.Log.Warningf("Invalid %s annotation %q on tracker %s/%s, using default %v",
+				ForceDeleteAfterAnnotation, v, tracker.Namespace, tracker.Name, DefaultForceDeleteTimeout)
+			return DefaultForceDeleteTimeout
+		}
+		return d
+	}
+	return DefaultForceDeleteTimeout
+}
+
 func (ctrl *VMBackupController) pruneExcessCheckpoints(tracker *backupv1.VirtualMachineBackupTracker) error {
 	retain := tracker.Spec.RetainCheckpoints
 	if retain == nil {
@@ -264,6 +283,102 @@ func (ctrl *VMBackupController) handleTrackerDeletion(tracker *backupv1.VirtualM
 		return fmt.Errorf("tracker %s/%s has active backups, cannot remove finalizer: %w", tracker.Namespace, tracker.Name, errActiveBackups)
 	}
 
+	if tracker.Status == nil || len(tracker.Status.Checkpoints) == 0 {
+		return ctrl.removeTrackerFinalizer(tracker)
+	}
+
+	vmiName := tracker.Spec.Source.Name
+	vmi, exists, err := ctrl.getVMI(tracker.Namespace, vmiName)
+	if err != nil {
+		return fmt.Errorf("failed to get VMI %s/%s: %w", tracker.Namespace, vmiName, err)
+	}
+
+	if !exists {
+		vmKey := fmt.Sprintf("%s/%s", tracker.Namespace, vmiName)
+		_, vmExists, vmErr := ctrl.vmStore.GetByKey(vmKey)
+		if vmErr != nil {
+			return fmt.Errorf("failed to check VM %s: %w", vmKey, vmErr)
+		}
+		if !vmExists {
+			logger.Infof("VM %s/%s permanently deleted, clearing checkpoints and removing finalizer", tracker.Namespace, vmiName)
+			tracker.Status.Checkpoints = nil
+			tracker.Status.LatestCheckpoint = nil
+			return ctrl.removeTrackerFinalizer(tracker)
+		}
+		if time.Since(tracker.DeletionTimestamp.Time) > forceDeleteTimeout(tracker) {
+			logger.Warningf("Tracker %s/%s deletion timed out waiting for VM %s to start — clearing checkpoints (bitmaps may be orphaned)",
+				tracker.Namespace, tracker.Name, vmiName)
+			ctrl.recorder.Eventf(tracker, corev1.EventTypeWarning, "ForceDeleteTimeout",
+				"Deletion timed out waiting for VM %s to start. Clearing checkpoints — QEMU bitmaps may be orphaned and require manual cleanup.", vmiName)
+			tracker.Status.Checkpoints = nil
+			tracker.Status.LatestCheckpoint = nil
+			return ctrl.removeTrackerFinalizer(tracker)
+		}
+		return fmt.Errorf("VMI %s/%s not found (VM exists but stopped), cannot clean up bitmaps — requeuing", tracker.Namespace, vmiName)
+	}
+
+	if !vmi.IsRunning() {
+		if time.Since(tracker.DeletionTimestamp.Time) > forceDeleteTimeout(tracker) {
+			logger.Warningf("Tracker %s/%s deletion timed out waiting for VMI %s to become running — clearing checkpoints (bitmaps may be orphaned)",
+				tracker.Namespace, tracker.Name, vmiName)
+			ctrl.recorder.Eventf(tracker, corev1.EventTypeWarning, "ForceDeleteTimeout",
+				"Deletion timed out waiting for VMI %s to become running. Clearing checkpoints — QEMU bitmaps may be orphaned and require manual cleanup.", vmiName)
+			tracker.Status.Checkpoints = nil
+			tracker.Status.LatestCheckpoint = nil
+			return ctrl.removeTrackerFinalizer(tracker)
+		}
+		return fmt.Errorf("VMI %s/%s is not running, cannot clean up bitmaps — requeuing", tracker.Namespace, vmiName)
+	}
+
+	if migrations.IsMigrating(vmi) {
+		return fmt.Errorf("VMI %s/%s is migrating, deferring tracker deletion cleanup", tracker.Namespace, vmiName)
+	}
+
+	if !HasCBTStateEnabled(vmi.Status.ChangedBlockTracking) {
+		logger.Infof("CBT not enabled for VMI %s/%s, clearing checkpoints without bitmap cleanup", tracker.Namespace, vmiName)
+		tracker.Status.Checkpoints = nil
+		tracker.Status.LatestCheckpoint = nil
+		return ctrl.removeTrackerFinalizer(tracker)
+	}
+
+	ctrl.recorder.Eventf(tracker, corev1.EventTypeNormal, "TrackerDeletionCleanup",
+		"Starting bitmap cleanup for %d checkpoints", len(tracker.Status.Checkpoints))
+
+	totalCheckpoints := len(tracker.Status.Checkpoints)
+	deleted := make(map[int]bool)
+	for i := len(tracker.Status.Checkpoints) - 1; i >= 0; i-- {
+		cp := tracker.Status.Checkpoints[i]
+		logger.Infof("Deleting checkpoint %s from VMI %s during tracker deletion", cp.Name, vmiName)
+		if err := ctrl.client.VirtualMachineInstance(tracker.Namespace).DeleteCheckpoint(
+			context.Background(), vmiName, cp.Name); err != nil {
+			logger.Reason(err).Warningf("DeleteCheckpoint failed for %s during tracker deletion, will retry", cp.Name)
+		} else {
+			deleted[i] = true
+		}
+	}
+	var remaining []backupv1.BackupCheckpoint
+	for i, cp := range tracker.Status.Checkpoints {
+		if !deleted[i] {
+			remaining = append(remaining, cp)
+		}
+	}
+
+	if len(remaining) > 0 {
+		tracker.Status.Checkpoints = remaining
+		if len(tracker.Status.Checkpoints) > 0 {
+			tracker.Status.LatestCheckpoint = &tracker.Status.Checkpoints[len(tracker.Status.Checkpoints)-1]
+		} else {
+			tracker.Status.LatestCheckpoint = nil
+		}
+		ctrl.recorder.Eventf(tracker, corev1.EventTypeWarning, "TrackerDeletionCleanupPartial",
+			"%d of %d checkpoint deletions failed, will retry on next reconcile",
+			len(remaining), totalCheckpoints)
+		return fmt.Errorf("failed to delete %d checkpoints for tracker %s/%s, requeuing",
+			len(remaining), tracker.Namespace, tracker.Name)
+	}
+
+	tracker.Status.Checkpoints = nil
+	tracker.Status.LatestCheckpoint = nil
 	return ctrl.removeTrackerFinalizer(tracker)
 }
 
@@ -294,7 +409,7 @@ func (ctrl *VMBackupController) trackerHasActiveBackups(tracker *backupv1.Virtua
 	return false, nil
 }
 
-func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *backupv1.VirtualMachineBackupTracker, backupType backupv1.BackupType, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
+func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *backupv1.VirtualMachineBackupTracker, backupType backupv1.BackupType, backupStatus *v1.VirtualMachineInstanceBackupStatus, clearExisting bool) error {
 	if tracker == nil {
 		return nil
 	}
@@ -302,6 +417,10 @@ func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *b
 	trackerCopy := tracker.DeepCopy()
 	if trackerCopy.Status == nil {
 		trackerCopy.Status = &backupv1.VirtualMachineBackupTrackerStatus{}
+	}
+
+	if clearExisting {
+		trackerCopy.Status.Checkpoints = nil
 	}
 
 	newCp := backupv1.BackupCheckpoint{
