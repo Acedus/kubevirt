@@ -2054,14 +2054,9 @@ var _ = Describe(SIG("VirtualMachineRestore Tests", func() {
 					targetVMI, err := virtClient.VirtualMachineInstance(targetVM.Namespace).Get(context.Background(), targetVM.Name, metav1.GetOptions{})
 					Expect(err).ToNot(HaveOccurred())
 					Expect(targetVMI.Spec.Volumes).To(HaveLen(1))
-					foundMemoryDump := false
 					for _, volume := range targetVMI.Spec.Volumes {
-						if volume.Name == memoryDumpPVCName {
-							foundMemoryDump = true
-							break
-						}
+						Expect(volume.Name).ToNot(Equal(memoryDumpPVCName))
 					}
-					Expect(foundMemoryDump).To(BeFalse())
 				},
 					Entry("[test_id:8923]to the same VM", false),
 					Entry("[test_id:8924]to a new VM", true),

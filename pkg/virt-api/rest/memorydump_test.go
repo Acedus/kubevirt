@@ -94,12 +94,6 @@ var _ = Describe("Memory dump Subresource api", func() {
 
 	config, _, kvStore := testutils.NewFakeClusterConfigUsingKV(kv)
 
-	enableFeatureGate := func(featureGate string) {
-		kvConfig := kv.DeepCopy()
-		kvConfig.Spec.Configuration.DeveloperConfiguration.FeatureGates = []string{featureGate}
-		testutils.UpdateFakeKubeVirtClusterConfig(kvStore, kvConfig)
-	}
-
 	disableUtilityVolumesFeatureGate := func() {
 		testutils.UpdateFakeKubeVirtClusterConfig(kvStore, &v1.KubeVirt{
 			Spec: v1.KubeVirtSpec{
@@ -266,7 +260,6 @@ var _ = Describe("Memory dump Subresource api", func() {
 	)
 
 	DescribeTable("With memory dump request", func(memDumpReq, prevMemDumpReq *v1.VirtualMachineMemoryDumpRequest, statusCode int) {
-		enableFeatureGate(featuregate.UtilityVolumesGate)
 		request.Request.Body = newMemoryDumpBody(memDumpReq)
 		vmi := libvmi.New(
 			libvmi.WithName(testVMIName),

@@ -35,6 +35,7 @@ const (
 
 	// Owner: sig-storage
 	// Alpha: v1.7.0
+	// Beta: v1.10.0
 	//
 	// UtilityVolumes enables utility volumes feature which provides a general capability
 	// of hot-plugging volumes directly into the virt-launcher Pod for operational workflows
