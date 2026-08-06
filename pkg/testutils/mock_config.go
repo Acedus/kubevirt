@@ -70,17 +70,6 @@ func NewFakePersistentVolumeSource() *KVv1.PersistentVolumeClaimVolumeSource {
 	}
 }
 
-func NewFakeMemoryDumpSource(name string) *KVv1.MemoryDumpVolumeSource {
-	return &KVv1.MemoryDumpVolumeSource{
-		PersistentVolumeClaimVolumeSource: KVv1.PersistentVolumeClaimVolumeSource{
-			PersistentVolumeClaimVolumeSource: k8score.PersistentVolumeClaimVolumeSource{
-				ClaimName: name,
-			},
-			Hotpluggable: true,
-		},
-	}
-}
-
 func RemoveDataVolumeAPI(crdInformer cache.SharedIndexInformer) {
 	crdInformer.GetStore().Replace(nil, "")
 }
