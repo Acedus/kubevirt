@@ -23863,7 +23863,8 @@ func schema_kubevirtio_api_core_v1_MemoryDumpVolumeSource(ref common.ReferenceCa
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
+				Description: "Deprecated: MemoryDumpVolumeSource is retained for backward compatibility with existing data in etcd. Use UtilityVolumes with Type=MemoryDump instead.",
+				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"claimName": {
 						SchemaProps: spec.SchemaProps{
@@ -30385,7 +30386,7 @@ func schema_kubevirtio_api_core_v1_Volume(ref common.ReferenceCallback) common.O
 					},
 					"memoryDump": {
 						SchemaProps: spec.SchemaProps{
-							Description: "MemoryDump is attached to the virt launcher and is populated with a memory dump of the vmi",
+							Description: "Deprecated: MemoryDump is attached to the virt launcher and is populated with a memory dump of the vmi. Use UtilityVolumes with Type=MemoryDump instead. This field is retained for backward compatibility with existing data in etcd and will be removed in a future release.",
 							Ref:         ref("kubevirt.io/api/core/v1.MemoryDumpVolumeSource"),
 						},
 					},
@@ -30566,7 +30567,7 @@ func schema_kubevirtio_api_core_v1_VolumeSource(ref common.ReferenceCallback) co
 					},
 					"memoryDump": {
 						SchemaProps: spec.SchemaProps{
-							Description: "MemoryDump is attached to the virt launcher and is populated with a memory dump of the vmi",
+							Description: "Deprecated: MemoryDump is attached to the virt launcher and is populated with a memory dump of the vmi. Use UtilityVolumes with Type=MemoryDump instead. This field is retained for backward compatibility with existing data in etcd and will be removed in a future release.",
 							Ref:         ref("kubevirt.io/api/core/v1.MemoryDumpVolumeSource"),
 						},
 					},

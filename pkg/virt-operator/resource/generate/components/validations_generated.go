@@ -8803,8 +8803,10 @@ var CRDsValidation map[string]string = map[string]string{
                         - type
                         type: object
                       memoryDump:
-                        description: MemoryDump is attached to the virt launcher and
-                          is populated with a memory dump of the vmi
+                        description: |-
+                          Deprecated: MemoryDump is attached to the virt launcher and is populated with a memory dump of the vmi.
+                          Use UtilityVolumes with Type=MemoryDump instead. This field is retained for backward compatibility
+                          with existing data in etcd and will be removed in a future release.
                         properties:
                           claimName:
                             description: |-
@@ -14987,8 +14989,10 @@ var CRDsValidation map[string]string = map[string]string{
                 - type
                 type: object
               memoryDump:
-                description: MemoryDump is attached to the virt launcher and is populated
-                  with a memory dump of the vmi
+                description: |-
+                  Deprecated: MemoryDump is attached to the virt launcher and is populated with a memory dump of the vmi.
+                  Use UtilityVolumes with Type=MemoryDump instead. This field is retained for backward compatibility
+                  with existing data in etcd and will be removed in a future release.
                 properties:
                   claimName:
                     description: |-
@@ -21810,8 +21814,10 @@ var CRDsValidation map[string]string = map[string]string{
                         - type
                         type: object
                       memoryDump:
-                        description: MemoryDump is attached to the virt launcher and
-                          is populated with a memory dump of the vmi
+                        description: |-
+                          Deprecated: MemoryDump is attached to the virt launcher and is populated with a memory dump of the vmi.
+                          Use UtilityVolumes with Type=MemoryDump instead. This field is retained for backward compatibility
+                          with existing data in etcd and will be removed in a future release.
                         properties:
                           claimName:
                             description: |-
@@ -27016,8 +27022,10 @@ var CRDsValidation map[string]string = map[string]string{
                                 - type
                                 type: object
                               memoryDump:
-                                description: MemoryDump is attached to the virt launcher
-                                  and is populated with a memory dump of the vmi
+                                description: |-
+                                  Deprecated: MemoryDump is attached to the virt launcher and is populated with a memory dump of the vmi.
+                                  Use UtilityVolumes with Type=MemoryDump instead. This field is retained for backward compatibility
+                                  with existing data in etcd and will be removed in a future release.
                                 properties:
                                   claimName:
                                     description: |-
@@ -32713,9 +32721,10 @@ var CRDsValidation map[string]string = map[string]string{
                                     - type
                                     type: object
                                   memoryDump:
-                                    description: MemoryDump is attached to the virt
-                                      launcher and is populated with a memory dump
-                                      of the vmi
+                                    description: |-
+                                      Deprecated: MemoryDump is attached to the virt launcher and is populated with a memory dump of the vmi.
+                                      Use UtilityVolumes with Type=MemoryDump instead. This field is retained for backward compatibility
+                                      with existing data in etcd and will be removed in a future release.
                                     properties:
                                       claimName:
                                         description: |-

@@ -996,7 +996,10 @@ type VolumeSource struct {
 	// DownwardMetrics adds a very small disk to VMIs which contains a limited view of host and guest
 	// metrics. The disk content is compatible with vhostmd (https://github.com/vhostmd/vhostmd) and vm-dump-metrics.
 	DownwardMetrics *DownwardMetricsVolumeSource `json:"downwardMetrics,omitempty"`
-	// MemoryDump is attached to the virt launcher and is populated with a memory dump of the vmi
+	// Deprecated: MemoryDump is attached to the virt launcher and is populated with a memory dump of the vmi.
+	// Use UtilityVolumes with Type=MemoryDump instead. This field is retained for backward compatibility
+	// with existing data in etcd and will be removed in a future release.
+	// +optional
 	MemoryDump *MemoryDumpVolumeSource `json:"memoryDump,omitempty"`
 	// ContainerPath exposes a path from the virt-launcher container to the VM via virtiofs.
 	// The path must correspond to an existing volumeMount in the compute container.
@@ -1037,6 +1040,8 @@ type PersistentVolumeClaimVolumeSource struct {
 	Hotpluggable bool `json:"hotpluggable,omitempty"`
 }
 
+// Deprecated: MemoryDumpVolumeSource is retained for backward compatibility with existing data in etcd.
+// Use UtilityVolumes with Type=MemoryDump instead.
 type MemoryDumpVolumeSource struct {
 	// PersistentVolumeClaimVolumeSource represents a reference to a PersistentVolumeClaim in the same namespace.
 	// Directly attached to the virt launcher
