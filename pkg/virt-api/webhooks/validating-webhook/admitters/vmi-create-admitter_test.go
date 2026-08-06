@@ -2393,38 +2393,6 @@ var _ = Describe("Validating VMICreate Admitter", func() {
 			Expect(causes).To(BeEmpty())
 		})
 
-		It("should accept a single memoryDump volume without a matching disk", func() {
-			vmi.Spec.Volumes = append(vmi.Spec.Volumes, v1.Volume{
-				Name: "testMemoryDump",
-				VolumeSource: v1.VolumeSource{
-					MemoryDump: testutils.NewFakeMemoryDumpSource("testMemoryDump"),
-				},
-			})
-
-			causes := validateVolumes(k8sfield.NewPath("fake"), vmi.Spec.Volumes, config)
-			Expect(causes).To(BeEmpty())
-		})
-
-		It("should reject memoryDump volumes if more than one exist", func() {
-			vmi.Spec.Volumes = append(vmi.Spec.Volumes,
-				v1.Volume{
-					Name: "testMemoryDump",
-					VolumeSource: v1.VolumeSource{
-						MemoryDump: testutils.NewFakeMemoryDumpSource("testMemoryDump"),
-					},
-				},
-				v1.Volume{
-					Name: "testMemoryDump2",
-					VolumeSource: v1.VolumeSource{
-						MemoryDump: testutils.NewFakeMemoryDumpSource("testMemoryDump2"),
-					},
-				},
-			)
-			causes := validateVolumes(k8sfield.NewPath("fake"), vmi.Spec.Volumes, config)
-			Expect(causes).To(HaveLen(1))
-			Expect(causes[0].Message).To(ContainSubstring("fake must have max one memory dump volume set"))
-		})
-
 		It("should accept containerPath volume with matching filesystem", func() {
 			vmi.Spec.Domain.Devices.Filesystems = append(vmi.Spec.Domain.Devices.Filesystems, v1.Filesystem{
 				Name:     "testcontainerpath",

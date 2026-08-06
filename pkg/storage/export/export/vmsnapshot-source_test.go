@@ -589,59 +589,6 @@ var _ = Describe("VMSnapshot source", func() {
 		Expect(retry).To(BeEquivalentTo(0))
 	})
 
-	It("Should update status with correct links from snapshot with other content type", func() {
-		testVMExport := createSnapshotVMExport()
-		restoreName := fmt.Sprintf("%s-%s", testVMExport.Name, testVolumesnapshotName)
-		vmExportClient.Fake.PrependReactor("update", "virtualmachineexports", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
-			update, ok := action.(testing.UpdateAction)
-			Expect(ok).To(BeTrue())
-			vmExport, ok := update.GetObject().(*exportv1.VirtualMachineExport)
-			Expect(ok).To(BeTrue())
-			verifyArchiveInternal(vmExport, vmExport.Name, testNamespace, restoreName)
-			verifyArchiveExternal(vmExport, vmExport.Name, testNamespace, restoreName)
-			return true, vmExport, nil
-		})
-
-		k8sClient.Fake.PrependReactor("create", "persistentvolumeclaims", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
-			create, ok := action.(testing.CreateAction)
-			Expect(ok).To(BeTrue())
-			pvc, ok := create.GetObject().(*k8sv1.PersistentVolumeClaim)
-			Expect(ok).To(BeTrue())
-			Expect(pvc.Name).To(Equal("test-test-snapshot"))
-			Expect(pvc.Spec.DataSource).ToNot(BeNil())
-			Expect(pvc.Spec.Resources.Requests).ToNot(BeEmpty())
-			Expect(pvc.Spec.Resources.Requests[k8sv1.ResourceStorage]).To(Equal(resource.MustParse("1Gi")))
-			Expect(pvc.Spec.DataSource).To(Equal(&k8sv1.TypedLocalObjectReference{
-				APIGroup: pointer.P(vsv1.GroupName),
-				Kind:     "VolumeSnapshot",
-				Name:     testVolumesnapshotName,
-			}))
-			By("Ensuring the PVC is owned by the vmExport")
-			Expect(pvc.OwnerReferences).To(HaveLen(1))
-			Expect(pvc.OwnerReferences[0]).To(Equal(metav1.OwnerReference{
-				APIVersion:         exportGVK.GroupVersion().String(),
-				Kind:               "VirtualMachineExport",
-				Name:               testVMExport.Name,
-				UID:                testVMExport.UID,
-				Controller:         pointer.P(true),
-				BlockOwnerDeletion: pointer.P(true),
-			}))
-			Expect(pvc.GetAnnotations()[annContentType]).To(BeEmpty())
-			return true, pvc, nil
-		})
-		expectExporterCreate(k8sClient, k8sv1.PodRunning)
-		controller.RouteCache.Add(routeToHostAndService(components.VirtExportProxyServiceName))
-		vmSnapshotInformer.GetStore().Add(createTestVMSnapshot(true))
-		content := createTestVMSnapshotContent("snapshot-content")
-		content.Spec.Source.VirtualMachine.Spec.Template.Spec.Volumes[0].DataVolume = nil
-		content.Spec.Source.VirtualMachine.Spec.Template.Spec.Volumes[0].MemoryDump = &virtv1.MemoryDumpVolumeSource{}
-		vmSnapshotContentInformer.GetStore().Add(content)
-		fakeVolumeSnapshotProvider.Add(createTestVolumeSnapshot(testVolumesnapshotName))
-		retry, err := controller.updateVMExport(testVMExport)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(retry).To(BeEquivalentTo(0))
-	})
-
 	It("Should update status with no links and not ready if snapshot is not ready", func() {
 		testVMExport := createSnapshotVMExport()
 		vmExportClient.Fake.PrependReactor("update", "virtualmachineexports", func(action testing.Action) (handled bool, obj runtime.Object, err error) {

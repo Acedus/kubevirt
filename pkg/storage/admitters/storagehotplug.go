@@ -172,17 +172,16 @@ func verifyHotplugVolumes(newHotplugVolumeMap, oldHotplugVolumeMap map[string]v1
 						},
 					})
 				}
-				if !equality.Semantic.DeepEqual(newDisks[k], oldDisks[k]) {
-					return webhookutils.ToAdmissionResponse([]metav1.StatusCause{
-						{
-							Type:    metav1.CauseTypeFieldValueInvalid,
-							Message: fmt.Sprintf("hotplug disk %s, changed", k),
-						},
-					})
-				}
+			}
+			if !equality.Semantic.DeepEqual(newDisks[k], oldDisks[k]) {
+				return webhookutils.ToAdmissionResponse([]metav1.StatusCause{
+					{
+						Type:    metav1.CauseTypeFieldValueInvalid,
+						Message: fmt.Sprintf("hotplug disk %s, changed", k),
+					},
+				})
 			}
 		} else {
-			// This is a new volume, ensure that the volume is either DV, PVC or memoryDumpVolume
 			if v.DataVolume == nil && v.PersistentVolumeClaim == nil && v.MemoryDump == nil {
 				return webhookutils.ToAdmissionResponse([]metav1.StatusCause{
 					{
@@ -192,7 +191,6 @@ func verifyHotplugVolumes(newHotplugVolumeMap, oldHotplugVolumeMap map[string]v1
 				})
 			}
 			if v.MemoryDump == nil {
-				// Also ensure the matching new disk exists and has a valid bus
 				if _, ok := newDisks[k]; !ok {
 					return webhookutils.ToAdmissionResponse([]metav1.StatusCause{
 						{

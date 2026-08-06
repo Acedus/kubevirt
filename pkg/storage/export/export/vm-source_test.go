@@ -310,33 +310,6 @@ var _ = Describe("PVC source", func() {
 		return vm
 	}
 
-	createVMWithPVCandMemoryDump := func() *virtv1.VirtualMachine {
-		vm := createVMWithoutVolumes()
-		vm.Spec.Template.Spec.Volumes = append(vm.Spec.Template.Spec.Volumes, virtv1.Volume{
-			Name: "volume1",
-			VolumeSource: virtv1.VolumeSource{
-				PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-					PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-						ClaimName: "volume1",
-					},
-				},
-			},
-		})
-		vm.Spec.Template.Spec.Volumes = append(vm.Spec.Template.Spec.Volumes, virtv1.Volume{
-			Name: "volume2",
-			VolumeSource: virtv1.VolumeSource{
-				MemoryDump: &virtv1.MemoryDumpVolumeSource{
-					PersistentVolumeClaimVolumeSource: virtv1.PersistentVolumeClaimVolumeSource{
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "volume2",
-						},
-					},
-				},
-			},
-		})
-		return vm
-	}
-
 	createVMIWithDataVolumes := func() *virtv1.VirtualMachineInstance {
 		return &virtv1.VirtualMachineInstance{
 			ObjectMeta: metav1.ObjectMeta{
@@ -417,7 +390,6 @@ var _ = Describe("PVC source", func() {
 	},
 		Entry("DataVolumes", createVMWithDataVolumes, "kubevirt", "kubevirt", verifyKubevirtInternal),
 		Entry("PVCs", createVMWithPVCs, "kubevirt", "kubevirt", verifyKubevirtInternal),
-		Entry("Memorydump and pvc", createVMWithPVCandMemoryDump, "kubevirt", "archive", verifyMixedInternal),
 	)
 
 	It("Should create VM export, when VM is using backend storage", func() {

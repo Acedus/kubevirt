@@ -972,7 +972,6 @@ func (t *vmRestoreTarget) generateRestoredVMSpec(snapshotVM *snapshotv1.VirtualM
 				}
 			}
 		} else if nv.MemoryDump != nil {
-			// don't restore memory dump volume in the new spec
 			continue
 		}
 		newVolumes = append(newVolumes, *nv)
@@ -1710,8 +1709,6 @@ func updateRestoreCondition(r *snapshotv1.VirtualMachineRestore, c snapshotv1.Co
 	r.Status.Conditions = updateCondition(r.Status.Conditions, c)
 }
 
-// Returns a set of volumes not for restore
-// Currently only memory dump volumes should not be restored
 func (ctrl *VMRestoreController) volumesNotForRestore(content *snapshotv1.VirtualMachineSnapshotContent) (sets.String, error) {
 	noRestore := sets.NewString()
 

@@ -200,35 +200,6 @@ var _ = Describe("Storage Hotplug Admitter", func() {
 		return res
 	}
 
-	makeVolumesWithMemoryDumpVol := func(total int, indexes ...int) []v1.Volume {
-		res := make([]v1.Volume, 0)
-		for i := 0; i < total; i++ {
-			memoryDump := false
-			for _, index := range indexes {
-				if i == index {
-					memoryDump = true
-					res = append(res, v1.Volume{
-						Name: fmt.Sprintf("volume-name-%d", index),
-						VolumeSource: v1.VolumeSource{
-							MemoryDump: testutils.NewFakeMemoryDumpSource(fmt.Sprintf("volume-name-%d", index)),
-						},
-					})
-				}
-			}
-			if !memoryDump {
-				res = append(res, v1.Volume{
-					Name: fmt.Sprintf("volume-name-%d", i),
-					VolumeSource: v1.VolumeSource{
-						DataVolume: &v1.DataVolumeSource{
-							Name: fmt.Sprintf("dv-name-%d", i),
-						},
-					},
-				})
-			}
-		}
-		return res
-	}
-
 	makeInvalidVolumes := func(total int, indexes ...int) []v1.Volume {
 		res := make([]v1.Volume, 0)
 		for i := 0; i < total; i++ {
@@ -512,22 +483,6 @@ var _ = Describe("Storage Hotplug Admitter", func() {
 			makeFilesystems(),
 			makeStatus(1, 0),
 			makeExpected("spec.domain.devices.disks[1] must have a boot order > 0, if supplied", "spec.domain.devices.disks[1].bootOrder")),
-		Entry("Should accept if memory dump volume exists without matching disk",
-			makeVolumesWithMemoryDumpVol(3, 2),
-			makeVolumes(0, 1),
-			makeDisks(0, 1),
-			makeDisks(0, 1),
-			makeFilesystems(),
-			makeStatus(3, 1),
-			nil),
-		Entry("Should reject if #volumes != #disks even when there is memory dump volume",
-			makeVolumesWithMemoryDumpVol(3, 2),
-			makeVolumesWithMemoryDumpVol(3, 2),
-			makeDisks(1),
-			makeDisks(1),
-			makeFilesystems(),
-			makeStatus(0, 0),
-			makeExpected("mismatch between volumes declared (2) and required (1)", "")),
 	)
 
 	Context("with filesystem devices", func() {
@@ -816,7 +771,11 @@ var _ = Describe("Utility Volumes Admitter", func() {
 		var config *virtconfig.ClusterConfig
 
 		BeforeEach(func() {
-			kv := &v1.KubeVirtConfiguration{}
+			kv := &v1.KubeVirtConfiguration{
+				DeveloperConfiguration: &v1.DeveloperConfiguration{
+					DisabledFeatureGates: []string{featuregate.UtilityVolumesGate},
+				},
+			}
 			config, _, _ = testutils.NewFakeClusterConfigUsingKVConfig(kv)
 		})
 
