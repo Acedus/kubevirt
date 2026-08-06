@@ -33,6 +33,7 @@ import (
 	"kubevirt.io/client-go/log"
 
 	"kubevirt.io/kubevirt/pkg/apimachinery/patch"
+	"kubevirt.io/kubevirt/pkg/pointer"
 	storagetypes "kubevirt.io/kubevirt/pkg/storage/types"
 )
 
@@ -45,15 +46,23 @@ func HasCompleted(vm *v1.VirtualMachine) bool {
 	return vm.Status.MemoryDumpRequest != nil && vm.Status.MemoryDumpRequest.Phase != v1.MemoryDumpAssociating && vm.Status.MemoryDumpRequest.Phase != v1.MemoryDumpInProgress
 }
 
-func RemoveMemoryDumpVolumeFromVMISpec(vmiSpec *v1.VirtualMachineInstanceSpec, claimName string) *v1.VirtualMachineInstanceSpec {
-	newVolumesList := []v1.Volume{}
-	for _, volume := range vmiSpec.Volumes {
-		if volume.Name != claimName {
-			newVolumesList = append(newVolumesList, volume)
-		}
+// CleanVMTemplateMemoryDumpVolumes strips deprecated MemoryDump volumes from the VM template.
+// These volumes use the deprecated VolumeSource.MemoryDump field and should be converted
+// to UtilityVolumes. Only removes volumes that have the deprecated MemoryDump source set
+// and whose name matches the memory dump request's claim name.
+func CleanVMTemplateMemoryDumpVolumes(vm *v1.VirtualMachine) {
+	if vm.Status.MemoryDumpRequest == nil {
+		return
 	}
-	vmiSpec.Volumes = newVolumesList
-	return vmiSpec
+	claimName := vm.Status.MemoryDumpRequest.ClaimName
+	newVolumes := make([]v1.Volume, 0, len(vm.Spec.Template.Spec.Volumes))
+	for _, volume := range vm.Spec.Template.Spec.Volumes {
+		if volume.Name == claimName && volume.MemoryDump != nil {
+			continue
+		}
+		newVolumes = append(newVolumes, volume)
+	}
+	vm.Spec.Template.Spec.Volumes = newVolumes
 }
 
 func HandleRequest(client kubecli.KubevirtClient, vm *v1.VirtualMachine, vmi *v1.VirtualMachineInstance, pvcStore cache.Store) error {
@@ -61,53 +70,43 @@ func HandleRequest(client kubecli.KubevirtClient, vm *v1.VirtualMachine, vmi *v1
 		return nil
 	}
 
-	vmiVolumeMap := make(map[string]v1.Volume)
+	vmiUtilityVolumeMap := make(map[string]v1.UtilityVolume)
 	if vmi != nil {
-		for _, volume := range vmi.Spec.Volumes {
-			vmiVolumeMap[volume.Name] = volume
+		for _, vol := range vmi.Spec.UtilityVolumes {
+			vmiUtilityVolumeMap[vol.Name] = vol
 		}
 	}
+
 	switch vm.Status.MemoryDumpRequest.Phase {
 	case v1.MemoryDumpAssociating:
 		if vmi == nil || vmi.DeletionTimestamp != nil || !vmi.IsRunning() {
 			return nil
 		}
-		// When in state associating we want to add the memory dump pvc
-		// as a volume in the vm and in the vmi to trigger the mount
-		// to virt launcher and the memory dump
-		vm.Spec.Template.Spec = *applyMemoryDumpVolumeRequestOnVMISpec(&vm.Spec.Template.Spec, vm.Status.MemoryDumpRequest.ClaimName)
-		if _, exists := vmiVolumeMap[vm.Status.MemoryDumpRequest.ClaimName]; exists {
+		if _, exists := vmiUtilityVolumeMap[vm.Status.MemoryDumpRequest.ClaimName]; exists {
 			return nil
 		}
-		if err := generateVMIMemoryDumpVolumePatch(client, vmi, vm.Status.MemoryDumpRequest, true); err != nil {
-			log.Log.Object(vmi).Errorf("unable to patch vmi to add memory dump volume: %v", err)
+		if err := attachMemoryDumpVolume(client, vmi, vm.Status.MemoryDumpRequest.ClaimName); err != nil {
+			log.Log.Object(vmi).Errorf("unable to attach memory dump utility volume: %v", err)
 			return err
 		}
 	case v1.MemoryDumpUnmounting, v1.MemoryDumpFailed:
 		if err := patchMemoryDumpPVCAnnotation(client, vm, pvcStore); err != nil {
 			return err
 		}
-		// Check if the memory dump is in the vmi list of volumes,
-		// if it still there remove it to make it unmount from virt launcher
-		if _, exists := vmiVolumeMap[vm.Status.MemoryDumpRequest.ClaimName]; !exists {
+		if _, exists := vmiUtilityVolumeMap[vm.Status.MemoryDumpRequest.ClaimName]; !exists {
 			return nil
 		}
-
-		if err := generateVMIMemoryDumpVolumePatch(client, vmi, vm.Status.MemoryDumpRequest, false); err != nil {
-			log.Log.Object(vmi).Errorf("unable to patch vmi to remove memory dump volume: %v", err)
+		if err := detachMemoryDumpVolume(client, vmi, vm.Status.MemoryDumpRequest.ClaimName); err != nil {
+			log.Log.Object(vmi).Errorf("unable to detach memory dump utility volume: %v", err)
 			return err
 		}
 	case v1.MemoryDumpDissociating:
-		// Check if the memory dump is in the vmi list of volumes,
-		// if it still there remove it to make it unmount from virt launcher
-		if _, exists := vmiVolumeMap[vm.Status.MemoryDumpRequest.ClaimName]; exists {
-			if err := generateVMIMemoryDumpVolumePatch(client, vmi, vm.Status.MemoryDumpRequest, false); err != nil {
-				log.Log.Object(vmi).Errorf("unable to patch vmi to remove memory dump volume: %v", err)
+		if _, exists := vmiUtilityVolumeMap[vm.Status.MemoryDumpRequest.ClaimName]; exists {
+			if err := detachMemoryDumpVolume(client, vmi, vm.Status.MemoryDumpRequest.ClaimName); err != nil {
+				log.Log.Object(vmi).Errorf("unable to detach memory dump utility volume: %v", err)
 				return err
 			}
 		}
-
-		vm.Spec.Template.Spec = *RemoveMemoryDumpVolumeFromVMISpec(&vm.Spec.Template.Spec, vm.Status.MemoryDumpRequest.ClaimName)
 	}
 
 	return nil
@@ -126,22 +125,17 @@ func UpdateRequest(vm *v1.VirtualMachine, vmi *v1.VirtualMachineInstance) {
 
 	switch vm.Status.MemoryDumpRequest.Phase {
 	case v1.MemoryDumpCompleted:
-		// Once memory dump completed, there is no update neeeded,
-		// A new update will come from the subresource API once
-		// a new request will be issued
 		return
 	case v1.MemoryDumpAssociating:
-		// Update Phase to InProgrees once the memory dump
-		// is in the list of vm volumes
-		for _, volume := range vm.Spec.Template.Spec.Volumes {
-			if vm.Status.MemoryDumpRequest.ClaimName == volume.Name {
-				updatedMemoryDumpReq.Phase = v1.MemoryDumpInProgress
-				break
+		if vmi != nil {
+			for _, vol := range vmi.Spec.UtilityVolumes {
+				if vm.Status.MemoryDumpRequest.ClaimName == vol.Name {
+					updatedMemoryDumpReq.Phase = v1.MemoryDumpInProgress
+					break
+				}
 			}
 		}
 	case v1.MemoryDumpInProgress:
-		// Update to unmounting once getting update in the vmi volume status
-		// that the dump timestamp is updated
 		if vmi != nil && len(vmi.Status.VolumeStatus) > 0 {
 			for _, volumeStatus := range vmi.Status.VolumeStatus {
 				if volumeStatus.Name == vm.Status.MemoryDumpRequest.ClaimName &&
@@ -162,12 +156,8 @@ func UpdateRequest(vm *v1.VirtualMachine, vmi *v1.VirtualMachineInstance) {
 			}
 		}
 	case v1.MemoryDumpUnmounting:
-		// Update memory dump as completed once the memory dump has been
-		// unmounted - not a part of the vmi volume status
 		if vmi != nil {
 			for _, volumeStatus := range vmi.Status.VolumeStatus {
-				// If we found the claim name in the vmi volume status
-				// then the pvc is still mounted
 				if volumeStatus.Name == vm.Status.MemoryDumpRequest.ClaimName {
 					return
 				}
@@ -175,7 +165,6 @@ func UpdateRequest(vm *v1.VirtualMachine, vmi *v1.VirtualMachineInstance) {
 		}
 		updatedMemoryDumpReq.Phase = v1.MemoryDumpCompleted
 	case v1.MemoryDumpDissociating:
-		// Make sure the memory dump is not in the vmi list of volumes
 		if vmi != nil {
 			for _, volumeStatus := range vmi.Status.VolumeStatus {
 				if volumeStatus.Name == vm.Status.MemoryDumpRequest.ClaimName {
@@ -183,82 +172,75 @@ func UpdateRequest(vm *v1.VirtualMachine, vmi *v1.VirtualMachineInstance) {
 				}
 			}
 		}
-		// Make sure the memory dump is not in the list of vm volumes
-		for _, volume := range vm.Spec.Template.Spec.Volumes {
-			if vm.Status.MemoryDumpRequest.ClaimName == volume.Name {
-				return
-			}
-		}
-		// Remove the memory dump request
 		updatedMemoryDumpReq = nil
 	}
 
 	vm.Status.MemoryDumpRequest = updatedMemoryDumpReq
 }
 
-func generateVMIMemoryDumpVolumePatch(client kubecli.KubevirtClient, vmi *v1.VirtualMachineInstance, request *v1.VirtualMachineMemoryDumpRequest, addVolume bool) error {
-	foundRemoveVol := false
-	for _, volume := range vmi.Spec.Volumes {
-		if request.ClaimName == volume.Name {
-			if addVolume {
-				return fmt.Errorf("Unable to add volume [%s] because it already exists", volume.Name)
-			} else {
-				foundRemoveVol = true
-			}
+func attachMemoryDumpVolume(client kubecli.KubevirtClient, vmi *v1.VirtualMachineInstance, claimName string) error {
+	for _, vol := range vmi.Spec.UtilityVolumes {
+		if vol.Name == claimName {
+			return nil
 		}
 	}
 
-	if !foundRemoveVol && !addVolume {
-		return fmt.Errorf("Unable to remove volume [%s] because it does not exist", request.ClaimName)
+	memoryDumpVolume := v1.UtilityVolume{
+		Name: claimName,
+		PersistentVolumeClaimVolumeSource: k8score.PersistentVolumeClaimVolumeSource{
+			ClaimName: claimName,
+		},
+		Type: pointer.P(v1.MemoryDump),
 	}
 
-	vmiCopy := vmi.DeepCopy()
-	if addVolume {
-		vmiCopy.Spec = *applyMemoryDumpVolumeRequestOnVMISpec(&vmiCopy.Spec, request.ClaimName)
-	} else {
-		vmiCopy.Spec = *RemoveMemoryDumpVolumeFromVMISpec(&vmiCopy.Spec, request.ClaimName)
-	}
-	patchset := patch.New(
-		patch.WithTest("/spec/volumes", vmi.Spec.Volumes),
+	patchSet := patch.New(
+		patch.WithTest("/spec/utilityVolumes", vmi.Spec.UtilityVolumes),
 	)
-	if len(vmi.Spec.Volumes) > 0 {
-		patchset.AddOption(patch.WithReplace("/spec/volumes", vmiCopy.Spec.Volumes))
+
+	newUtilityVolumes := append(vmi.Spec.UtilityVolumes, memoryDumpVolume)
+	if len(vmi.Spec.UtilityVolumes) > 0 {
+		patchSet.AddOption(patch.WithReplace("/spec/utilityVolumes", newUtilityVolumes))
 	} else {
-		patchset.AddOption(patch.WithAdd("/spec/volumes", vmiCopy.Spec.Volumes))
+		patchSet.AddOption(patch.WithAdd("/spec/utilityVolumes", newUtilityVolumes))
 	}
 
-	patchBytes, err := patchset.GeneratePayload()
+	patchBytes, err := patchSet.GeneratePayload()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to generate attach memory dump volume patch: %w", err)
 	}
+
 	_, err = client.VirtualMachineInstance(vmi.Namespace).Patch(context.Background(), vmi.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
 	return err
 }
 
-func applyMemoryDumpVolumeRequestOnVMISpec(vmiSpec *v1.VirtualMachineInstanceSpec, claimName string) *v1.VirtualMachineInstanceSpec {
-	for _, volume := range vmiSpec.Volumes {
-		if volume.Name == claimName {
-			return vmiSpec
+func detachMemoryDumpVolume(client kubecli.KubevirtClient, vmi *v1.VirtualMachineInstance, claimName string) error {
+	if len(vmi.Spec.UtilityVolumes) == 0 {
+		return nil
+	}
+
+	newUtilityVolumes := make([]v1.UtilityVolume, 0, len(vmi.Spec.UtilityVolumes))
+	for _, vol := range vmi.Spec.UtilityVolumes {
+		if vol.Name != claimName {
+			newUtilityVolumes = append(newUtilityVolumes, vol)
 		}
 	}
 
-	memoryDumpVol := &v1.MemoryDumpVolumeSource{
-		PersistentVolumeClaimVolumeSource: v1.PersistentVolumeClaimVolumeSource{
-			PersistentVolumeClaimVolumeSource: k8score.PersistentVolumeClaimVolumeSource{
-				ClaimName: claimName,
-			},
-			Hotpluggable: true,
-		},
+	patchSet := patch.New(
+		patch.WithTest("/spec/utilityVolumes", vmi.Spec.UtilityVolumes),
+	)
+	if len(newUtilityVolumes) == 0 {
+		patchSet.AddOption(patch.WithRemove("/spec/utilityVolumes"))
+	} else {
+		patchSet.AddOption(patch.WithReplace("/spec/utilityVolumes", newUtilityVolumes))
 	}
 
-	newVolume := v1.Volume{
-		Name: claimName,
+	patchBytes, err := patchSet.GeneratePayload()
+	if err != nil {
+		return fmt.Errorf("failed to generate detach memory dump volume patch: %w", err)
 	}
-	newVolume.VolumeSource.MemoryDump = memoryDumpVol
 
-	vmiSpec.Volumes = append(vmiSpec.Volumes, newVolume)
-
-	return vmiSpec
+	_, err = client.VirtualMachineInstance(vmi.Namespace).Patch(context.Background(), vmi.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
+	return err
 }
 
 func patchMemoryDumpPVCAnnotation(client kubecli.KubevirtClient, vm *v1.VirtualMachine, pvcStore cache.Store) error {

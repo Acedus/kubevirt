@@ -3860,7 +3860,7 @@ var _ = Describe("VirtualMachine", func() {
 		Context("VM memory dump", func() {
 			const testPVCName = "testPVC"
 
-			It("should add memory dump volume and update vmi volumes", func() {
+			It("should add memory dump utility volume to vmi", func() {
 				vm, vmi := watchtesting.DefaultVirtualMachine(true)
 				vm.Status.Created = true
 				vm.Status.Ready = true
@@ -3882,22 +3882,22 @@ var _ = Describe("VirtualMachine", func() {
 
 				vm, err = virtFakeClient.KubevirtV1().VirtualMachines(vm.Namespace).Get(context.TODO(), vm.Name, metav1.GetOptions{})
 				Expect(err).To(Succeed())
-				Expect(vm.Spec.Template.Spec.Volumes[0].Name).To(Equal(testPVCName))
+				Expect(vm.Spec.Template.Spec.Volumes).To(BeEmpty())
 
 				vmi, err = virtFakeClient.KubevirtV1().VirtualMachineInstances(vm.Namespace).Get(context.Background(), vmi.Name, metav1.GetOptions{})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(vmi.Spec.Volumes[0].Name).To(Equal(testPVCName))
+				Expect(vmi.Spec.UtilityVolumes).To(HaveLen(1))
+				Expect(vmi.Spec.UtilityVolumes[0].Name).To(Equal(testPVCName))
 			})
 
-			It("should remove memory dump volume from vm volumes list", func() {
-				// No need to add vmi - can do this action even if vm not running
+			It("should strip stale memory dump volume from vm template during migration cleanup", func() {
 				vm, _ := watchtesting.DefaultVirtualMachine(false)
 				vm.Status.MemoryDumpRequest = &v1.VirtualMachineMemoryDumpRequest{
 					ClaimName: testPVCName,
 					Phase:     v1.MemoryDumpDissociating,
 				}
 
-				memoryDumpVol := v1.Volume{
+				staleVol := v1.Volume{
 					Name: testPVCName,
 					VolumeSource: v1.VolumeSource{
 						MemoryDump: &v1.MemoryDumpVolumeSource{
@@ -3905,13 +3905,12 @@ var _ = Describe("VirtualMachine", func() {
 								PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
 									ClaimName: testPVCName,
 								},
-								Hotpluggable: true,
 							},
 						},
 					},
 				}
 
-				vm.Spec.Template.Spec.Volumes = append(vm.Spec.Template.Spec.Volumes, memoryDumpVol)
+				vm.Spec.Template.Spec.Volumes = append(vm.Spec.Template.Spec.Volumes, staleVol)
 				vm, err := virtFakeClient.KubevirtV1().VirtualMachines(vm.Namespace).Create(context.TODO(), vm, metav1.CreateOptions{})
 				Expect(err).To(Succeed())
 				addVirtualMachine(vm)

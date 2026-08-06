@@ -1871,16 +1871,15 @@ func SetupVMIFromVM(vm *virtv1.VirtualMachine) *virtv1.VirtualMachineInstance {
 	vmi.ObjectMeta.Name = vm.ObjectMeta.Name
 	vmi.ObjectMeta.GenerateName = ""
 	vmi.ObjectMeta.Namespace = vm.ObjectMeta.Namespace
+	// Migration cleanup: strip stale MemoryDump volumes that may remain
+	// in the VM template from before the utility volume migration.
+	memorydump.CleanVMTemplateMemoryDumpVolumes(vm)
+
 	vmi.Spec = *vm.Spec.Template.Spec.DeepCopy()
 
 	if hasStartPausedRequest(vm) {
 		strategy := virtv1.StartStrategyPaused
 		vmi.Spec.StartStrategy = &strategy
-	}
-
-	// prevent from retriggering memory dump after shutdown if memory dump is complete
-	if memorydump.HasCompleted(vm) {
-		vmi.Spec = *memorydump.RemoveMemoryDumpVolumeFromVMISpec(&vmi.Spec, vm.Status.MemoryDumpRequest.ClaimName)
 	}
 
 	setupStableFirmwareUUID(vm, vmi)
@@ -3336,6 +3335,8 @@ func (c *Controller) sync(vm *virtv1.VirtualMachine, vmi *virtv1.VirtualMachineI
 	if err := c.handleDeclarativeVolumeHotplug(vmCopy, vmi); err != nil {
 		return vm, vmi, common.NewSyncError(fmt.Errorf("Error encountered while handling declarative hotplug volumes: %v", err), hotplugVolumeErrorReason), nil
 	}
+
+	memorydump.CleanVMTemplateMemoryDumpVolumes(vmCopy)
 
 	if err := memorydump.HandleRequest(c.clientset, vmCopy, vmi, c.pvcStore); err != nil {
 		return vm, vmi, common.NewSyncError(fmt.Errorf("Error encountered while handling memory dump request: %v", err), memorydump.ErrorReason), nil

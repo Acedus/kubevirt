@@ -3303,37 +3303,6 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			return res
 		}
 
-		makeVolumesWithMemoryDump := func(total int, indexes ...int) []*virtv1.Volume {
-			res := make([]*virtv1.Volume, 0)
-			for i := 0; i < total; i++ {
-				memoryDump := false
-				for _, index := range indexes {
-					if i == index {
-						memoryDump = true
-						res = append(res, &virtv1.Volume{
-							Name: fmt.Sprintf("volume%d", index),
-							VolumeSource: virtv1.VolumeSource{
-								MemoryDump: testutils.NewFakeMemoryDumpSource(fmt.Sprintf("claim%d", i)),
-							},
-						})
-					}
-				}
-				if !memoryDump {
-					res = append(res, &virtv1.Volume{
-						Name: fmt.Sprintf("volume%d", i),
-						VolumeSource: virtv1.VolumeSource{
-							PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-								PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-									ClaimName: fmt.Sprintf("claim%d", i),
-								},
-							},
-						},
-					})
-				}
-			}
-			return res
-		}
-
 		makeK8sVolumes := func(indexes ...int) []k8sv1.Volume {
 			res := make([]k8sv1.Volume, 0)
 			for _, index := range indexes {
@@ -3516,7 +3485,6 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			Entry("should return a volume if vmi has one more than virtlauncher", makeK8sVolumes(), makeVolumes(1), 1),
 			Entry("should return a volume if vmi has one more than virtlauncher, with matching volumes", makeK8sVolumes(1, 3), makeVolumes(1, 2, 3), 2),
 			Entry("should return multiple volumes if vmi has multiple more than virtlauncher, with matching volumes", makeK8sVolumes(1, 3), makeVolumes(1, 2, 3, 4, 5), 2, 4, 5),
-			Entry("should return a memory dump volume if vmi has memory dump volume not on virtlauncher", makeK8sVolumes(0, 2), makeVolumesWithMemoryDump(3, 1), 1),
 		)
 
 		truncateSprintf := func(str string, args ...interface{}) string {
@@ -3544,14 +3512,6 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 						FilesystemOverhead: pointer.P(storagetypes.DefaultFSOverhead),
 					},
 				})
-			}
-			return res
-		}
-
-		makeVolumeStatusesForUpdateWithMemoryDump := func(dumpIndex int, indexes ...int) []virtv1.VolumeStatus {
-			res := makeVolumeStatusesForUpdateWithMessage("", "", virtv1.VolumeBound, "PVC is in phase Bound", kvcontroller.PVCNotReadyReason, indexes...)
-			res[dumpIndex].MemoryDumpVolume = &virtv1.DomainMemoryDumpInfo{
-				ClaimName: fmt.Sprintf("volume%d", dumpIndex),
 			}
 			return res
 		}
@@ -3651,13 +3611,6 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 				[]int{},
 				[]int{},
 				makeVolumeStatusesForUpdate(),
-				[]string{}),
-			Entry("should update volume status with memory dump, if a new memory dump volume is added",
-				makeVolumeStatusesForUpdate(),
-				makeVolumesWithMemoryDump(1, 0),
-				[]int{0},
-				[]int{0},
-				makeVolumeStatusesForUpdateWithMemoryDump(0, 0),
 				[]string{}),
 		)
 
@@ -3887,6 +3840,98 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			Expect(volumeStatus.HotplugVolume).ToNot(BeNil())
 			Expect(volumeStatus.PersistentVolumeClaimInfo).ToNot(BeNil())
 			Expect(volumeStatus.PersistentVolumeClaimInfo.ClaimName).To(Equal("filesystem-pvc"))
+		})
+
+		It("Should initialize MemoryDumpVolume status for MemoryDump utility volume", func() {
+			vmi := newPendingVirtualMachine("testvmi")
+			vmi.Spec.UtilityVolumes = []virtv1.UtilityVolume{
+				{
+					Name: "memory-dump-pvc",
+					PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
+						ClaimName: "memory-dump-pvc",
+					},
+					Type: pointer.P(virtv1.MemoryDump),
+				},
+			}
+
+			pvc := &k8sv1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "memory-dump-pvc",
+					Namespace: k8sv1.NamespaceDefault,
+				},
+				Spec: k8sv1.PersistentVolumeClaimSpec{
+					AccessModes: []k8sv1.PersistentVolumeAccessMode{
+						k8sv1.ReadWriteOnce,
+					},
+				},
+				Status: k8sv1.PersistentVolumeClaimStatus{
+					Phase: k8sv1.ClaimBound,
+				},
+			}
+
+			Expect(controller.pvcIndexer.Add(pvc)).To(Succeed())
+
+			virtlauncherPod := newPodForVirtualMachine(vmi, k8sv1.PodRunning)
+			err := controller.updateVolumeStatus(vmi, virtlauncherPod)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(vmi.Status.VolumeStatus).To(HaveLen(1))
+			volumeStatus := vmi.Status.VolumeStatus[0]
+			Expect(volumeStatus.Name).To(Equal("memory-dump-pvc"))
+			Expect(volumeStatus.MemoryDumpVolume).ToNot(BeNil())
+			Expect(volumeStatus.MemoryDumpVolume.ClaimName).To(Equal("memory-dump-pvc"))
+		})
+
+		It("Should not overwrite existing MemoryDumpVolume status for MemoryDump utility volume", func() {
+			vmi := newPendingVirtualMachine("testvmi")
+			vmi.Spec.UtilityVolumes = []virtv1.UtilityVolume{
+				{
+					Name: "memory-dump-pvc",
+					PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
+						ClaimName: "memory-dump-pvc",
+					},
+					Type: pointer.P(virtv1.MemoryDump),
+				},
+			}
+
+			existingTimestamp := metav1.Now()
+			vmi.Status.VolumeStatus = []virtv1.VolumeStatus{
+				{
+					Name: "memory-dump-pvc",
+					MemoryDumpVolume: &virtv1.DomainMemoryDumpInfo{
+						ClaimName:      "memory-dump-pvc",
+						StartTimestamp: &existingTimestamp,
+						TargetFileName: "dump.dat",
+					},
+				},
+			}
+
+			pvc := &k8sv1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "memory-dump-pvc",
+					Namespace: k8sv1.NamespaceDefault,
+				},
+				Spec: k8sv1.PersistentVolumeClaimSpec{
+					AccessModes: []k8sv1.PersistentVolumeAccessMode{
+						k8sv1.ReadWriteOnce,
+					},
+				},
+				Status: k8sv1.PersistentVolumeClaimStatus{
+					Phase: k8sv1.ClaimBound,
+				},
+			}
+
+			Expect(controller.pvcIndexer.Add(pvc)).To(Succeed())
+
+			virtlauncherPod := newPodForVirtualMachine(vmi, k8sv1.PodRunning)
+			err := controller.updateVolumeStatus(vmi, virtlauncherPod)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(vmi.Status.VolumeStatus).To(HaveLen(1))
+			volumeStatus := vmi.Status.VolumeStatus[0]
+			Expect(volumeStatus.MemoryDumpVolume).ToNot(BeNil())
+			Expect(volumeStatus.MemoryDumpVolume.StartTimestamp).To(Equal(&existingTimestamp))
+			Expect(volumeStatus.MemoryDumpVolume.TargetFileName).To(Equal("dump.dat"))
 		})
 
 		// TODO drop test with legacy code https://github.com/kubevirt/kubevirt/issues/17369
