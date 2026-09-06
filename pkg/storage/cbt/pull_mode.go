@@ -258,7 +258,7 @@ func (ctrl *VMBackupController) generateBackupTunnelCert(backup *backupv1.Virtua
 }
 
 func (ctrl *VMBackupController) handlePullModeTTLExpiry(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) error {
-	if hasVMIBackupStatus(vmi) && !vmi.Status.ChangedBlockTracking.BackupStatus.Completed {
+	if slot := ownedBackupStatus(backup, vmi); slot != nil && !slot.Completed {
 		if err := ctrl.handleAbort(backup, vmi); err != nil {
 			return err
 		}

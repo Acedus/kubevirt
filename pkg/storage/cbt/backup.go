@@ -461,7 +461,7 @@ func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) erro
 		return err
 	}
 
-	backupStatus := getBackupStatus(vmi)
+	backupStatus := ownedBackupStatus(backup, vmi)
 	switch {
 	case backupStatus != nil && backupStatus.Completed:
 		return ctrl.reconcileCompleted(backup, vmi, backupTracker, backupStatus)
@@ -477,6 +477,44 @@ func getBackupStatus(vmi *v1.VirtualMachineInstance) *v1.VirtualMachineInstanceB
 		return nil
 	}
 	return vmi.Status.ChangedBlockTracking.BackupStatus
+}
+
+// backupStartTimestamp is the timestamp the VMI backup slot records for this backup.
+// It is nil only when the backup carries no creation timestamp, which does not happen
+// for an object that came from the API server.
+func backupStartTimestamp(backup *backupv1.VirtualMachineBackup) *metav1.Time {
+	if backup.CreationTimestamp.IsZero() {
+		return nil
+	}
+	return backup.CreationTimestamp.DeepCopy()
+}
+
+// ownsSlot reports whether the VMI's in-flight backup slot belongs to this backup.
+// Identity is the backup's name paired with its creation timestamp, which the slot
+// records as StartTimestamp. The pair distinguishes a backup from one that reused its
+// name after deletion, which the name alone does not. It is also the identity
+// virt-handler already matches the domain backup metadata against, so the controller
+// and the handler agree on which backup a slot refers to.
+func ownsSlot(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) bool {
+	if backup == nil || !hasVMIBackupStatus(vmi) {
+		return false
+	}
+
+	slot := vmi.Status.ChangedBlockTracking.BackupStatus
+	if slot.BackupName == "" || slot.BackupName != backup.Name {
+		return false
+	}
+	return slot.StartTimestamp.Equal(backupStartTimestamp(backup))
+}
+
+// ownedBackupStatus returns the VMI backup slot only when it belongs to this backup.
+// Reconciliation keys on this rather than on the raw slot so a backup never adopts
+// another backup's progress or completion.
+func ownedBackupStatus(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) *v1.VirtualMachineInstanceBackupStatus {
+	if !ownsSlot(backup, vmi) {
+		return nil
+	}
+	return getBackupStatus(vmi)
 }
 
 func (ctrl *VMBackupController) reconcileStart(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, vmiExists bool, backupTracker *backupv1.VirtualMachineBackupTracker, backupDeleting bool, sourceName string) error {
@@ -663,8 +701,8 @@ func (ctrl *VMBackupController) startBackup(backup *backupv1.VirtualMachineBacku
 	}
 	log.Log.Object(backup).Infof("Started backup for VMI %s successfully", vmi.Name)
 
-	if err := ctrl.updateSourceBackupInProgress(vmi, backup.Name, backup.CreationTimestamp); err != nil {
-		return fmt.Errorf("failed to update source backup in progress: %w", err)
+	if err := ctrl.claimSlot(backup, vmi); err != nil {
+		return fmt.Errorf("failed to claim the VMI backup slot: %w", err)
 	}
 
 	setProgressing(backup)
@@ -814,12 +852,15 @@ func (ctrl *VMBackupController) verifyVMIEligibleForBackup(vmi *v1.VirtualMachin
 	return ""
 }
 
-func (ctrl *VMBackupController) removeSourceBackupInProgress(vmi *v1.VirtualMachineInstance) error {
-	if !hasVMIBackupStatus(vmi) {
+// removeSourceBackupInProgress releases the VMI backup slot. It is a no-op unless the
+// slot belongs to this backup, so one backup's teardown can never free another's lock.
+func (ctrl *VMBackupController) removeSourceBackupInProgress(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) error {
+	if !ownsSlot(backup, vmi) {
 		return nil
 	}
 
 	patchBytes, err := patch.New(
+		patch.WithTest("/status/changedBlockTracking/backupStatus", vmi.Status.ChangedBlockTracking.BackupStatus),
 		patch.WithRemove("/status/changedBlockTracking/backupStatus"),
 	).GeneratePayload()
 	if err != nil {
@@ -834,40 +875,39 @@ func (ctrl *VMBackupController) removeSourceBackupInProgress(vmi *v1.VirtualMach
 	return nil
 }
 
-func (ctrl *VMBackupController) updateSourceBackupInProgress(vmi *v1.VirtualMachineInstance, backupName string, creationTimestamp metav1.Time) error {
-	if hasVMIBackupStatus(vmi) {
-		if vmi.Status.ChangedBlockTracking.BackupStatus.BackupName != backupName {
-			return fmt.Errorf("another backup %s is already in progress, cannot start backup %s",
-				vmi.Status.ChangedBlockTracking.BackupStatus.BackupName, backupName)
-		}
+// claimSlot takes the VMI backup slot for this backup. The optimistic test on the
+// observed slot value is the serialization point: when two workers both observe a free
+// slot, only one patch lands and the loser retries.
+//
+// A slot this backup already owns is left untouched rather than rewritten, so the
+// progress fields virt-handler writes into it are never clobbered.
+func (ctrl *VMBackupController) claimSlot(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) error {
+	if ownsSlot(backup, vmi) {
 		return nil
 	}
 
-	var startTimestamp *metav1.Time
-	if !creationTimestamp.IsZero() {
-		startTimestamp = creationTimestamp.DeepCopy()
-	}
-	backupStatus := &v1.VirtualMachineInstanceBackupStatus{
-		BackupName:     backupName,
-		StartTimestamp: startTimestamp,
+	observed := getBackupStatus(vmi)
+	if observed != nil {
+		return fmt.Errorf("another backup %s is already in progress, cannot start backup %s",
+			observed.BackupName, backup.Name)
 	}
 
-	patchSet := patch.New(
-		patch.WithTest("/status/changedBlockTracking/backupStatus", vmi.Status.ChangedBlockTracking.BackupStatus),
-	)
-	if vmi.Status.ChangedBlockTracking.BackupStatus == nil {
-		patchSet.AddOption(patch.WithAdd("/status/changedBlockTracking/backupStatus", backupStatus))
-	} else {
-		patchSet.AddOption(patch.WithReplace("/status/changedBlockTracking/backupStatus", backupStatus))
+	claim := &v1.VirtualMachineInstanceBackupStatus{
+		BackupName:     backup.Name,
+		StartTimestamp: backupStartTimestamp(backup),
 	}
-	patchBytes, err := patchSet.GeneratePayload()
+
+	patchBytes, err := patch.New(
+		patch.WithTest("/status/changedBlockTracking/backupStatus", observed),
+		patch.WithAdd("/status/changedBlockTracking/backupStatus", claim),
+	).GeneratePayload()
 	if err != nil {
 		return err
 	}
 
 	_, err = ctrl.client.VirtualMachineInstance(vmi.Namespace).Patch(context.Background(), vmi.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		log.Log.Errorf("Failed to update source backup in progress: %s", err)
+		log.Log.Object(backup).Reason(err).Error("Failed to claim the VMI backup slot")
 		return err
 	}
 
@@ -968,7 +1008,7 @@ func (ctrl *VMBackupController) cleanupVMIState(backup *backupv1.VirtualMachineB
 		return false, nil
 	}
 
-	if err := ctrl.removeSourceBackupInProgress(vmi); err != nil {
+	if err := ctrl.removeSourceBackupInProgress(backup, vmi); err != nil {
 		return false, err
 	}
 

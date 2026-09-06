@@ -183,10 +183,13 @@ var _ = Describe("Backup Controller", func() {
 		return vmi
 	}
 
-	createInitializedVMI := func() *v1.VirtualMachineInstance {
+	// createInitializedVMI builds a VMI whose backup slot is held by the given backup,
+	// recording the same name and start timestamp that claimSlot writes in production.
+	createInitializedVMI := func(backup *backupv1.VirtualMachineBackup) *v1.VirtualMachineInstance {
 		vmi := createVMIWithPVCAttached()
 		vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
-			BackupName:     backupName,
+			BackupName:     backup.Name,
+			StartTimestamp: backupStartTimestamp(backup),
 			Completed:      false,
 			CheckpointName: pointer.P(checkpointName),
 		}
@@ -780,7 +783,7 @@ var _ = Describe("Backup Controller", func() {
 				{VolumeName: "rootdisk"},
 				{VolumeName: "datadisk"},
 			}
-			vmi := createInitializedVMI()
+			vmi := createInitializedVMI(backup)
 			vmi.Status.ChangedBlockTracking.BackupStatus.Completed = false
 			vmi.Status.ChangedBlockTracking.BackupStatus.Volumes = volumesInfo
 			controller.vmiStore.Add(vmi)
@@ -808,7 +811,7 @@ var _ = Describe("Backup Controller", func() {
 			vm := createVM(vmName)
 			controller.vmStore.Add(vm)
 
-			vmi := createInitializedVMI()
+			vmi := createInitializedVMI(backup)
 			vmi.Status.ChangedBlockTracking.BackupStatus.Completed = false
 			vmi.Status.ChangedBlockTracking.BackupStatus.Volumes = []v1.VirtualMachineInstanceBackupVolumeInfo{{VolumeName: "rootdisk"}}
 			controller.vmiStore.Add(vmi)
@@ -837,7 +840,7 @@ var _ = Describe("Backup Controller", func() {
 				volumesInfo := []v1.VirtualMachineInstanceBackupVolumeInfo{
 					{VolumeName: "rootdisk"},
 				}
-				vmi := createInitializedVMI()
+				vmi := createInitializedVMI(backup)
 				vmi.Status.ChangedBlockTracking.BackupStatus.Completed = false
 				vmi.Status.ChangedBlockTracking.BackupStatus.Volumes = volumesInfo
 				vmi.Status.ChangedBlockTracking.BackupStatus.QuiesceStatus = quiesceStatus
@@ -1061,7 +1064,7 @@ var _ = Describe("Backup Controller", func() {
 
 			vm := createVM(vmName)
 			controller.vmStore.Add(vm)
-			vmi := createInitializedVMI()
+			vmi := createInitializedVMI(backup)
 			controller.vmiStore.Add(vmi)
 
 			vmiInterface.EXPECT().
@@ -1095,7 +1098,7 @@ var _ = Describe("Backup Controller", func() {
 
 			vm := createVM(vmName)
 			controller.vmStore.Add(vm)
-			vmi := createInitializedVMI()
+			vmi := createInitializedVMI(backup)
 			controller.vmiStore.Add(vmi)
 
 			vmiInterface.EXPECT().
@@ -1123,7 +1126,7 @@ var _ = Describe("Backup Controller", func() {
 
 			vm := createVM(vmName)
 			controller.vmStore.Add(vm)
-			vmi := createInitializedVMI()
+			vmi := createInitializedVMI(backup)
 			controller.vmiStore.Add(vmi)
 
 			vmiInterface.EXPECT().
@@ -1153,7 +1156,7 @@ var _ = Describe("Backup Controller", func() {
 			vm := createVM(vmName)
 			controller.vmStore.Add(vm)
 
-			vmiCanceled := createInitializedVMI()
+			vmiCanceled := createInitializedVMI(backup)
 			vmiCanceled.Spec.UtilityVolumes = nil
 			vmiCanceled.Status.VolumeStatus = nil
 			vmiCanceled.Status.ChangedBlockTracking.BackupStatus.Completed = true
@@ -1192,7 +1195,7 @@ var _ = Describe("Backup Controller", func() {
 			vm := createVM(vmName)
 			controller.vmStore.Add(vm)
 
-			vmi := createInitializedVMI()
+			vmi := createInitializedVMI(backup)
 			vmi.Status.Phase = v1.Failed
 			controller.vmiStore.Add(vmi)
 
@@ -1216,7 +1219,7 @@ var _ = Describe("Backup Controller", func() {
 			vm := createVM(vmName)
 			controller.vmStore.Add(vm)
 
-			vmiDetached := createInitializedVMI()
+			vmiDetached := createInitializedVMI(backup)
 			vmiDetached.Status.Phase = v1.Failed
 			vmiDetached.Spec.UtilityVolumes = nil
 			vmiDetached.Status.VolumeStatus = nil
@@ -1236,7 +1239,7 @@ var _ = Describe("Backup Controller", func() {
 	})
 
 	Context("startBackup", func() {
-		It("should return error if updateSourceBackupInProgress fails", func() {
+		It("should return error if claiming the VMI backup slot fails", func() {
 			backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
 			backup.Finalizers = []string{vmBackupFinalizer}
 			backup.Status = &backupv1.VirtualMachineBackupStatus{}
@@ -1257,7 +1260,7 @@ var _ = Describe("Backup Controller", func() {
 
 			err := controller.startBackup(backup, vmi, nil)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("failed to update source backup in progress"))
+			Expect(err.Error()).To(ContainSubstring("failed to claim the VMI backup slot"))
 		})
 
 		It("should return error if Start backup command fails", func() {
@@ -1267,7 +1270,7 @@ var _ = Describe("Backup Controller", func() {
 
 			vm := createVM(vmName)
 			controller.vmStore.Add(vm)
-			vmi := createInitializedVMI()
+			vmi := createInitializedVMI(backup)
 			controller.vmiStore.Add(vmi)
 			pvc := createPVC(pvcName)
 			controller.pvcStore.Add(pvc)
@@ -1282,8 +1285,9 @@ var _ = Describe("Backup Controller", func() {
 		})
 	})
 
-	Context("updateSourceBackupInProgress", func() {
+	Context("claimSlot", func() {
 		It("should fail when another backup is already in progress", func() {
+			backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
 			vmi := createVMI()
 			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
 				BackupName:     "other-backup",
@@ -1291,7 +1295,7 @@ var _ = Describe("Backup Controller", func() {
 				CheckpointName: pointer.P("other-checkpoint"),
 			}
 
-			err := controller.updateSourceBackupInProgress(vmi, backupName, metav1.Now())
+			err := controller.claimSlot(backup, vmi)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("another backup"))
 			Expect(err.Error()).To(ContainSubstring("other-backup"))
@@ -1299,6 +1303,8 @@ var _ = Describe("Backup Controller", func() {
 		})
 
 		It("should successfully patch VMI to add backup status", func() {
+			backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
+			backup.CreationTimestamp = metav1.Now()
 			vmi := createVMI()
 			vmi.Status.ChangedBlockTracking.BackupStatus = nil
 
@@ -1309,18 +1315,22 @@ var _ = Describe("Backup Controller", func() {
 					patched = true
 					Expect(string(patchBytes)).To(ContainSubstring("backupStatus"))
 					Expect(string(patchBytes)).To(ContainSubstring(backupName))
+					Expect(string(patchBytes)).To(ContainSubstring("startTimestamp"))
 					return vmi, nil
 				})
 
-			err := controller.updateSourceBackupInProgress(vmi, backupName, metav1.Now())
+			err := controller.claimSlot(backup, vmi)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(patched).To(BeTrue())
 		})
 
-		It("should return nil when same backup already in progress", func() {
+		It("should return nil when this backup already owns the slot", func() {
+			backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
+			backup.CreationTimestamp = metav1.Now()
 			vmi := createVMI()
 			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
 				BackupName:     backupName,
+				StartTimestamp: backup.CreationTimestamp.DeepCopy(),
 				Completed:      false,
 				CheckpointName: pointer.P(checkpointName),
 			}
@@ -1329,8 +1339,66 @@ var _ = Describe("Backup Controller", func() {
 				Patch(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 				Times(0)
 
-			err := controller.updateSourceBackupInProgress(vmi, backupName, metav1.Now())
+			err := controller.claimSlot(backup, vmi)
 			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("should not adopt a slot carrying this backup's name under a different start timestamp", func() {
+			backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
+			backup.CreationTimestamp = metav1.Now()
+			vmi := createVMI()
+			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
+				BackupName:     backupName,
+				StartTimestamp: pointer.P(metav1.NewTime(backup.CreationTimestamp.Add(-time.Hour))),
+			}
+
+			err := controller.claimSlot(backup, vmi)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("already in progress"))
+		})
+	})
+
+	Context("ownsSlot", func() {
+		It("should not own a slot recorded for a different backup", func() {
+			backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
+			vmi := createVMI()
+			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
+				BackupName: "other-backup",
+			}
+
+			Expect(ownsSlot(backup, vmi)).To(BeFalse())
+		})
+
+		It("should not own a slot reusing this backup's name from an earlier incarnation", func() {
+			backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
+			backup.CreationTimestamp = metav1.Now()
+			vmi := createVMI()
+			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
+				BackupName:     backupName,
+				StartTimestamp: pointer.P(metav1.NewTime(backup.CreationTimestamp.Add(-time.Hour))),
+			}
+
+			Expect(ownsSlot(backup, vmi)).To(BeFalse())
+		})
+
+		It("should own a slot matching name and start timestamp", func() {
+			backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
+			backup.CreationTimestamp = metav1.Now()
+			vmi := createVMI()
+			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
+				BackupName:     backupName,
+				StartTimestamp: backup.CreationTimestamp.DeepCopy(),
+			}
+
+			Expect(ownsSlot(backup, vmi)).To(BeTrue())
+		})
+
+		It("should not own an absent slot", func() {
+			backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
+			vmi := createVMI()
+			vmi.Status.ChangedBlockTracking.BackupStatus = nil
+
+			Expect(ownsSlot(backup, vmi)).To(BeFalse())
 		})
 	})
 
@@ -1551,7 +1619,7 @@ var _ = Describe("Backup Controller", func() {
 		vm := createVM(vmName)
 		controller.vmStore.Add(vm)
 
-		vmi := createInitializedVMI()
+		vmi := createInitializedVMI(backup)
 		vmi.Status.ChangedBlockTracking.BackupStatus.Completed = true
 		controller.vmiStore.Add(vmi)
 
@@ -1720,7 +1788,7 @@ var _ = Describe("Backup Controller", func() {
 		controller.vmStore.Add(vm)
 
 		// VMI with backup completed but PVC still attached (cleanup will return early)
-		vmi := createInitializedVMI()
+		vmi := createInitializedVMI(backup)
 		vmi.Status.ChangedBlockTracking.BackupStatus.Completed = true
 		controller.vmiStore.Add(vmi)
 
@@ -1765,7 +1833,7 @@ var _ = Describe("Backup Controller", func() {
 				},
 			}
 			vmExport = createBackupVMExport(backup)
-			vmi = createInitializedVMI()
+			vmi = createInitializedVMI(backup)
 			controller.vmiStore.Add(vmi)
 		})
 
@@ -2062,10 +2130,12 @@ var _ = Describe("Backup Controller", func() {
 		})
 
 		It("should abort when backup is still in progress at TTL expiry", func() {
-			vmi.Status.ChangedBlockTracking.BackupStatus.Completed = false
-			controller.vmiStore.Update(vmi)
 			backup.Spec.TTLDuration = &metav1.Duration{Duration: 5 * time.Minute}
 			backup.CreationTimestamp = metav1.NewTime(time.Now().Add(-5 * time.Minute))
+			vmi.Status.ChangedBlockTracking.BackupStatus.Completed = false
+			// The slot records the backup's creation timestamp, which this test moves.
+			vmi.Status.ChangedBlockTracking.BackupStatus.StartTimestamp = backupStartTimestamp(backup)
+			controller.vmiStore.Update(vmi)
 
 			vmiInterface.EXPECT().
 				Backup(gomock.Any(), vmName, gomock.Any()).
@@ -2091,8 +2161,9 @@ var _ = Describe("Backup Controller", func() {
 			vmi.Status.ChangedBlockTracking = &v1.ChangedBlockTrackingStatus{
 				State: v1.ChangedBlockTrackingEnabled,
 				BackupStatus: &v1.VirtualMachineInstanceBackupStatus{
-					BackupName: backupName,
-					Completed:  true,
+					BackupName:     backupName,
+					StartTimestamp: backupStartTimestamp(backup),
+					Completed:      true,
 				},
 			}
 			controller.vmiStore.Update(vmi)
