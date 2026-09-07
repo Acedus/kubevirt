@@ -237,8 +237,15 @@ func (ctrl *VMBackupController) handleUpdateVMI(oldObj, newObj interface{}) {
 		return
 	}
 
-	// For each tracker, find all backups that reference it
+	// Checkpoints only go stale when the VMI moves to a new pod, so leave the
+	// trackers alone for the rest of the status churn.
+	podUIDChanged := controller.VMIActivePodUID(ovmi) != controller.VMIActivePodUID(nvmi)
+
 	for _, trackerKey := range trackerKeys {
+		if podUIDChanged {
+			ctrl.trackerQueue.Add(trackerKey)
+		}
+
 		backupKeys, err := ctrl.backupInformer.GetIndexer().IndexKeys("backupTracker", trackerKey)
 		if err != nil {
 			continue
@@ -261,9 +268,7 @@ func (ctrl *VMBackupController) handleBackupTracker(obj interface{}) {
 
 	key := types.NamespacedName{Namespace: tracker.Namespace, Name: tracker.Name}.String()
 
-	// Enqueue tracker for checkpoint redefinition if needed
-	if trackerNeedsCheckpointRedefinition(tracker) {
-		log.Log.V(3).Infof("enqueued tracker %q for checkpoint redefinition", key)
+	if TrackerHasCheckpoint(tracker) {
 		ctrl.trackerQueue.Add(key)
 	}
 
@@ -534,7 +539,7 @@ func (ctrl *VMBackupController) checkPrerequisites(backup *backupv1.VirtualMachi
 	if reason := ctrl.verifyVMIEligibleForBackup(vmi); reason != "" {
 		return reason, nil
 	}
-	if trackerNeedsCheckpointRedefinition(backupTracker) {
+	if TrackerNeedsRedefinitionForPod(backupTracker, vmi) {
 		return fmt.Sprintf(trackerCheckpointRedefinitionPending, backupTracker.Name), nil
 	}
 	if migrations.IsMigrating(vmi) {
@@ -581,7 +586,7 @@ func (ctrl *VMBackupController) reconcileActive(backup *backupv1.VirtualMachineB
 
 func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, backupTracker *backupv1.VirtualMachineBackupTracker, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
 	if backupTracker != nil && backupStatus.CheckpointName != nil && !backupStatus.Failed {
-		if err := ctrl.updateBackupTracker(backup.Namespace, backupTracker, backupStatus); err != nil {
+		if err := ctrl.updateBackupTracker(backup.Namespace, backupTracker, vmi, backupStatus); err != nil {
 			log.Log.Object(backup).Reason(err).Error("Failed to update BackupTracker")
 			return err
 		}
@@ -899,10 +904,12 @@ func (ctrl *VMBackupController) resolveCompletion(backup *backupv1.VirtualMachin
 	ctrl.recorder.Eventf(backup, corev1.EventTypeNormal, backupCompletedEvent, backupCompleted)
 }
 
-func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *backupv1.VirtualMachineBackupTracker, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
+func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *backupv1.VirtualMachineBackupTracker, vmi *v1.VirtualMachineInstance, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
 	if tracker == nil {
 		return nil
 	}
+
+	podUID := controller.VMIActivePodUID(vmi)
 
 	newCheckpoint := backupv1.BackupCheckpoint{
 		Name:         *backupStatus.CheckpointName,
@@ -910,15 +917,20 @@ func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *b
 		Volumes:      toBackupVolumeInfo(backupStatus.Volumes),
 	}
 
-	newStatus := &backupv1.VirtualMachineBackupTrackerStatus{
-		LatestCheckpoint: &newCheckpoint,
-	}
-
 	patchSet := patch.New()
-	if !TrackerHasCheckpoint(tracker) {
-		patchSet.AddOption(patch.WithAdd("/status", newStatus))
-	} else {
-		patchSet.AddOption(patch.WithReplace("/status/latestCheckpoint", &newCheckpoint))
+
+	if tracker.Status == nil {
+		patchSet.AddOption(
+			patch.WithTest("/status", nil),
+			patch.WithAdd("/status", &backupv1.VirtualMachineBackupTrackerStatus{}),
+		)
+	}
+	patchSet.AddOption(patch.WithAdd("/status/latestCheckpoint", &newCheckpoint))
+	if podUID != "" {
+		if tracker.Status != nil && tracker.Status.LastTrackedPodUID != nil {
+			patchSet.AddOption(patch.WithTest("/status/lastTrackedPodUID", *tracker.Status.LastTrackedPodUID))
+		}
+		patchSet.AddOption(patch.WithAdd("/status/lastTrackedPodUID", podUID))
 	}
 
 	patchBytes, err := patchSet.GeneratePayload()

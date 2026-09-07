@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 
@@ -50,11 +51,25 @@ var _ = Describe("VMBackupController", func() {
 		kubevirtCli *kubevirtfake.Clientset
 	)
 
+	const (
+		testNodeName = "test-node"
+	)
+
+	var (
+		testPodUID  = types.UID("test-pod-uid-123")
+		stalePodUID = types.UID("stale-pod-uid-456")
+	)
+
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
 		kubevirtCli = kubevirtfake.NewSimpleClientset()
 		virtClient = kubecli.NewMockKubevirtClient(mockCtrl)
 	})
+
+	setActivePod := func(vmi *v1.VirtualMachineInstance, podUID types.UID) {
+		vmi.Status.NodeName = testNodeName
+		vmi.Status.ActivePods = map[types.UID]string{podUID: testNodeName}
+	}
 
 	Context("TrackerHasCheckpoint", func() {
 		DescribeTable("should correctly identify trackers with checkpoints",
@@ -102,78 +117,45 @@ var _ = Describe("VMBackupController", func() {
 		)
 	})
 
-	Context("trackerNeedsCheckpointRedefinition", func() {
-		DescribeTable("should correctly identify trackers needing redefinition",
-			func(tracker *backupv1.VirtualMachineBackupTracker, expected bool) {
-				Expect(trackerNeedsCheckpointRedefinition(tracker)).To(Equal(expected))
+	Context("TrackerNeedsRedefinitionForPod", func() {
+		DescribeTable("with an active pod",
+			func(hasCheckpoint bool, trackedPodUID *types.UID, expected bool) {
+				tracker := createTracker("tracker1", "test-vmi", hasCheckpoint, trackedPodUID)
+				vmi := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+				setActivePod(vmi, testPodUID)
+				Expect(TrackerNeedsRedefinitionForPod(tracker, vmi)).To(Equal(expected))
 			},
-			Entry("needs redefinition when all conditions met",
-				&backupv1.VirtualMachineBackupTracker{
-					Status: &backupv1.VirtualMachineBackupTrackerStatus{
-						CheckpointRedefinitionRequired: pointer.P(true),
-						LatestCheckpoint: &backupv1.BackupCheckpoint{
-							Name: "checkpoint-1",
-						},
-					},
-				},
-				true,
-			),
-			Entry("does not need redefinition when tracker is nil",
-				nil,
-				false,
-			),
-			Entry("does not need redefinition when status is nil",
-				&backupv1.VirtualMachineBackupTracker{
-					Status: nil,
-				},
-				false,
-			),
-			Entry("does not need redefinition when flag is nil",
-				&backupv1.VirtualMachineBackupTracker{
-					Status: &backupv1.VirtualMachineBackupTrackerStatus{
-						CheckpointRedefinitionRequired: nil,
-						LatestCheckpoint: &backupv1.BackupCheckpoint{
-							Name: "checkpoint-1",
-						},
-					},
-				},
-				false,
-			),
-			Entry("does not need redefinition when flag is false",
-				&backupv1.VirtualMachineBackupTracker{
-					Status: &backupv1.VirtualMachineBackupTrackerStatus{
-						CheckpointRedefinitionRequired: pointer.P(false),
-						LatestCheckpoint: &backupv1.BackupCheckpoint{
-							Name: "checkpoint-1",
-						},
-					},
-				},
-				false,
-			),
-			Entry("does not need redefinition when checkpoint is nil",
-				&backupv1.VirtualMachineBackupTracker{
-					Status: &backupv1.VirtualMachineBackupTrackerStatus{
-						CheckpointRedefinitionRequired: pointer.P(true),
-						LatestCheckpoint:               nil,
-					},
-				},
-				false,
-			),
-			Entry("does not need redefinition when checkpoint name is empty",
-				&backupv1.VirtualMachineBackupTracker{
-					Status: &backupv1.VirtualMachineBackupTrackerStatus{
-						CheckpointRedefinitionRequired: pointer.P(true),
-						LatestCheckpoint: &backupv1.BackupCheckpoint{
-							Name: "",
-						},
-					},
-				},
-				false,
-			),
+			Entry("nil LastTrackedPodUID", true, nil, true),
+			Entry("stale LastTrackedPodUID", true, new(stalePodUID), true),
+			Entry("matching LastTrackedPodUID", true, new(testPodUID), false),
+			Entry("no checkpoint", false, nil, false),
 		)
+
+		It("needs redefinition when the VMI has no active pod", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, new(testPodUID))
+			vmi := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			Expect(TrackerNeedsRedefinitionForPod(tracker, vmi)).To(BeTrue())
+		})
+
+		It("needs redefinition when more than one active pod is on the VMI's node", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, new(testPodUID))
+			vmi := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			vmi.Status.NodeName = testNodeName
+			vmi.Status.ActivePods = map[types.UID]string{
+				testPodUID:  testNodeName,
+				stalePodUID: testNodeName,
+			}
+			Expect(TrackerNeedsRedefinitionForPod(tracker, vmi)).To(BeTrue())
+		})
+
+		It("does not need redefinition without a checkpoint, even with no active pod", func() {
+			tracker := createTracker("tracker1", "test-vmi", false, nil)
+			vmi := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			Expect(TrackerNeedsRedefinitionForPod(tracker, vmi)).To(BeFalse())
+		})
 	})
 
-	Context("clearRedefinitionFlag", func() {
+	Context("updateLastTrackedPodUID", func() {
 		var (
 			ctrl    *VMBackupController
 			tracker *backupv1.VirtualMachineBackupTracker
@@ -183,32 +165,70 @@ var _ = Describe("VMBackupController", func() {
 			ctrl = &VMBackupController{
 				client: virtClient,
 			}
+		})
 
-			tracker = createTracker("tracker1", "test-vmi", true, true)
+		It("should add LastTrackedPodUID when nil", func() {
+			tracker = createTracker("tracker1", "test-vmi", true, nil)
 			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
 				context.Background(), tracker, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
-		})
 
-		It("should clear only the redefinition flag", func() {
 			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
 				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
 
-			err := ctrl.clearRedefinitionFlag(tracker)
+			err = ctrl.updateLastTrackedPodUID(tracker, testPodUID)
 			Expect(err).ToNot(HaveOccurred())
 
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
 				context.Background(), "tracker1", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			// Flag should be cleared
-			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
-			// Checkpoint should still exist
+			Expect(updated.Status.LastTrackedPodUID).ToNot(BeNil())
+			Expect(*updated.Status.LastTrackedPodUID).To(Equal(testPodUID))
 			Expect(updated.Status.LatestCheckpoint).ToNot(BeNil())
 			Expect(updated.Status.LatestCheckpoint.Name).To(Equal("checkpoint-1"))
 		})
+
+		It("should replace LastTrackedPodUID when already set", func() {
+			tracker = createTracker("tracker1", "test-vmi", true, pointer.P(stalePodUID))
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			err = ctrl.updateLastTrackedPodUID(tracker, testPodUID)
+			Expect(err).ToNot(HaveOccurred())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.LastTrackedPodUID).ToNot(BeNil())
+			Expect(*updated.Status.LastTrackedPodUID).To(Equal(testPodUID))
+		})
+
+		It("should fail instead of overwriting a pod UID written since the informer read", func() {
+			tracker = createTracker("tracker1", "test-vmi", true, nil)
+			live := tracker.DeepCopy()
+			live.Status.LastTrackedPodUID = new(stalePodUID)
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), live, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			Expect(ctrl.updateLastTrackedPodUID(tracker, testPodUID)).To(HaveOccurred())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.LastTrackedPodUID).ToNot(BeNil())
+			Expect(*updated.Status.LastTrackedPodUID).To(Equal(stalePodUID))
+		})
 	})
 
-	Context("clearCheckpointAndFlag", func() {
+	Context("clearCheckpointAndTrackedPod", func() {
 		var (
 			ctrl    *VMBackupController
 			tracker *backupv1.VirtualMachineBackupTracker
@@ -219,23 +239,23 @@ var _ = Describe("VMBackupController", func() {
 				client: virtClient,
 			}
 
-			tracker = createTracker("tracker1", "test-vmi", true, true)
+			tracker = createTracker("tracker1", "test-vmi", true, pointer.P(testPodUID))
 			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
 				context.Background(), tracker, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 		})
 
-		It("should clear both checkpoint and redefinition flag", func() {
+		It("should clear both checkpoint and LastTrackedPodUID", func() {
 			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
 				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
 
-			err := ctrl.clearCheckpointAndFlag(tracker)
+			err := ctrl.clearCheckpointAndTrackedPod(tracker)
 			Expect(err).ToNot(HaveOccurred())
 
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
 				context.Background(), "tracker1", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
+			Expect(updated.Status.LastTrackedPodUID).To(BeNil())
 			Expect(updated.Status.LatestCheckpoint).To(BeNil())
 		})
 	})
@@ -272,33 +292,43 @@ var _ = Describe("VMBackupController", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
-		It("should return nil when tracker no longer needs redefinition", func() {
-			// Tracker without redefinition flag set
-			tracker := createTracker("tracker1", "test-vmi", false, false)
+		It("should return nil when tracker has no checkpoint", func() {
+			tracker := createTracker("tracker1", "test-vmi", false, nil)
 			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
 
 			err := ctrl.executeTracker(testNamespace + "/tracker1")
 			Expect(err).ToNot(HaveOccurred())
 		})
 
-		It("should return error when VMI not found", func() {
-			tracker := createTracker("tracker1", "test-vmi", true, true)
+		It("should return nil when LastTrackedPodUID already matches", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, pointer.P(testPodUID))
 			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
-			// Don't add VMI to store
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			setActivePod(testVMI, testPodUID)
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
 
 			err := ctrl.executeTracker(testNamespace + "/tracker1")
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("not found"))
+			Expect(err).ToNot(HaveOccurred())
 		})
 
-		It("should call RedefineCheckpoint and clear flag on success", func() {
-			tracker := createTracker("tracker1", "test-vmi", true, true)
+		It("should return nil when VMI is not running", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, nil)
+			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
+
+			err := ctrl.executeTracker(testNamespace + "/tracker1")
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("should call RedefineCheckpoint and set LastTrackedPodUID on success", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, nil)
 			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
 			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
 				context.Background(), tracker, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
 			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			setActivePod(testVMI, testPodUID)
 			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
 
 			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface)
@@ -309,23 +339,49 @@ var _ = Describe("VMBackupController", func() {
 			err = ctrl.executeTracker(testNamespace + "/tracker1")
 			Expect(err).ToNot(HaveOccurred())
 
-			// Verify flag was cleared
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
 				context.Background(), "tracker1", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
-			// Checkpoint should still exist
+			Expect(updated.Status.LastTrackedPodUID).ToNot(BeNil())
+			Expect(*updated.Status.LastTrackedPodUID).To(Equal(testPodUID))
 			Expect(updated.Status.LatestCheckpoint).ToNot(BeNil())
 		})
 
-		It("should clear checkpoint on permanent error (HTTP 422)", func() {
-			tracker := createTracker("tracker1", "test-vmi", true, true)
+		It("should redefine when LastTrackedPodUID is stale", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, pointer.P(stalePodUID))
 			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
 			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
 				context.Background(), tracker, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
 			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			setActivePod(testVMI, testPodUID)
+			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
+
+			virtClient.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiInterface)
+			vmiInterface.EXPECT().RedefineCheckpoint(gomock.Any(), "test-vmi", gomock.Any()).Return(nil)
+			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+				Return(kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace))
+
+			err = ctrl.executeTracker(testNamespace + "/tracker1")
+			Expect(err).ToNot(HaveOccurred())
+
+			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
+				context.Background(), "tracker1", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Status.LastTrackedPodUID).ToNot(BeNil())
+			Expect(*updated.Status.LastTrackedPodUID).To(Equal(testPodUID))
+		})
+
+		It("should clear checkpoint on permanent error (HTTP 422)", func() {
+			tracker := createTracker("tracker1", "test-vmi", true, pointer.P(stalePodUID))
+			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
+			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
+				context.Background(), tracker, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			setActivePod(testVMI, testPodUID)
 			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
 
 			invalidErr := errors.New("unexpected return code 422 (422 Unprocessable Entity), message: RedefineCheckpoint failed: virError(Code=109, Domain=10, Message='checkpoint inconsistent: missing or broken bitmap')")
@@ -338,25 +394,24 @@ var _ = Describe("VMBackupController", func() {
 			err = ctrl.executeTracker(testNamespace + "/tracker1")
 			Expect(err).ToNot(HaveOccurred())
 
-			// Verify both checkpoint and flag were cleared
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
 				context.Background(), "tracker1", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
+			Expect(updated.Status.LastTrackedPodUID).To(BeNil())
 			Expect(updated.Status.LatestCheckpoint).To(BeNil())
 
-			// Verify event was emitted
 			Eventually(recorder.Events).Should(Receive(ContainSubstring("CheckpointRedefinitionFailed")))
 		})
 
 		It("should return error for requeue on transient error (HTTP 503)", func() {
-			tracker := createTracker("tracker1", "test-vmi", true, true)
+			tracker := createTracker("tracker1", "test-vmi", true, pointer.P(stalePodUID))
 			Expect(trackerInformer.GetStore().Add(tracker)).To(Succeed())
 			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
 				context.Background(), tracker, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
 			testVMI := libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
+			setActivePod(testVMI, testPodUID)
 			Expect(vmiInformer.GetStore().Add(testVMI)).To(Succeed())
 
 			transientErr := apierrors.NewServiceUnavailable("service temporarily unavailable")
@@ -368,15 +423,13 @@ var _ = Describe("VMBackupController", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(apierrors.IsServiceUnavailable(err)).To(BeTrue())
 
-			// Verify tracker was NOT modified
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
 				context.Background(), "tracker1", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(updated.Status.CheckpointRedefinitionRequired).ToNot(BeNil())
-			Expect(*updated.Status.CheckpointRedefinitionRequired).To(BeTrue())
+			Expect(updated.Status.LastTrackedPodUID).ToNot(BeNil())
+			Expect(*updated.Status.LastTrackedPodUID).To(Equal(stalePodUID))
 			Expect(updated.Status.LatestCheckpoint).ToNot(BeNil())
 
-			// Verify no event was emitted
 			Consistently(recorder.Events).ShouldNot(Receive())
 		})
 	})
@@ -397,7 +450,7 @@ var _ = Describe("VMBackupController", func() {
 				recorder: recorder,
 			}
 
-			tracker = createTracker("tracker1", "test-vmi", true, true)
+			tracker = createTracker("tracker1", "test-vmi", true, pointer.P(stalePodUID))
 			_, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(
 				context.Background(), tracker, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
@@ -410,13 +463,11 @@ var _ = Describe("VMBackupController", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(apierrors.IsServiceUnavailable(err)).To(BeTrue())
 
-			// Verify checkpoint was NOT cleared (tracker unchanged in fake client)
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
 				context.Background(), "tracker1", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(updated.Status.LatestCheckpoint).ToNot(BeNil())
 
-			// Verify no event was emitted
 			Consistently(recorder.Events).ShouldNot(Receive())
 		})
 
@@ -427,13 +478,11 @@ var _ = Describe("VMBackupController", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(Equal("some transient network error"))
 
-			// Verify checkpoint was NOT cleared
 			updated, err := kubevirtCli.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(
 				context.Background(), "tracker1", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(updated.Status.LatestCheckpoint).ToNot(BeNil())
 
-			// Verify no event was emitted
 			Consistently(recorder.Events).ShouldNot(Receive())
 		})
 
@@ -449,14 +498,14 @@ var _ = Describe("VMBackupController", func() {
 				context.Background(), "tracker1", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(updated.Status.LatestCheckpoint).To(BeNil())
-			Expect(updated.Status.CheckpointRedefinitionRequired).To(BeNil())
+			Expect(updated.Status.LastTrackedPodUID).To(BeNil())
 
 			Eventually(recorder.Events).Should(Receive(ContainSubstring("CheckpointRedefinitionFailed")))
 		})
 	})
 })
 
-func createTracker(name, vmName string, hasCheckpoint bool, redefinitionRequired bool) *backupv1.VirtualMachineBackupTracker {
+func createTracker(name, vmName string, hasCheckpoint bool, syncedPodUID *types.UID) *backupv1.VirtualMachineBackupTracker {
 	tracker := &backupv1.VirtualMachineBackupTracker{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -475,7 +524,7 @@ func createTracker(name, vmName string, hasCheckpoint bool, redefinitionRequired
 			LatestCheckpoint: &backupv1.BackupCheckpoint{
 				Name: "checkpoint-1",
 			},
-			CheckpointRedefinitionRequired: pointer.P(redefinitionRequired),
+			LastTrackedPodUID: syncedPodUID,
 		}
 	}
 	return tracker

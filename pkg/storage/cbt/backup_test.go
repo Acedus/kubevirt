@@ -21,6 +21,7 @@ package cbt
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -337,6 +338,10 @@ var _ = Describe("Backup Controller", func() {
 				workqueue.DefaultTypedControllerRateLimiter[string](),
 				workqueue.TypedRateLimitingQueueConfig[string]{Name: "test-backup-queue"},
 			),
+			trackerQueue: workqueue.NewTypedRateLimitingQueueWithConfig(
+				workqueue.DefaultTypedControllerRateLimiter[string](),
+				workqueue.TypedRateLimitingQueueConfig[string]{Name: "test-tracker-queue"},
+			),
 		}
 		controller.hasSynced = func() bool {
 			return backupInformer.HasSynced() && backupTrackerInformer.HasSynced() && vmInformer.HasSynced() && vmiInformer.HasSynced() && pvcInformer.HasSynced()
@@ -431,7 +436,7 @@ var _ = Describe("Backup Controller", func() {
 
 	It("should wait when backupTracker needs checkpoint redefinition", func() {
 		backupTracker := createBackupTracker(backupTrackerName, vmName, "existing-checkpoint")
-		backupTracker.Status.CheckpointRedefinitionRequired = pointer.P(true)
+		backupTracker.Status.LastTrackedPodUID = new(types.UID("stale-pod-uid"))
 		controller.backupTrackerInformer.GetStore().Add(backupTracker)
 
 		backup := createBackupWithTracker(backupName, vmName, pvcName)
@@ -441,6 +446,8 @@ var _ = Describe("Backup Controller", func() {
 		controller.vmStore.Add(vm)
 
 		vmi := createVMIWithPVCAttached()
+		vmi.Status.NodeName = "test-node"
+		vmi.Status.ActivePods = map[types.UID]string{types.UID("current-pod-uid"): "test-node"}
 		controller.vmiStore.Add(vmi)
 
 		statusUpdated := false
@@ -1467,6 +1474,7 @@ var _ = Describe("Backup Controller", func() {
 
 	It("should initiate incremental backup when backupTracker has LatestCheckpoint", func() {
 		backupTracker := createBackupTracker(backupTrackerName, vmName, checkpointName)
+		backupTracker.Status.LastTrackedPodUID = new(types.UID("current-pod-uid"))
 		controller.backupTrackerInformer.GetStore().Add(backupTracker)
 
 		backup := createBackupWithTracker(backupName, vmName, pvcName)
@@ -1476,6 +1484,8 @@ var _ = Describe("Backup Controller", func() {
 		controller.vmStore.Add(vm)
 
 		vmi := createVMIWithPVCAttached()
+		vmi.Status.NodeName = "test-node"
+		vmi.Status.ActivePods = map[types.UID]string{types.UID("current-pod-uid"): "test-node"}
 		controller.vmiStore.Add(vmi)
 
 		pvc := createPVC(pvcName)
@@ -1504,6 +1514,7 @@ var _ = Describe("Backup Controller", func() {
 
 	It("should initiate full backup with ForceFullBackup even with LatestCheckpoint", func() {
 		backupTracker := createBackupTracker(backupTrackerName, vmName, checkpointName)
+		backupTracker.Status.LastTrackedPodUID = new(types.UID("current-pod-uid"))
 		controller.backupTrackerInformer.GetStore().Add(backupTracker)
 
 		backup := createBackupWithTracker(backupName, vmName, pvcName)
@@ -1514,6 +1525,8 @@ var _ = Describe("Backup Controller", func() {
 		controller.vmStore.Add(vm)
 
 		vmi := createVMIWithPVCAttached()
+		vmi.Status.NodeName = "test-node"
+		vmi.Status.ActivePods = map[types.UID]string{types.UID("current-pod-uid"): "test-node"}
 		controller.vmiStore.Add(vmi)
 
 		pvc := createPVC(pvcName)
@@ -1616,9 +1629,10 @@ var _ = Describe("Backup Controller", func() {
 		Expect(backupCopy.Status.CheckpointName).To(BeNil())
 	})
 
-	DescribeTable("should update backupTracker with checkpoint and volumes info when backup completes",
-		func(existingCheckpoint string, expectedOp string) {
-			backupTracker := createBackupTracker(backupTrackerName, vmName, existingCheckpoint)
+	Context("updating the backupTracker when a backup completes", func() {
+		// completeBackup runs a completing backup against backupTracker and returns
+		// the ops the controller patched onto the tracker's status subresource.
+		completeBackup := func(backupTracker *backupv1.VirtualMachineBackupTracker, activePodUID types.UID) []string {
 			controller.backupTrackerInformer.GetStore().Add(backupTracker)
 
 			backup := createBackupWithTracker(backupName, vmName, pvcName)
@@ -1646,6 +1660,10 @@ var _ = Describe("Backup Controller", func() {
 				CheckpointName: pointer.P(checkpointName),
 				Volumes:        volumesInfo,
 			}
+			if activePodUID != "" {
+				vmi.Status.NodeName = "test-node"
+				vmi.Status.ActivePods = map[types.UID]string{activePodUID: "test-node"}
+			}
 			controller.vmiStore.Add(vmi)
 
 			pvc := createPVC(pvcName)
@@ -1657,21 +1675,31 @@ var _ = Describe("Backup Controller", func() {
 				Return(vmi, nil)
 
 			// Expect patch to update backupTracker with checkpoint and volumes info
-			trackerPatched := false
+			var patchedOps []string
 			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
 				patchAction := action.(testing.PatchAction)
 				Expect(patchAction.GetName()).To(Equal(backupTrackerName))
 				Expect(patchAction.GetSubresource()).To(Equal("status"))
 
 				patchBytes := patchAction.GetPatch()
-				trackerPatched = true
-				Expect(string(patchBytes)).To(ContainSubstring(expectedOp))
+
+				var ops []struct{ Op, Path string }
+				Expect(json.Unmarshal(patchBytes, &ops)).To(Succeed())
+				for _, op := range ops {
+					patchedOps = append(patchedOps, op.Op+" "+op.Path)
+				}
+
 				Expect(string(patchBytes)).To(ContainSubstring("latestCheckpoint"))
 				Expect(string(patchBytes)).To(ContainSubstring(checkpointName))
 				Expect(string(patchBytes)).To(ContainSubstring("volumes"))
 				Expect(string(patchBytes)).To(ContainSubstring("rootdisk"))
-				Expect(string(patchBytes)).To(ContainSubstring("rootdisk"))
 				Expect(string(patchBytes)).To(ContainSubstring("datadisk"))
+				if activePodUID != "" {
+					Expect(string(patchBytes)).To(ContainSubstring(string(activePodUID)))
+				}
+				if backupTracker.Status != nil && backupTracker.Status.LastTrackedPodUID != nil {
+					Expect(string(patchBytes)).To(ContainSubstring(string(*backupTracker.Status.LastTrackedPodUID)))
+				}
 
 				updatedTracker := backupTracker.DeepCopy()
 				updatedTracker.Status = &backupv1.VirtualMachineBackupTrackerStatus{
@@ -1693,14 +1721,72 @@ var _ = Describe("Backup Controller", func() {
 			backupCopy, err := syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionComplete))).To(BeTrue())
-			Expect(trackerPatched).To(BeTrue())
 			Expect(backupCopy.Status.IncludedVolumes).To(HaveLen(2))
 			Expect(backupCopy.Status.IncludedVolumes[0].VolumeName).To(Equal("rootdisk"))
 			Expect(backupCopy.Status.IncludedVolumes[1].VolumeName).To(Equal("datadisk"))
-		},
-		Entry("when tracker has no previous checkpoint", "", "\"op\":\"add\""),
-		Entry("when tracker already has a checkpoint", "old-checkpoint", "\"op\":\"replace\""),
-	)
+
+			return patchedOps
+		}
+
+		It("should create the status when the tracker has none", func() {
+			backupTracker := createBackupTracker(backupTrackerName, vmName, "")
+			backupTracker.Status = nil
+
+			Expect(completeBackup(backupTracker, "")).To(Equal([]string{
+				"test /status",
+				"add /status",
+				"add /status/latestCheckpoint",
+			}))
+		})
+
+		It("should add the checkpoint when the tracker has none", func() {
+			backupTracker := createBackupTracker(backupTrackerName, vmName, "")
+
+			Expect(completeBackup(backupTracker, "")).To(Equal([]string{
+				"add /status/latestCheckpoint",
+			}))
+		})
+
+		It("should overwrite an existing checkpoint", func() {
+			backupTracker := createBackupTracker(backupTrackerName, vmName, "old-checkpoint")
+
+			Expect(completeBackup(backupTracker, "")).To(Equal([]string{
+				"add /status/latestCheckpoint",
+			}))
+		})
+
+		It("should record the active pod when the tracker has no tracked pod", func() {
+			backupTracker := createBackupTracker(backupTrackerName, vmName, "")
+
+			Expect(completeBackup(backupTracker, "current-pod-uid")).To(Equal([]string{
+				"add /status/latestCheckpoint",
+				"add /status/lastTrackedPodUID",
+			}))
+		})
+
+		It("should guard a stale tracked pod with a test op before overwriting it", func() {
+			backupTracker := createBackupTracker(backupTrackerName, vmName, "old-checkpoint")
+			backupTracker.Status.LastTrackedPodUID = new(types.UID("stale-pod-uid"))
+
+			Expect(completeBackup(backupTracker, "current-pod-uid")).To(Equal([]string{
+				"add /status/latestCheckpoint",
+				"test /status/lastTrackedPodUID",
+				"add /status/lastTrackedPodUID",
+			}))
+		})
+
+		It("should create the status and record the active pod when the tracker has no status", func() {
+			backupTracker := createBackupTracker(backupTrackerName, vmName, "")
+			backupTracker.Status = nil
+
+			Expect(completeBackup(backupTracker, "current-pod-uid")).To(Equal([]string{
+				"test /status",
+				"add /status",
+				"add /status/latestCheckpoint",
+				"add /status/lastTrackedPodUID",
+			}))
+		})
+	})
 
 	It("should update backupTracker even when cleanup returns early", func() {
 		backupTracker := createBackupTracker(backupTrackerName, vmName, "")
@@ -1747,6 +1833,37 @@ var _ = Describe("Backup Controller", func() {
 		_, err := syncBackup(backup)
 		Expect(err).To(MatchError(errCleanupPending))
 		Expect(trackerPatched).To(BeTrue())
+	})
+
+	Context("VMI updates enqueueing trackers", func() {
+		vmiOnPod := func(podUID types.UID) *v1.VirtualMachineInstance {
+			vmi := createVMI()
+			vmi.Status.NodeName = "test-node"
+			vmi.Status.ActivePods = map[types.UID]string{podUID: "test-node"}
+			return vmi
+		}
+
+		BeforeEach(func() {
+			backupTrackerInformer.GetStore().Add(createBackupTracker(backupTrackerName, vmName, checkpointName))
+		})
+
+		It("should enqueue the tracker when the VMI moves to a new pod", func() {
+			controller.handleUpdateVMI(vmiOnPod("old-pod-uid"), vmiOnPod("new-pod-uid"))
+
+			Expect(controller.trackerQueue.Len()).To(Equal(1))
+			key, _ := controller.trackerQueue.Get()
+			Expect(key).To(Equal(types.NamespacedName{Namespace: testNamespace, Name: backupTrackerName}.String()))
+		})
+
+		It("should not enqueue the tracker for status changes that keep the same pod", func() {
+			oldVMI := vmiOnPod("same-pod-uid")
+			newVMI := vmiOnPod("same-pod-uid")
+			newVMI.Status.Interfaces = []v1.VirtualMachineInstanceNetworkInterface{{Name: "default"}}
+
+			controller.handleUpdateVMI(oldVMI, newVMI)
+
+			Expect(controller.trackerQueue.Len()).To(BeZero())
+		})
 	})
 
 	Context("Pull mode", func() {

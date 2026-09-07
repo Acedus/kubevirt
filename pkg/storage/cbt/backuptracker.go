@@ -29,9 +29,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	backupv1 "kubevirt.io/api/backup/v1alpha1"
+	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/log"
 
 	"kubevirt.io/kubevirt/pkg/apimachinery/patch"
+	"kubevirt.io/kubevirt/pkg/controller"
 )
 
 func TrackerHasCheckpoint(tracker *backupv1.VirtualMachineBackupTracker) bool {
@@ -41,10 +43,15 @@ func TrackerHasCheckpoint(tracker *backupv1.VirtualMachineBackupTracker) bool {
 		tracker.Status.LatestCheckpoint.Name != ""
 }
 
-func trackerNeedsCheckpointRedefinition(tracker *backupv1.VirtualMachineBackupTracker) bool {
-	return TrackerHasCheckpoint(tracker) &&
-		tracker.Status.CheckpointRedefinitionRequired != nil &&
-		*tracker.Status.CheckpointRedefinitionRequired
+func TrackerNeedsRedefinitionForPod(tracker *backupv1.VirtualMachineBackupTracker, vmi *v1.VirtualMachineInstance) bool {
+	if !TrackerHasCheckpoint(tracker) {
+		return false
+	}
+	podUID := controller.VMIActivePodUID(vmi)
+	if podUID == "" {
+		return true
+	}
+	return tracker.Status.LastTrackedPodUID == nil || *tracker.Status.LastTrackedPodUID != podUID
 }
 
 func (ctrl *VMBackupController) runTrackerWorker() {
@@ -90,36 +97,48 @@ func (ctrl *VMBackupController) executeTracker(key string) error {
 		return fmt.Errorf("unexpected resource %+v", storeObj)
 	}
 
-	if !trackerNeedsCheckpointRedefinition(tracker) {
+	if !TrackerHasCheckpoint(tracker) {
 		return nil
 	}
 
-	return ctrl.handleCheckpointRedefinition(tracker)
+	vmiName := tracker.Spec.Source.Name
+	vmi, vmiExists, err := ctrl.getVMI(tracker.Namespace, vmiName)
+	if err != nil {
+		return fmt.Errorf("failed to get VMI %s/%s: %w", tracker.Namespace, vmiName, err)
+	}
+
+	if !vmiExists || vmi == nil {
+		logger.V(3).Infof("VMI %s/%s not running, deferring redefinition", tracker.Namespace, vmiName)
+		return nil
+	}
+
+	podUID := controller.VMIActivePodUID(vmi)
+	if podUID == "" {
+		return nil
+	}
+
+	if tracker.Status.LastTrackedPodUID != nil && *tracker.Status.LastTrackedPodUID == podUID {
+		return nil
+	}
+
+	return ctrl.handleCheckpointRedefinition(tracker, podUID)
 }
 
-func (ctrl *VMBackupController) handleCheckpointRedefinition(tracker *backupv1.VirtualMachineBackupTracker) error {
+func (ctrl *VMBackupController) handleCheckpointRedefinition(tracker *backupv1.VirtualMachineBackupTracker, podUID types.UID) error {
 	logger := log.Log.With("VirtualMachineBackupTracker", tracker.Name)
 	logger.Infof("Handling checkpoint redefinition for tracker %s/%s", tracker.Namespace, tracker.Name)
 
 	vmiName := tracker.Spec.Source.Name
-	vmi, exists, err := ctrl.getVMI(tracker.Namespace, vmiName)
-	if err != nil {
-		return fmt.Errorf("failed to get VMI %s/%s: %w", tracker.Namespace, vmiName, err)
-	}
-	if !exists || vmi == nil {
-		return fmt.Errorf("VMI %s/%s not found", tracker.Namespace, vmiName)
-	}
-
 	checkpoint := tracker.Status.LatestCheckpoint
 	logger.Infof("Calling RedefineCheckpoint for VMI %s with checkpoint %s", vmiName, checkpoint.Name)
 
-	err = ctrl.client.VirtualMachineInstance(tracker.Namespace).RedefineCheckpoint(context.Background(), vmiName, checkpoint)
+	err := ctrl.client.VirtualMachineInstance(tracker.Namespace).RedefineCheckpoint(context.Background(), vmiName, checkpoint)
 	if err != nil {
 		return ctrl.handleRedefinitionError(tracker, err)
 	}
 
 	logger.Infof("Checkpoint redefinition successful for tracker %s/%s", tracker.Namespace, tracker.Name)
-	return ctrl.clearRedefinitionFlag(tracker)
+	return ctrl.updateLastTrackedPodUID(tracker, podUID)
 }
 
 func (ctrl *VMBackupController) handleRedefinitionError(tracker *backupv1.VirtualMachineBackupTracker, err error) error {
@@ -130,7 +149,7 @@ func (ctrl *VMBackupController) handleRedefinitionError(tracker *backupv1.Virtua
 		ctrl.recorder.Eventf(tracker, corev1.EventTypeWarning, "CheckpointRedefinitionFailed",
 			"Failed to redefine checkpoint %s: %v. Checkpoint cleared, next backup will be full.",
 			tracker.Status.LatestCheckpoint.Name, err)
-		return ctrl.clearCheckpointAndFlag(tracker)
+		return ctrl.clearCheckpointAndTrackedPod(tracker)
 	}
 
 	logger.Errorf("Checkpoint redefinition failed: %v", err)
@@ -145,15 +164,27 @@ func isCheckpointInvalidError(err error) bool {
 	return strings.Contains(errStr, "422") && strings.Contains(errStr, "Unprocessable Entity")
 }
 
-func (ctrl *VMBackupController) clearRedefinitionFlag(tracker *backupv1.VirtualMachineBackupTracker) error {
-	return ctrl.patchTrackerStatus(tracker, patch.WithRemove("/status/checkpointRedefinitionRequired"))
+func (ctrl *VMBackupController) updateLastTrackedPodUID(tracker *backupv1.VirtualMachineBackupTracker, podUID types.UID) error {
+	if tracker.Status.LastTrackedPodUID != nil {
+		return ctrl.patchTrackerStatus(tracker,
+			patch.WithTest("/status/lastTrackedPodUID", *tracker.Status.LastTrackedPodUID),
+			patch.WithReplace("/status/lastTrackedPodUID", podUID),
+		)
+	}
+	return ctrl.patchTrackerStatus(tracker,
+		patch.WithTest("/status/lastTrackedPodUID", nil),
+		patch.WithAdd("/status/lastTrackedPodUID", podUID),
+	)
 }
 
-func (ctrl *VMBackupController) clearCheckpointAndFlag(tracker *backupv1.VirtualMachineBackupTracker) error {
-	return ctrl.patchTrackerStatus(tracker,
-		patch.WithRemove("/status/checkpointRedefinitionRequired"),
+func (ctrl *VMBackupController) clearCheckpointAndTrackedPod(tracker *backupv1.VirtualMachineBackupTracker) error {
+	opts := []patch.PatchOption{
 		patch.WithRemove("/status/latestCheckpoint"),
-	)
+	}
+	if tracker.Status.LastTrackedPodUID != nil {
+		opts = append(opts, patch.WithRemove("/status/lastTrackedPodUID"))
+	}
+	return ctrl.patchTrackerStatus(tracker, opts...)
 }
 
 func (ctrl *VMBackupController) patchTrackerStatus(tracker *backupv1.VirtualMachineBackupTracker, opts ...patch.PatchOption) error {
