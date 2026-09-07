@@ -48,6 +48,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 
+	backupv1 "kubevirt.io/api/backup/v1alpha1"
 	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
 	"kubevirt.io/client-go/log"
@@ -220,6 +221,16 @@ func NewVirtualMachineController(
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	if cbtHandler.trackerInformer != nil {
+		_, err = cbtHandler.trackerInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+			UpdateFunc: func(_, newObj any) { c.enqueueTrackerSourceFunc(newObj) },
+			DeleteFunc: c.enqueueTrackerSourceFunc,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	permissions := "rw"
@@ -2325,6 +2336,24 @@ func (c *VirtualMachineController) deleteDomainFunc(obj interface{}) {
 		c.queue.Add(key)
 	}
 }
+
+func (c *VirtualMachineController) enqueueTrackerSourceFunc(obj any) {
+	tracker, ok := obj.(*backupv1.VirtualMachineBackupTracker)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			c.logger.Reason(fmt.Errorf("couldn't get object from tombstone %+v", obj)).Error("Failed to process delete notification")
+			return
+		}
+		tracker, ok = tombstone.Obj.(*backupv1.VirtualMachineBackupTracker)
+		if !ok {
+			c.logger.Reason(fmt.Errorf("tombstone contained object that is not a backup tracker %#v", obj)).Error("Failed to process delete notification")
+			return
+		}
+	}
+	c.queue.Add(controller.NamespacedKey(tracker.Namespace, tracker.Spec.Source.Name))
+}
+
 func (c *VirtualMachineController) updateDomainFunc(_, new interface{}) {
 	key, err := controller.KeyFunc(new)
 	if err == nil {
