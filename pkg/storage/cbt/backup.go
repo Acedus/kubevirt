@@ -536,11 +536,14 @@ func (ctrl *VMBackupController) checkPrerequisites(backup *backupv1.VirtualMachi
 	if !vmiExists {
 		return fmt.Sprintf(vmNotRunningMsg, sourceName), nil
 	}
-	if reason := ctrl.verifyVMIEligibleForBackup(vmi); reason != "" {
-		return reason, nil
-	}
+	// A pending redefinition is why CBT is still initializing, so report it before
+	// the eligibility check, which would otherwise mask it with the generic
+	// "no ChangedBlockTracking" reason.
 	if TrackerNeedsRedefinitionForPod(backupTracker, vmi) {
 		return fmt.Sprintf(trackerCheckpointRedefinitionPending, backupTracker.Name), nil
+	}
+	if reason := ctrl.verifyVMIEligibleForBackup(vmi); reason != "" {
+		return reason, nil
 	}
 	if migrations.IsMigrating(vmi) {
 		return fmt.Sprintf(vmMigrationInProgressMsg, vmi.Name), nil

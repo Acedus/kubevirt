@@ -21,6 +21,7 @@ package virthandler
 
 import (
 	"fmt"
+	"slices"
 
 	"k8s.io/client-go/tools/cache"
 	backupv1 "kubevirt.io/api/backup/v1alpha1"
@@ -44,13 +45,22 @@ func NewCBTHandler(
 
 // HandleChangedBlockTracking updates CBT status based on domain state.
 // If CBT is Initializing and all disks have DataStore, it transitions to
-// Enabled.
+// Enabled only after all trackers with checkpoints have been synced for
+// the current pod lifecycle.
 func (h *CBTHandler) HandleChangedBlockTracking(vmi *v1.VirtualMachineInstance, domain *api.Domain) error {
 	if domain == nil || !cbt.CBTStateInitializing(vmi.Status.ChangedBlockTracking) {
 		return nil
 	}
 
 	if !h.allDisksHaveDataStore(vmi, domain) {
+		return nil
+	}
+
+	needsRedefinition, err := h.anyTrackerNeedsRedefinition(vmi)
+	if err != nil {
+		return err
+	}
+	if needsRedefinition {
 		return nil
 	}
 
@@ -98,4 +108,15 @@ func (h *CBTHandler) backupTrackersForVMI(vmi *v1.VirtualMachineInstance) ([]*ba
 		}
 	}
 	return trackers, nil
+}
+
+func (h *CBTHandler) anyTrackerNeedsRedefinition(vmi *v1.VirtualMachineInstance) (bool, error) {
+	trackers, err := h.backupTrackersForVMI(vmi)
+	if err != nil {
+		return false, err
+	}
+
+	return slices.ContainsFunc(trackers, func(t *backupv1.VirtualMachineBackupTracker) bool {
+		return cbt.TrackerNeedsRedefinitionForPod(t, vmi)
+	}), nil
 }

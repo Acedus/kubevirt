@@ -448,6 +448,9 @@ var _ = Describe("Backup Controller", func() {
 		vmi := createVMIWithPVCAttached()
 		vmi.Status.NodeName = "test-node"
 		vmi.Status.ActivePods = map[types.UID]string{types.UID("current-pod-uid"): "test-node"}
+		// CBT is held in initializing while redefinition is pending, so the
+		// redefinition reason has to win over the generic eligibility one.
+		vmi.Status.ChangedBlockTracking.State = v1.ChangedBlockTrackingInitializing
 		controller.vmiStore.Add(vmi)
 
 		statusUpdated := false

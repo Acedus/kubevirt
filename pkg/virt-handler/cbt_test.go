@@ -46,7 +46,12 @@ var _ = Describe("CBTHandler", func() {
 		handler         *CBTHandler
 	)
 
-	const testNamespace = "test-ns"
+	const (
+		testNamespace = "test-ns"
+		testNodeName  = "test-node"
+		testPodUID    = "test-pod-uid"
+		stalePodUID   = "stale-pod-uid"
+	)
 
 	BeforeEach(func() {
 		vmi = libvmi.New(libvmi.WithNamespace(testNamespace), libvmi.WithName("test-vmi"))
@@ -77,6 +82,15 @@ var _ = Describe("CBTHandler", func() {
 			}
 		}
 		return tracker
+	}
+
+	addTracker := func(tracker *backupv1.VirtualMachineBackupTracker) {
+		ExpectWithOffset(1, trackerInformer.GetStore().Add(tracker)).To(Succeed())
+	}
+
+	setActivePod := func(vmi *v1.VirtualMachineInstance, podUID types.UID) {
+		vmi.Status.NodeName = testNodeName
+		vmi.Status.ActivePods = map[types.UID]string{podUID: testNodeName}
 	}
 
 	pvcVolume := func(name, claimName string) v1.Volume {
@@ -136,6 +150,52 @@ var _ = Describe("CBTHandler", func() {
 				v1.ChangedBlockTrackingInitializing),
 		)
 
+		It("should stay Initializing when a tracker needs redefinition", func() {
+			setActivePod(vmi, testPodUID)
+			addTracker(createTracker("tracker1", "test-vmi", true, nil))
+
+			vmi.Spec.Volumes = []v1.Volume{pvcVolume("pvc1", "test-pvc")}
+			domain := &api.Domain{Spec: api.DomainSpec{Devices: api.Devices{Disks: []api.Disk{diskWithDataStore("pvc1", true)}}}}
+
+			err := handler.HandleChangedBlockTracking(vmi, domain)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cbt.CBTState(vmi.Status.ChangedBlockTracking)).To(Equal(v1.ChangedBlockTrackingInitializing))
+		})
+
+		It("should stay Initializing when a tracker has a checkpoint but the active pod is unknown", func() {
+			addTracker(createTracker("tracker1", "test-vmi", true, new(types.UID(testPodUID))))
+
+			vmi.Spec.Volumes = []v1.Volume{pvcVolume("pvc1", "test-pvc")}
+			domain := &api.Domain{Spec: api.DomainSpec{Devices: api.Devices{Disks: []api.Disk{diskWithDataStore("pvc1", true)}}}}
+
+			err := handler.HandleChangedBlockTracking(vmi, domain)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cbt.CBTState(vmi.Status.ChangedBlockTracking)).To(Equal(v1.ChangedBlockTrackingInitializing))
+		})
+
+		It("should enable when the active pod is unknown but no tracker has a checkpoint", func() {
+			addTracker(createTracker("tracker1", "test-vmi", false, nil))
+
+			vmi.Spec.Volumes = []v1.Volume{pvcVolume("pvc1", "test-pvc")}
+			domain := &api.Domain{Spec: api.DomainSpec{Devices: api.Devices{Disks: []api.Disk{diskWithDataStore("pvc1", true)}}}}
+
+			err := handler.HandleChangedBlockTracking(vmi, domain)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cbt.CBTState(vmi.Status.ChangedBlockTracking)).To(Equal(v1.ChangedBlockTrackingEnabled))
+		})
+
+		It("should enable when tracker has matching LastTrackedPodUID", func() {
+			setActivePod(vmi, testPodUID)
+			addTracker(createTracker("tracker1", "test-vmi", true, new(types.UID(testPodUID))))
+
+			vmi.Spec.Volumes = []v1.Volume{pvcVolume("pvc1", "test-pvc")}
+			domain := &api.Domain{Spec: api.DomainSpec{Devices: api.Devices{Disks: []api.Disk{diskWithDataStore("pvc1", true)}}}}
+
+			err := handler.HandleChangedBlockTracking(vmi, domain)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cbt.CBTState(vmi.Status.ChangedBlockTracking)).To(Equal(v1.ChangedBlockTrackingEnabled))
+		})
+
 		DescribeTable("should not update VMI CBT state when",
 			func(cbtState *v1.ChangedBlockTrackingState, domainIsNil bool) {
 				if cbtState != nil {
@@ -167,6 +227,74 @@ var _ = Describe("CBTHandler", func() {
 			Entry("status is PendingRestart", pointer.P(v1.ChangedBlockTrackingPendingRestart), false),
 			Entry("status is FGDisabled", pointer.P(v1.ChangedBlockTrackingFGDisabled), false),
 		)
+	})
+
+	Context("anyTrackerNeedsRedefinition", func() {
+		DescribeTable("with a single tracker and active pod",
+			func(hasCheckpoint bool, trackedPodUID *types.UID, expected bool) {
+				setActivePod(vmi, testPodUID)
+				addTracker(createTracker("tracker1", "test-vmi", hasCheckpoint, trackedPodUID))
+				needsRedefinition, err := handler.anyTrackerNeedsRedefinition(vmi)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(needsRedefinition).To(Equal(expected))
+			},
+			Entry("no checkpoint", false, nil, false),
+			Entry("untracked checkpoint", true, nil, true),
+			Entry("stale tracked pod", true, new(types.UID(stalePodUID)), true),
+			Entry("current tracked pod", true, new(types.UID(testPodUID)), false),
+		)
+
+		It("does not need redefinition without trackers", func() {
+			setActivePod(vmi, testPodUID)
+			needsRedefinition, err := handler.anyTrackerNeedsRedefinition(vmi)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(needsRedefinition).To(BeFalse())
+		})
+
+		It("does not need redefinition without trackers, even when VMI has no active pods", func() {
+			needsRedefinition, err := handler.anyTrackerNeedsRedefinition(vmi)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(needsRedefinition).To(BeFalse())
+		})
+
+		It("needs redefinition when VMI has no active pods", func() {
+			addTracker(createTracker("tracker1", "test-vmi", true, new(types.UID(testPodUID))))
+			needsRedefinition, err := handler.anyTrackerNeedsRedefinition(vmi)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(needsRedefinition).To(BeTrue())
+		})
+
+		It("needs redefinition when more than one active pod is on the VMI's node", func() {
+			vmi.Status.NodeName = testNodeName
+			vmi.Status.ActivePods = map[types.UID]string{
+				types.UID(testPodUID):  testNodeName,
+				types.UID(stalePodUID): testNodeName,
+			}
+			addTracker(createTracker("tracker1", "test-vmi", true, new(types.UID(testPodUID))))
+			needsRedefinition, err := handler.anyTrackerNeedsRedefinition(vmi)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(needsRedefinition).To(BeTrue())
+		})
+
+		It("detects redefinition after migration with stale source pod", func() {
+			vmi.Status.NodeName = "target-node"
+			vmi.Status.ActivePods = map[types.UID]string{
+				types.UID("target-pod-uid"): "target-node",
+			}
+			addTracker(createTracker("tracker1", "test-vmi", true, new(types.UID("source-pod-uid"))))
+			needsRedefinition, err := handler.anyTrackerNeedsRedefinition(vmi)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(needsRedefinition).To(BeTrue())
+		})
+
+		It("needs redefinition when at least one tracker is stale", func() {
+			setActivePod(vmi, testPodUID)
+			addTracker(createTracker("tracker1", "test-vmi", true, new(types.UID(testPodUID))))
+			addTracker(createTracker("tracker2", "test-vmi", true, new(types.UID(stalePodUID))))
+			needsRedefinition, err := handler.anyTrackerNeedsRedefinition(vmi)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(needsRedefinition).To(BeTrue())
+		})
 	})
 
 	Context("backupTrackersForVMI", func() {
