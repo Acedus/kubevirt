@@ -56,6 +56,52 @@ var _ = Describe("VMBackupController", func() {
 		virtClient = kubecli.NewMockKubevirtClient(mockCtrl)
 	})
 
+	Context("TrackerHasCheckpoint", func() {
+		DescribeTable("should correctly identify trackers with checkpoints",
+			func(tracker *backupv1.VirtualMachineBackupTracker, expected bool) {
+				Expect(TrackerHasCheckpoint(tracker)).To(Equal(expected))
+			},
+			Entry("has checkpoint",
+				&backupv1.VirtualMachineBackupTracker{
+					Status: &backupv1.VirtualMachineBackupTrackerStatus{
+						LatestCheckpoint: &backupv1.BackupCheckpoint{
+							Name: "checkpoint-1",
+						},
+					},
+				},
+				true,
+			),
+			Entry("tracker is nil",
+				nil,
+				false,
+			),
+			Entry("status is nil",
+				&backupv1.VirtualMachineBackupTracker{
+					Status: nil,
+				},
+				false,
+			),
+			Entry("checkpoint is nil",
+				&backupv1.VirtualMachineBackupTracker{
+					Status: &backupv1.VirtualMachineBackupTrackerStatus{
+						LatestCheckpoint: nil,
+					},
+				},
+				false,
+			),
+			Entry("checkpoint name is empty",
+				&backupv1.VirtualMachineBackupTracker{
+					Status: &backupv1.VirtualMachineBackupTrackerStatus{
+						LatestCheckpoint: &backupv1.BackupCheckpoint{
+							Name: "",
+						},
+					},
+				},
+				false,
+			),
+		)
+	})
+
 	Context("trackerNeedsCheckpointRedefinition", func() {
 		DescribeTable("should correctly identify trackers needing redefinition",
 			func(tracker *backupv1.VirtualMachineBackupTracker, expected bool) {

@@ -34,13 +34,17 @@ import (
 	"kubevirt.io/kubevirt/pkg/apimachinery/patch"
 )
 
-func trackerNeedsCheckpointRedefinition(tracker *backupv1.VirtualMachineBackupTracker) bool {
+func TrackerHasCheckpoint(tracker *backupv1.VirtualMachineBackupTracker) bool {
 	return tracker != nil &&
 		tracker.Status != nil &&
-		tracker.Status.CheckpointRedefinitionRequired != nil &&
-		*tracker.Status.CheckpointRedefinitionRequired &&
 		tracker.Status.LatestCheckpoint != nil &&
 		tracker.Status.LatestCheckpoint.Name != ""
+}
+
+func trackerNeedsCheckpointRedefinition(tracker *backupv1.VirtualMachineBackupTracker) bool {
+	return TrackerHasCheckpoint(tracker) &&
+		tracker.Status.CheckpointRedefinitionRequired != nil &&
+		*tracker.Status.CheckpointRedefinitionRequired
 }
 
 func (ctrl *VMBackupController) runTrackerWorker() {

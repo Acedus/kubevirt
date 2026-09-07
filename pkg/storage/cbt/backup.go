@@ -387,10 +387,7 @@ func (ctrl *VMBackupController) Execute() bool {
 }
 
 func isIncrementalBackup(backup *backupv1.VirtualMachineBackup, backupTracker *backupv1.VirtualMachineBackupTracker) bool {
-	return !backup.Spec.ForceFullBackup &&
-		backupTracker != nil && backupTracker.Status != nil &&
-		backupTracker.Status.LatestCheckpoint != nil &&
-		backupTracker.Status.LatestCheckpoint.Name != ""
+	return !backup.Spec.ForceFullBackup && TrackerHasCheckpoint(backupTracker)
 }
 
 func (ctrl *VMBackupController) execute(key string) error {
@@ -918,7 +915,7 @@ func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *b
 	}
 
 	patchSet := patch.New()
-	if tracker.Status == nil || tracker.Status.LatestCheckpoint == nil || tracker.Status.LatestCheckpoint.Name == "" {
+	if !TrackerHasCheckpoint(tracker) {
 		patchSet.AddOption(patch.WithAdd("/status", newStatus))
 	} else {
 		patchSet.AddOption(patch.WithReplace("/status/latestCheckpoint", &newCheckpoint))
