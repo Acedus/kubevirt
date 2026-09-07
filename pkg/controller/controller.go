@@ -358,6 +358,26 @@ func CurrentVMIPod(vmi *v1.VirtualMachineInstance, podIndexer cache.Indexer) (*k
 	return curPod, nil
 }
 
+func VMIActivePodUID(vmi *v1.VirtualMachineInstance) types.UID {
+	if vmi.Status.NodeName == "" {
+		return ""
+	}
+
+	var found types.UID
+	matches := 0
+	for uid, nodeName := range vmi.Status.ActivePods {
+		if nodeName == vmi.Status.NodeName {
+			found = uid
+			matches++
+		}
+	}
+	if matches != 1 {
+		return ""
+	}
+
+	return found
+}
+
 func VMIActivePodsCount(vmi *v1.VirtualMachineInstance, vmiPodIndexer cache.Indexer) int {
 
 	objs, err := vmiPodIndexer.ByIndex(cache.NamespaceIndex, vmi.Namespace)

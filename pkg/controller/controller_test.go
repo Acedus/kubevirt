@@ -26,6 +26,9 @@ import (
 
 	k8sv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	v1 "kubevirt.io/api/core/v1"
 
 	"kubevirt.io/kubevirt/pkg/controller"
 	"kubevirt.io/kubevirt/pkg/pointer"
@@ -186,5 +189,47 @@ var _ = Describe("Controller", func() {
 				Entry("false if pod is nil", nil, BeFalse()),
 			)
 		})
+	})
+
+	Context("ActivePodUID", func() {
+		const (
+			node       = "test-node"
+			sourceNode = "source-node"
+			targetNode = "target-node"
+		)
+		const (
+			podUID       = types.UID("test-pod-uid")
+			otherPodUID  = types.UID("other-pod-uid")
+			sourcePodUID = types.UID("source-pod-uid")
+			targetPodUID = types.UID("target-pod-uid")
+		)
+
+		newVMI := func(nodeName string, activePods map[types.UID]string) *v1.VirtualMachineInstance {
+			return &v1.VirtualMachineInstance{
+				Status: v1.VirtualMachineInstanceStatus{
+					NodeName:   nodeName,
+					ActivePods: activePods,
+				},
+			}
+		}
+
+		DescribeTable("should return", func(vmi *v1.VirtualMachineInstance, expected types.UID) {
+			Expect(controller.VMIActivePodUID(vmi)).To(Equal(expected))
+		},
+			Entry("the UID of the pod matching NodeName",
+				newVMI(node, map[types.UID]string{podUID: node}), podUID),
+			Entry("empty when ActivePods is empty",
+				newVMI(node, nil), types.UID("")),
+			Entry("empty when no pod matches NodeName",
+				newVMI(node, map[types.UID]string{podUID: "other-node"}), types.UID("")),
+			Entry("empty when NodeName is not set",
+				newVMI("", map[types.UID]string{podUID: node}), types.UID("")),
+			Entry("empty when more than one active pod matches NodeName",
+				newVMI(node, map[types.UID]string{podUID: node, otherPodUID: node}), types.UID("")),
+			Entry("the source pod during a migration while the VMI runs on the source node",
+				newVMI(sourceNode, map[types.UID]string{sourcePodUID: sourceNode, targetPodUID: targetNode}), sourcePodUID),
+			Entry("the target pod during a migration once the VMI runs on the target node",
+				newVMI(targetNode, map[types.UID]string{sourcePodUID: sourceNode, targetPodUID: targetNode}), targetPodUID),
+		)
 	})
 })

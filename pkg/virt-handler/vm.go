@@ -861,18 +861,11 @@ func IsoGuestVolumePath(namespace, name string, volume *v1.Volume) string {
 }
 
 func (c *VirtualMachineController) updateIsoSizeStatus(vmi *v1.VirtualMachineInstance) {
-	var podUID string
 	if vmi.Status.Phase != v1.Running {
 		return
 	}
 
-	for k, v := range vmi.Status.ActivePods {
-		if v == vmi.Status.NodeName {
-			podUID = string(k)
-			break
-		}
-	}
-	if podUID == "" {
+	if controller.VMIActivePodUID(vmi) == "" {
 		log.DefaultLogger().Warningf("failed to find pod UID for VMI %s", vmi.Name)
 		return
 	}
