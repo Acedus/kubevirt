@@ -103,6 +103,7 @@ const (
 	podReadyReason            = "PodReady"
 	inUseReason               = "InUse"
 	volumesNotPopulatedReason = "VolumesNotPopulated"
+	duplicatePVCReason        = "DuplicatePVC"
 
 	proxyUrlBase = "https://virt-exportproxy.%s.svc/api/export.kubevirt.io/v1/namespaces/%s/virtualmachineexports/%s%s"
 
@@ -2246,6 +2247,31 @@ var _ = Describe(SIG("Export", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(resVM).ToNot(BeNil())
 		waitForDisksComplete(resVM)
+	})
+
+	It("should mark the status phase skipped on VM referencing the same PVC from two volumes", func() {
+		if _, exists := libstorage.GetRWOFileSystemStorageClass(); !exists {
+			Fail("Fail test when Filesystem storage is not present")
+		}
+		namespace := testsuite.GetTestNamespace(nil)
+		pvc := libstorage.CreateFSPVC(fmt.Sprintf("duplicate-pvc-%s", rand.String(12)), namespace, "1Gi")
+		vm := createVM(libvmi.NewVirtualMachine(libvmifact.NewAlpine(
+			libvmi.WithPersistentVolumeClaim("disk0", pvc.Name),
+			libvmi.WithPersistentVolumeClaim("disk1", pvc.Name),
+		)))
+
+		// For testing the token is the name of the source VM.
+		token := createExportTokenSecret(vm.Name, vm.Namespace)
+		export := createVMExportObject(vm.Name, vm.Namespace, token)
+		Expect(export).ToNot(BeNil())
+		waitForExportPhase(export, exportv1.Skipped)
+		waitForExportCondition(export, MatchConditionIgnoreTimeStamp(exportv1.Condition{
+			Type:   exportv1.ConditionReady,
+			Status: k8sv1.ConditionFalse,
+			Reason: duplicatePVCReason,
+			Message: fmt.Sprintf("Source references the same PersistentVolumeClaim from more than one volume: %s",
+				pvc.Name),
+		}), "export should report the duplicated PVC")
 	})
 
 	It("should mark the status phase skipped on VM without volumes", func() {

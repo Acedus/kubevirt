@@ -26,7 +26,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -92,6 +94,7 @@ const (
 	noVolumeVMReason          = "VMNoVolumes"
 	noVolumeSnapshotReason    = "VMSnapshotNoVolumes"
 	notAllPVCsCreatedReason   = "NotAllPVCsCreated"
+	duplicatePVCReason        = "DuplicatePVC"
 	exporterPodErrorReason    = "ExporterPodError"
 	VMSnapshotNotFoundReason  = "VMSnapshotNotFound"
 	ociDigestsComputedReason  = "DigestsComputed"
@@ -186,6 +189,11 @@ func dirURI(pvc *corev1.PersistentVolumeClaim) string {
 type exportSource interface {
 	IsSourceAvailable() bool
 	HasContent() bool
+	// InvalidCondition returns the reason the source cannot be exported at
+	// all, or nil if it can be. Unlike the other predicates this is a
+	// property of the source itself, not of its current progress, so it does
+	// not clear up on its own.
+	InvalidCondition() *exportv1.Condition
 	SourceCondition() exportv1.Condition
 	ReadyCondition() exportv1.Condition
 	ConfigurePod(pod *corev1.Pod)
@@ -194,16 +202,47 @@ type exportSource interface {
 }
 
 type sourceVolumes struct {
-	volumes         []sourceVolume
-	inUse           bool
-	isPopulated     bool
-	readyCondition  exportv1.Condition
-	sourceCondition exportv1.Condition
+	volumes          []sourceVolume
+	inUse            bool
+	isPopulated      bool
+	readyCondition   exportv1.Condition
+	sourceCondition  exportv1.Condition
+	invalidCondition *exportv1.Condition
 }
 
 type sourceVolume struct {
 	pvc                 *corev1.PersistentVolumeClaim
 	kubevirtContentType bool
+}
+
+// setVolumes records the collected volumes and validates them. Collectors must
+// use it instead of assigning the volumes directly, so that a source is checked
+// exactly once, where it is assembled.
+func (sv *sourceVolumes) setVolumes(volumes []sourceVolume) {
+	sv.volumes = volumes
+
+	// A PVC can only be mounted once into the exporter pod, so a source
+	// collecting the same claim from more than one volume is not exportable.
+	if duplicates := duplicatePVCNames(volumes); len(duplicates) > 0 {
+		sv.invalidCondition = new(newReadyCondition(corev1.ConditionFalse, duplicatePVCReason,
+			fmt.Sprintf("Source references the same PersistentVolumeClaim from more than one volume: %s",
+				strings.Join(duplicates, ", "))))
+	}
+}
+
+func duplicatePVCNames(volumes []sourceVolume) []string {
+	seen := map[string]bool{}
+	duplicates := map[string]bool{}
+	for _, volume := range volumes {
+		if volume.pvc == nil {
+			continue
+		}
+		if seen[volume.pvc.Name] {
+			duplicates[volume.pvc.Name] = true
+		}
+		seen[volume.pvc.Name] = true
+	}
+	return slices.Sorted(maps.Keys(duplicates))
 }
 
 func (sv *sourceVolumes) isSourceAvailable() bool {
@@ -769,13 +808,18 @@ func (ctrl *VMExportController) handleSource(vmExport *exportv1.VirtualMachineEx
 	return requeue, errors.Join(podErr, statusErr)
 }
 
+// canExport reports whether an exporter pod should be serving the source.
+func canExport(source exportSource) bool {
+	return source.InvalidCondition() == nil && source.IsSourceAvailable() && source.HasContent()
+}
+
 func (ctrl *VMExportController) manageExporterPod(vmExport *exportv1.VirtualMachineExport, service *corev1.Service, source exportSource) (*corev1.Pod, error) {
 	pod, podExists, err := ctrl.getExporterPod(vmExport)
 	if err != nil {
 		return nil, err
 	}
 	if !podExists {
-		if source.IsSourceAvailable() && source.HasContent() {
+		if canExport(source) {
 			pod, err = ctrl.createExporterPod(vmExport, service, source)
 			if err != nil {
 				return nil, err
@@ -934,7 +978,7 @@ func (ctrl *VMExportController) handleVMExportToken(vmExport *exportv1.VirtualMa
 		return nil
 	}
 
-	if !source.IsSourceAvailable() || !source.HasContent() {
+	if !canExport(source) {
 		return nil
 	}
 
@@ -1537,12 +1581,15 @@ func (ctrl *VMExportController) updateCommonVMExportStatusFields(vmExport, vmExp
 	if exporterPod == nil {
 		// An exporter pod that is already serving keeps its phase and links,
 		// so both of these only apply while there is none.
-		condition := source.ReadyCondition()
+		condition, phase := source.ReadyCondition(), exportv1.Pending
+		if invalid := source.InvalidCondition(); invalid != nil {
+			condition, phase = *invalid, exportv1.Skipped
+		}
 		if podErr != nil {
 			condition = newReadyCondition(corev1.ConditionFalse, exporterPodErrorReason, podErr.Error())
 		}
 		vmExportCopy.Status.Conditions = updateCondition(vmExportCopy.Status.Conditions, condition)
-		vmExportCopy.Status.Phase = exportv1.Pending
+		vmExportCopy.Status.Phase = phase
 	} else {
 		if optutil.PodIsReady(exporterPod) {
 			vmExportCopy.Status.Conditions = updateCondition(vmExportCopy.Status.Conditions, newReadyCondition(corev1.ConditionTrue, podReadyReason, ""))

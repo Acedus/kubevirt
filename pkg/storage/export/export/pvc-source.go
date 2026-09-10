@@ -54,6 +54,10 @@ func (s *PVCSource) HasContent() bool {
 	return s.sourceVolumes.hasContent()
 }
 
+func (s *PVCSource) InvalidCondition() *exportv1.Condition {
+	return s.sourceVolumes.invalidCondition
+}
+
 func (s *PVCSource) SourceCondition() exportv1.Condition {
 	return s.sourceVolumes.sourceCondition
 }

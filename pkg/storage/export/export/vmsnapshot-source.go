@@ -66,6 +66,10 @@ func (s *VMSnapshotSource) HasContent() bool {
 	return s.sourceVolumes.hasContent()
 }
 
+func (s *VMSnapshotSource) InvalidCondition() *exportv1.Condition {
+	return s.sourceVolumes.invalidCondition
+}
+
 func (s *VMSnapshotSource) SourceCondition() exportv1.Condition {
 	return s.sourceVolumes.sourceCondition
 }
@@ -165,13 +169,14 @@ func (ctrl *VMExportController) getPVCFromSourceVMSnapshot(vmExport *exportv1.Vi
 			return nil, err
 		}
 		if len(pvcs) == restoreableSnapshots && restoreableSnapshots > 0 {
-			return &sourceVolumes{
-				volumes:         ctrl.pvcsToSourceVolumes(pvcs...),
+			sourceVolumes := &sourceVolumes{
 				inUse:           false,
 				isPopulated:     true,
 				readyCondition:  newReadyCondition(corev1.ConditionFalse, initializingReason, ""),
 				sourceCondition: newVolumesCreatedCondition(corev1.ConditionTrue, allPVCsReady, ""),
-			}, nil
+			}
+			sourceVolumes.setVolumes(ctrl.pvcsToSourceVolumes(pvcs...))
+			return sourceVolumes, nil
 		}
 		if restoreableSnapshots == 0 {
 			return &sourceVolumes{

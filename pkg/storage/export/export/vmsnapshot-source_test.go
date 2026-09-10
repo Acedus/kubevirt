@@ -495,6 +495,47 @@ var _ = Describe("VMSnapshot source", func() {
 		Expect(retry).To(BeEquivalentTo(0))
 	})
 
+	It("Should be in skipped phase when two volume backups restore into the same PVC", func() {
+		testVMExport := createSnapshotVMExport()
+		content := createTestVMSnapshotContent("snapshot-content")
+		secondBackup := *content.Spec.VolumeBackups[0].DeepCopy()
+		secondBackup.VolumeName = "test-volume2"
+		content.Spec.VolumeBackups = append(content.Spec.VolumeBackups, secondBackup)
+		content.Status.VolumeSnapshotStatus = append(content.Status.VolumeSnapshotStatus, snapshotv1.VolumeSnapshotStatus{
+			VolumeSnapshotName: testVolumesnapshotName,
+			ReadyToUse:         pointer.P(true),
+		})
+		vmSnapshotInformer.GetStore().Add(createTestVMSnapshot(true))
+		vmSnapshotContentInformer.GetStore().Add(content)
+		pvcInformer.GetStore().Add(createRestoredPVC("test-test-snapshot"))
+
+		readyConditionSet := false
+		vmExportClient.Fake.PrependReactor("update", "virtualmachineexports", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			update, ok := action.(testing.UpdateAction)
+			Expect(ok).To(BeTrue())
+			vmExport, ok := update.GetObject().(*exportv1.VirtualMachineExport)
+			Expect(ok).To(BeTrue())
+			verifyLinksEmpty(vmExport)
+			Expect(vmExport.Status.Phase).To(Equal(exportv1.Skipped))
+			for _, condition := range vmExport.Status.Conditions {
+				if condition.Type == exportv1.ConditionReady {
+					readyConditionSet = true
+					Expect(condition.Status).To(Equal(k8sv1.ConditionFalse))
+					Expect(condition.Reason).To(Equal(duplicatePVCReason))
+					Expect(condition.Message).To(ContainSubstring("test-test-snapshot"))
+				}
+			}
+			return true, vmExport, nil
+		})
+		retry, err := controller.updateVMExport(testVMExport)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(retry).To(BeEquivalentTo(0))
+		Expect(readyConditionSet).To(BeTrue())
+		for _, action := range k8sClient.Actions() {
+			Expect(action.Matches("create", "pods")).To(BeFalse())
+		}
+	})
+
 	It("Should not re-create restored PVCs from VMSnapshot if pvc already exists", func() {
 		testVMExport := createSnapshotVMExport()
 		vmExportClient.Fake.PrependReactor("update", "virtualmachineexports", func(action testing.Action) (handled bool, obj runtime.Object, err error) {

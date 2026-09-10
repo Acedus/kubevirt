@@ -333,6 +333,65 @@ var _ = Describe("VMTemplate source", func() {
 		testutils.ExpectEvent(recorder, serviceCreatedEvent)
 	})
 
+	It("Should be in skipped phase when a DVT source PVC is also referenced by a volume", func() {
+		testVMExport := newVMExport()
+		Expect(vmTemplateInformer.GetStore().Add(newTemplate(&virtv1.VirtualMachine{
+			Spec: virtv1.VirtualMachineSpec{
+				DataVolumeTemplates: []virtv1.DataVolumeTemplateSpec{
+					{
+						ObjectMeta: metav1.ObjectMeta{Name: dvtName},
+						Spec: cdiv1.DataVolumeSpec{
+							Source: &cdiv1.DataVolumeSource{
+								PVC: &cdiv1.DataVolumeSourcePVC{Name: sourcePVCName},
+							},
+						},
+					},
+				},
+				Template: &virtv1.VirtualMachineInstanceTemplateSpec{
+					Spec: virtv1.VirtualMachineInstanceSpec{
+						Volumes: []virtv1.Volume{{
+							Name: "volume1",
+							VolumeSource: virtv1.VolumeSource{
+								PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
+									PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
+										ClaimName: sourcePVCName,
+									},
+								},
+							},
+						}},
+					},
+				},
+			},
+		}))).To(Succeed())
+		Expect(pvcInformer.GetStore().Add(createPVC(sourcePVCName, "kubevirt"))).To(Succeed())
+
+		readyConditionSet := false
+		vmExportClient.Fake.PrependReactor("update", "virtualmachineexports", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			update, ok := action.(testing.UpdateAction)
+			Expect(ok).To(BeTrue())
+			vmExport, ok := update.GetObject().(*exportv1.VirtualMachineExport)
+			Expect(ok).To(BeTrue())
+			verifyLinksEmpty(vmExport)
+			Expect(vmExport.Status.Phase).To(Equal(exportv1.Skipped))
+			for _, condition := range vmExport.Status.Conditions {
+				if condition.Type == exportv1.ConditionReady {
+					readyConditionSet = true
+					Expect(condition.Status).To(Equal(k8sv1.ConditionFalse))
+					Expect(condition.Reason).To(Equal(duplicatePVCReason))
+					Expect(condition.Message).To(ContainSubstring(sourcePVCName))
+				}
+			}
+			return true, vmExport, nil
+		})
+		retry, err := controller.updateVMExport(testVMExport)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(retry).To(BeEquivalentTo(0))
+		Expect(readyConditionSet).To(BeTrue())
+		for _, action := range k8sClient.Actions() {
+			Expect(action.Matches("create", "pods")).To(BeFalse())
+		}
+	})
+
 	It("Should return false for isSourceVMTemplate when VMTemplateInformer is nil", func() {
 		saved := controller.VMTemplateInformer
 		controller.VMTemplateInformer = nil

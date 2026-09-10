@@ -56,6 +56,10 @@ func (s *VMSource) HasContent() bool {
 	return s.sourceVolumes.hasContent()
 }
 
+func (s *VMSource) InvalidCondition() *exportv1.Condition {
+	return s.sourceVolumes.invalidCondition
+}
+
 func (s *VMSource) SourceCondition() exportv1.Condition {
 	return s.sourceVolumes.sourceCondition
 }
@@ -258,7 +262,7 @@ func (ctrl *VMExportController) getPVCFromSourceVM(vmExport *exportv1.VirtualMac
 		}
 	}
 
-	sourceVolumes.volumes = ctrl.pvcsToSourceVolumes(pvcs...)
+	sourceVolumes.setVolumes(ctrl.pvcsToSourceVolumes(pvcs...))
 
 	return sourceVolumes, nil
 }

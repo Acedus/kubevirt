@@ -70,6 +70,10 @@ func (s *VMTemplateSource) HasContent() bool {
 	return s.sourceVolumes.hasContent()
 }
 
+func (s *VMTemplateSource) InvalidCondition() *exportv1.Condition {
+	return s.sourceVolumes.invalidCondition
+}
+
 func (s *VMTemplateSource) SourceCondition() exportv1.Condition {
 	return s.sourceVolumes.sourceCondition
 }
@@ -190,7 +194,7 @@ func (ctrl *VMExportController) getPVCFromSourceVMTemplate(vmExport *exportv1.Vi
 			fmt.Sprintf("Not all volumes in VirtualMachineTemplate %s/%s are populated", vmExport.Namespace, vmExport.Spec.Source.Name))
 	}
 
-	sourceVolumes.volumes = ctrl.pvcsToSourceVolumes(pvcs...)
+	sourceVolumes.setVolumes(ctrl.pvcsToSourceVolumes(pvcs...))
 
 	return tpl, sourceVolumes, nil
 }

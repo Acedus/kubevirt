@@ -2023,6 +2023,34 @@ var _ = Describe("Export controller", func() {
 	})
 })
 
+var _ = Describe("duplicatePVCNames", func() {
+	volumes := func(pvcNames ...string) []sourceVolume {
+		volumes := make([]sourceVolume, 0, len(pvcNames))
+		for _, pvcName := range pvcNames {
+			volume := sourceVolume{}
+			if pvcName != "" {
+				volume.pvc = &k8sv1.PersistentVolumeClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: pvcName},
+				}
+			}
+			volumes = append(volumes, volume)
+		}
+		return volumes
+	}
+
+	DescribeTable("should report", func(pvcNames []string, expected []string) {
+		Expect(duplicatePVCNames(volumes(pvcNames...))).To(Equal(expected))
+	},
+		Entry("nothing without volumes", nil, nil),
+		Entry("nothing for distinct PVCs", []string{"volume1", "volume2"}, nil),
+		Entry("nothing for names differing only by dots", []string{"volume.1", "volume-1"}, nil),
+		Entry("nothing for volumes without a PVC", []string{"", ""}, nil),
+		Entry("a PVC referenced twice", []string{"volume1", "volume1"}, []string{"volume1"}),
+		Entry("a PVC referenced three times only once", []string{"volume1", "volume1", "volume1"}, []string{"volume1"}),
+		Entry("both duplicates, sorted", []string{"volume2", "volume1", "volume2", "volume1"}, []string{"volume1", "volume2"}),
+	)
+})
+
 func verifyLinksEmpty(vmExport *exportv1.VirtualMachineExport) {
 	Expect(vmExport.Status).ToNot(BeNil())
 	Expect(vmExport.Status.Links).ToNot(BeNil())

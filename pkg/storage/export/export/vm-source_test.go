@@ -311,6 +311,12 @@ var _ = Describe("PVC source", func() {
 		return vm
 	}
 
+	createVMWithDuplicatePVCs := func() *virtv1.VirtualMachine {
+		vm := createVMWithPVCs()
+		vm.Spec.Template.Spec.Volumes[1].PersistentVolumeClaim.ClaimName = "volume1"
+		return vm
+	}
+
 	createVMWithPVCandMemoryDump := func() *virtv1.VirtualMachine {
 		vm := createVMWithoutVolumes()
 		vm.Spec.Template.Spec.Volumes = append(vm.Spec.Template.Spec.Volumes, virtv1.Volume{
@@ -634,6 +640,62 @@ var _ = Describe("PVC source", func() {
 		retry, err := controller.updateVMExport(testVMExport)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(retry).To(BeEquivalentTo(0))
+	})
+
+	It("Should be in skipped phase when the VM references the same PVC from two volumes", func() {
+		testVMExport := createVMVMExport()
+		controller.VMInformer.GetStore().Add(createVMWithDuplicatePVCs())
+		controller.PVCInformer.GetStore().Add(createPVC("volume1", "kubevirt"))
+		readyConditionSet := false
+		vmExportClient.Fake.PrependReactor("update", "virtualmachineexports", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			update, ok := action.(testing.UpdateAction)
+			Expect(ok).To(BeTrue())
+			vmExport, ok := update.GetObject().(*exportv1.VirtualMachineExport)
+			Expect(ok).To(BeTrue())
+			verifyLinksEmpty(vmExport)
+			Expect(vmExport.Status.Phase).To(Equal(exportv1.Skipped))
+			for _, condition := range vmExport.Status.Conditions {
+				if condition.Type == exportv1.ConditionReady {
+					readyConditionSet = true
+					Expect(condition.Status).To(Equal(k8sv1.ConditionFalse))
+					Expect(condition.Reason).To(Equal(duplicatePVCReason))
+					Expect(condition.Message).To(Equal("Source references the same PersistentVolumeClaim from more than one volume: volume1"))
+				}
+			}
+			return true, vmExport, nil
+		})
+		retry, err := controller.updateVMExport(testVMExport)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(retry).To(BeEquivalentTo(0))
+		Expect(readyConditionSet).To(BeTrue())
+		for _, action := range k8sClient.Actions() {
+			Expect(action.Matches("create", "pods")).To(BeFalse())
+		}
+	})
+
+	It("Should create the VM export once the duplicate volume is dropped from the VM", func() {
+		testVMExport := createVMVMExport()
+		controller.VMInformer.GetStore().Add(createVMWithDuplicatePVCs())
+		controller.PVCInformer.GetStore().Add(createPVC("volume1", "kubevirt"))
+		controller.PVCInformer.GetStore().Add(createPVC("volume2", "kubevirt"))
+		expectServiceCreate(k8sClient, serviceInformer)
+		var phases []exportv1.VirtualMachineExportPhase
+		vmExportClient.Fake.PrependReactor("update", "virtualmachineexports", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			update, ok := action.(testing.UpdateAction)
+			Expect(ok).To(BeTrue())
+			vmExport, ok := update.GetObject().(*exportv1.VirtualMachineExport)
+			Expect(ok).To(BeTrue())
+			phases = append(phases, vmExport.Status.Phase)
+			return true, vmExport, nil
+		})
+		_, err := controller.updateVMExport(testVMExport)
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(controller.VMInformer.GetStore().Update(createVMWithPVCs())).To(Succeed())
+		expectExporterCreate(k8sClient, k8sv1.PodRunning)
+		_, err = controller.updateVMExport(testVMExport)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(phases).To(Equal([]exportv1.VirtualMachineExportPhase{exportv1.Skipped, exportv1.Ready}))
 	})
 
 	It("Should report a failure to create the exporter pod in the status", func() {

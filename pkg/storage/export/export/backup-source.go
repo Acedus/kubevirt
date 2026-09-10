@@ -75,6 +75,11 @@ func (s *VMBackupSource) HasContent() bool {
 	return s.vmBackup.Status != nil && len(s.vmBackup.Status.IncludedVolumes) > 0
 }
 
+// InvalidCondition always returns nil, a backup source mounts no PVCs.
+func (s *VMBackupSource) InvalidCondition() *exportv1.Condition {
+	return nil
+}
+
 func (s *VMBackupSource) SourceCondition() exportv1.Condition {
 	if s.vmBackup == nil {
 		return newReadyCondition(corev1.ConditionFalse, vmBackupReadyReason, vmBackupNotExist)
