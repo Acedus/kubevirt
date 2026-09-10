@@ -24,6 +24,7 @@ import (
 	"crypto/ecdsa"
 	cryptorand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"strconv"
@@ -91,6 +92,7 @@ const (
 	noVolumeVMReason          = "VMNoVolumes"
 	noVolumeSnapshotReason    = "VMSnapshotNoVolumes"
 	notAllPVCsCreatedReason   = "NotAllPVCsCreated"
+	exporterPodErrorReason    = "ExporterPodError"
 	VMSnapshotNotFoundReason  = "VMSnapshotNotFound"
 	ociDigestsComputedReason  = "DigestsComputed"
 	ociDigestsPendingReason   = "DigestsPending"
@@ -756,12 +758,15 @@ func (ctrl *VMExportController) handleSource(vmExport *exportv1.VirtualMachineEx
 		return 0, err
 	}
 
-	pod, err := ctrl.manageExporterPod(vmExport, service, source)
-	if err != nil {
-		return 0, err
+	// The status is updated even when the exporter pod could not be managed,
+	// so a failing export does not stay empty.
+	pod, podErr := ctrl.manageExporterPod(vmExport, service, source)
+	if podErr != nil {
+		ctrl.Recorder.Event(vmExport, corev1.EventTypeWarning, exporterPodErrorReason, podErr.Error())
 	}
+	requeue, statusErr := ctrl.updateStatus(vmExport, pod, service, source, podErr)
 
-	return ctrl.updateStatus(vmExport, pod, service, source)
+	return requeue, errors.Join(podErr, statusErr)
 }
 
 func (ctrl *VMExportController) manageExporterPod(vmExport *exportv1.VirtualMachineExport, service *corev1.Service, source exportSource) (*corev1.Pod, error) {
@@ -778,15 +783,17 @@ func (ctrl *VMExportController) manageExporterPod(vmExport *exportv1.VirtualMach
 		}
 	}
 	if pod != nil {
+		// The pod is returned along with any error below, an export that is
+		// already being served must not be reported as if it had no pod.
 		if pod.Status.Phase == corev1.PodPending {
 			if err := ctrl.createCertSecret(vmExport, pod); err != nil {
-				return nil, err
+				return pod, err
 			}
 		}
 
 		if source.IsSourceAvailable() {
 			if err := ctrl.checkPod(vmExport, pod); err != nil {
-				return nil, err
+				return pod, err
 			}
 		} else {
 			// source is not available, stop the exporter pod if started
@@ -1502,12 +1509,12 @@ func (ctrl *VMExportController) isKubevirtContentType(pvc *corev1.PersistentVolu
 	return isKubevirt
 }
 
-func (ctrl *VMExportController) updateStatus(vmExport *exportv1.VirtualMachineExport, exporterPod *corev1.Pod, service *corev1.Service, source exportSource) (time.Duration, error) {
+func (ctrl *VMExportController) updateStatus(vmExport *exportv1.VirtualMachineExport, exporterPod *corev1.Pod, service *corev1.Service, source exportSource, podErr error) (time.Duration, error) {
 	var requeue time.Duration
 
 	vmExportCopy := vmExport.DeepCopy()
 
-	if err := ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, exporterPod, service, source); err != nil {
+	if err := ctrl.updateCommonVMExportStatusFields(vmExport, vmExportCopy, exporterPod, service, source, podErr); err != nil {
 		return requeue, err
 	}
 
@@ -1522,13 +1529,19 @@ func (ctrl *VMExportController) updateStatus(vmExport *exportv1.VirtualMachineEx
 	return requeue, nil
 }
 
-func (ctrl *VMExportController) updateCommonVMExportStatusFields(vmExport, vmExportCopy *exportv1.VirtualMachineExport, exporterPod *corev1.Pod, service *corev1.Service, source exportSource) error {
+func (ctrl *VMExportController) updateCommonVMExportStatusFields(vmExport, vmExportCopy *exportv1.VirtualMachineExport, exporterPod *corev1.Pod, service *corev1.Service, source exportSource, podErr error) error {
 	var err error
 
 	vmExportCopy.Status.ServiceName = service.Name
 	vmExportCopy.Status.Links = &exportv1.VirtualMachineExportLinks{}
 	if exporterPod == nil {
-		vmExportCopy.Status.Conditions = updateCondition(vmExportCopy.Status.Conditions, source.ReadyCondition())
+		// An exporter pod that is already serving keeps its phase and links,
+		// so both of these only apply while there is none.
+		condition := source.ReadyCondition()
+		if podErr != nil {
+			condition = newReadyCondition(corev1.ConditionFalse, exporterPodErrorReason, podErr.Error())
+		}
+		vmExportCopy.Status.Conditions = updateCondition(vmExportCopy.Status.Conditions, condition)
 		vmExportCopy.Status.Phase = exportv1.Pending
 	} else {
 		if optutil.PodIsReady(exporterPod) {

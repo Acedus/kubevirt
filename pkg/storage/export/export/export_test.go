@@ -1105,7 +1105,7 @@ var _ = Describe("Export controller", func() {
 		vmExportCopy := vmExport.DeepCopy()
 		svc := &k8sv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: testNamespace}}
 
-		err := controller.updateCommonVMExportStatusFields(vmExport, vmExportCopy, pod, svc, source)
+		err := controller.updateCommonVMExportStatusFields(vmExport, vmExportCopy, pod, svc, source, nil)
 		Expect(err).ToNot(HaveOccurred())
 
 		Expect(vmExportCopy.Status.Conditions).To(ContainElement(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
@@ -1145,7 +1145,7 @@ var _ = Describe("Export controller", func() {
 			Status: k8sv1.PodStatus{Phase: k8sv1.PodRunning, ContainerStatuses: []k8sv1.ContainerStatus{{Ready: true}}},
 		}
 
-		err := controller.updateCommonVMExportStatusFields(vmExport, vmExportCopy, pod, svc, source)
+		err := controller.updateCommonVMExportStatusFields(vmExport, vmExportCopy, pod, svc, source, nil)
 		Expect(err).ToNot(HaveOccurred())
 
 		for _, cond := range vmExportCopy.Status.Conditions {
@@ -2312,6 +2312,19 @@ func expectExporterCreate(k8sClient *k8sfake.Clientset, phase k8sv1.PodPhase) {
 			Phase: phase,
 		}
 		return true, exportPod, nil
+	})
+}
+
+// expectServiceCreate records the created export service in the informer store,
+// so that a follow up reconcile of the same export reuses it.
+func expectServiceCreate(k8sClient *k8sfake.Clientset, serviceInformer cache.SharedIndexInformer) {
+	k8sClient.Fake.PrependReactor("create", "services", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+		create, ok := action.(testing.CreateAction)
+		Expect(ok).To(BeTrue())
+		service, ok := create.GetObject().(*k8sv1.Service)
+		Expect(ok).To(BeTrue())
+		Expect(serviceInformer.GetStore().Add(service)).To(Succeed())
+		return true, service, nil
 	})
 }
 

@@ -19,6 +19,7 @@
 package export
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -633,6 +634,79 @@ var _ = Describe("PVC source", func() {
 		retry, err := controller.updateVMExport(testVMExport)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(retry).To(BeEquivalentTo(0))
+	})
+
+	It("Should report a failure to create the exporter pod in the status", func() {
+		testVMExport := createVMVMExport()
+		controller.VMInformer.GetStore().Add(createVMWithPVCs())
+		controller.PVCInformer.GetStore().Add(createPVC("volume1", "kubevirt"))
+		controller.PVCInformer.GetStore().Add(createPVC("volume2", "kubevirt"))
+		k8sClient.Fake.PrependReactor("create", "pods", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			return true, nil, errors.New("pods is forbidden")
+		})
+		statusUpdated := false
+		vmExportClient.Fake.PrependReactor("update", "virtualmachineexports", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			update, ok := action.(testing.UpdateAction)
+			Expect(ok).To(BeTrue())
+			vmExport, ok := update.GetObject().(*exportv1.VirtualMachineExport)
+			Expect(ok).To(BeTrue())
+			statusUpdated = true
+			verifyLinksEmpty(vmExport)
+			Expect(vmExport.Status.Phase).To(Equal(exportv1.Pending))
+			for _, condition := range vmExport.Status.Conditions {
+				if condition.Type == exportv1.ConditionReady {
+					Expect(condition.Status).To(Equal(k8sv1.ConditionFalse))
+					Expect(condition.Reason).To(Equal(exporterPodErrorReason))
+					Expect(condition.Message).To(ContainSubstring("pods is forbidden"))
+				}
+			}
+			return true, vmExport, nil
+		})
+		_, err := controller.updateVMExport(testVMExport)
+		Expect(err).To(MatchError(ContainSubstring("pods is forbidden")))
+		Expect(statusUpdated).To(BeTrue())
+	})
+
+	It("Should keep a ready VM export ready when its exporter pod cannot be managed", func() {
+		testVMExport := createVMVMExport()
+		controller.VMInformer.GetStore().Add(createVMWithPVCs())
+		controller.PVCInformer.GetStore().Add(createPVC("volume1", "kubevirt"))
+		controller.PVCInformer.GetStore().Add(createPVC("volume2", "kubevirt"))
+		expectServiceCreate(k8sClient, serviceInformer)
+		var exporterPod *k8sv1.Pod
+		k8sClient.Fake.PrependReactor("create", "pods", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			create, ok := action.(testing.CreateAction)
+			Expect(ok).To(BeTrue())
+			exporterPod, ok = create.GetObject().(*k8sv1.Pod)
+			Expect(ok).To(BeTrue())
+			exporterPod.Status = k8sv1.PodStatus{Phase: k8sv1.PodRunning}
+			return true, exporterPod, nil
+		})
+		var lastUpdate *exportv1.VirtualMachineExport
+		vmExportClient.Fake.PrependReactor("update", "virtualmachineexports", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			update, ok := action.(testing.UpdateAction)
+			Expect(ok).To(BeTrue())
+			vmExport, ok := update.GetObject().(*exportv1.VirtualMachineExport)
+			Expect(ok).To(BeTrue())
+			lastUpdate = vmExport
+			return true, vmExport, nil
+		})
+		_, err := controller.updateVMExport(testVMExport)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(lastUpdate.Status.Phase).To(Equal(exportv1.Ready))
+
+		By("Dropping the certificate parameters, so the serving pod is due to be recreated")
+		Expect(exporterPod).ToNot(BeNil())
+		delete(exporterPod.Annotations, annCertParams)
+		Expect(controller.PodInformer.GetStore().Add(exporterPod)).To(Succeed())
+		k8sClient.Fake.PrependReactor("delete", "pods", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
+			return true, nil, errors.New("pods is forbidden")
+		})
+
+		_, err = controller.updateVMExport(testVMExport)
+		Expect(err).To(MatchError(ContainSubstring("pods is forbidden")))
+		Expect(lastUpdate.Status.Phase).To(Equal(exportv1.Ready))
+		verifyKubevirtInternal(lastUpdate, lastUpdate.Name, testNamespace, "volume1", "volume2")
 	})
 
 	It("Should handle failed exporter pod", func() {
