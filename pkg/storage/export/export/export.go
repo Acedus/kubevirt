@@ -33,7 +33,7 @@ import (
 	"github.com/openshift/library-go/pkg/build/naming"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
@@ -801,7 +801,7 @@ func (ctrl *VMExportController) manageExporterPod(vmExport *exportv1.VirtualMach
 
 func (ctrl *VMExportController) deleteExporterPod(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, deleteReason, message string) error {
 	ctrl.Recorder.Event(vmExport, corev1.EventTypeWarning, deleteReason, message)
-	if err := ctrl.Client.CoreV1().Pods(vmExport.Namespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{}); !errors.IsNotFound(err) {
+	if err := ctrl.Client.CoreV1().Pods(vmExport.Namespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{}); !k8serrors.IsNotFound(err) {
 		return err
 	}
 	return nil
@@ -862,7 +862,7 @@ func (ctrl *VMExportController) createCertSecret(vmExport *exportv1.VirtualMachi
 		return err
 	}
 	_, err = ctrl.Client.CoreV1().Secrets(vmExport.Namespace).Create(context.Background(), secret, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
+	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		return err
 	} else if err == nil {
 		log.Log.V(3).Infof("Created new exporter pod secret")
@@ -959,7 +959,7 @@ func (ctrl *VMExportController) handleVMExportToken(vmExport *exportv1.VirtualMa
 
 	secret, err := ctrl.Client.CoreV1().Secrets(vmExport.Namespace).Create(context.Background(), secret, metav1.CreateOptions{})
 	if err != nil {
-		if errors.IsAlreadyExists(err) {
+		if k8serrors.IsAlreadyExists(err) {
 			return nil
 		}
 		return err
@@ -1298,7 +1298,7 @@ func (ctrl *VMExportController) reconcileManifestAndAddToPod(vmExport *exportv1.
 	}
 	cm, err := ctrl.Client.CoreV1().ConfigMaps(vmExport.Namespace).Get(context.Background(), manifestConfigMap.Name, metav1.GetOptions{})
 	if err != nil {
-		if !errors.IsNotFound(err) {
+		if !k8serrors.IsNotFound(err) {
 			return err
 		}
 		cm, err = ctrl.Client.CoreV1().ConfigMaps(vmExport.Namespace).Create(context.Background(), manifestConfigMap, metav1.CreateOptions{})
