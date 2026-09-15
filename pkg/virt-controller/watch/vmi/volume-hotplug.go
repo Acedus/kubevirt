@@ -233,7 +233,7 @@ func (c *Controller) hotplugVolumeReadiness(vmi *v1.VirtualMachineInstance, volu
 	if isUtilityVolumeWithBlockPVC {
 		return false, false, nil
 	}
-	ready, wffc, err = storagetypes.VolumeReadyToAttachToNode(vmi.Namespace, *volume, dataVolumes, c.dataVolumeIndexer, c.pvcIndexer)
+	ready, wffc, err = storagetypes.VolumeReadyToAttachToNode(vmi.Namespace, storagetypes.PVCNameFromVirtVolume(volume), dataVolumes, c.dataVolumeIndexer, c.pvcIndexer)
 	if err != nil {
 		return false, false, fmt.Errorf("Error determining volume status %v", err)
 	}

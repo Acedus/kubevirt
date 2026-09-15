@@ -122,7 +122,7 @@ func (c *Controller) areDataVolumesReady(vmi *v1.VirtualMachineInstance, dataVol
 		// Check both DVs and PVCs
 		if (volume.VolumeSource.DataVolume != nil && !volume.VolumeSource.DataVolume.Hotpluggable) ||
 			(volume.VolumeSource.PersistentVolumeClaim != nil && !volume.VolumeSource.PersistentVolumeClaim.Hotpluggable) {
-			volumeReady, volumeWffc, err := storagetypes.VolumeReadyToAttachToNode(vmi.Namespace, volume, dataVolumes, c.dataVolumeIndexer, c.pvcIndexer)
+			volumeReady, volumeWffc, err := storagetypes.VolumeReadyToAttachToNode(vmi.Namespace, storagetypes.PVCNameFromVirtVolume(&volume), dataVolumes, c.dataVolumeIndexer, c.pvcIndexer)
 			if err != nil {
 				if _, ok := err.(storagetypes.PvcNotFoundError); ok {
 					// due to the eventually consistent nature of controllers, CDI or users may need some time to actually crate the PVC.

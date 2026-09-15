@@ -220,14 +220,12 @@ func HasUnboundPVC(namespace string, volumes []virtv1.Volume, pvcStore cache.Sto
 	return false
 }
 
-func VolumeReadyToAttachToNode(namespace string, volume virtv1.Volume, dataVolumes []*cdiv1.DataVolume, dataVolumeStore, pvcStore cache.Store) (bool, bool, error) {
-	name := PVCNameFromVirtVolume(&volume)
-
+func VolumeReadyToAttachToNode(namespace, claimName string, dataVolumes []*cdiv1.DataVolume, dataVolumeStore, pvcStore cache.Store) (bool, bool, error) {
 	dataVolumeFunc := DataVolumeByNameFunc(dataVolumeStore, dataVolumes)
 	wffc := false
 	ready := false
 	// err is always nil
-	pvcInterface, pvcExists, _ := pvcStore.GetByKey(fmt.Sprintf("%s/%s", namespace, name))
+	pvcInterface, pvcExists, _ := pvcStore.GetByKey(fmt.Sprintf("%s/%s", namespace, claimName))
 	if pvcExists {
 		var err error
 		pvc := pvcInterface.(*k8sv1.PersistentVolumeClaim)
@@ -245,7 +243,7 @@ func VolumeReadyToAttachToNode(namespace string, volume virtv1.Volume, dataVolum
 			}
 		}
 	} else {
-		return false, false, PvcNotFoundError{Reason: fmt.Sprintf("didn't find PVC %v", name)}
+		return false, false, PvcNotFoundError{Reason: fmt.Sprintf("didn't find PVC %v", claimName)}
 	}
 	return ready, wffc, nil
 }
