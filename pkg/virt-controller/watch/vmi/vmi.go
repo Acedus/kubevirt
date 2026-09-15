@@ -40,6 +40,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/controller"
 	metrics "kubevirt.io/kubevirt/pkg/monitoring/metrics/common/vmisync"
 	backendstorage "kubevirt.io/kubevirt/pkg/storage/backend-storage"
+	storagehotplug "kubevirt.io/kubevirt/pkg/storage/hotplug"
 	storagetypes "kubevirt.io/kubevirt/pkg/storage/types"
 	"kubevirt.io/kubevirt/pkg/storage/velero"
 	traceUtils "kubevirt.io/kubevirt/pkg/util/trace"
@@ -180,8 +181,8 @@ func (i informalSyncError) RequiresRequeue() bool {
 type templateService interface {
 	RenderLaunchManifest(vmi *virtv1.VirtualMachineInstance) (*k8sv1.Pod, error)
 	RenderLaunchManifestNoVm(*virtv1.VirtualMachineInstance) (*k8sv1.Pod, error)
-	RenderHotplugAttachmentPodTemplate(volumes []*virtv1.Volume, ownerPod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance, claimMap map[string]*k8sv1.PersistentVolumeClaim) (*k8sv1.Pod, error)
-	RenderHotplugAttachmentTriggerPodTemplate(volume *virtv1.Volume, ownerPod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance, pvcName string, isBlock, tempPod bool) (*k8sv1.Pod, error)
+	RenderHotplugAttachmentPodTemplate(volumes []storagehotplug.Volume, ownerPod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance, claimMap map[string]*k8sv1.PersistentVolumeClaim) (*k8sv1.Pod, error)
+	RenderHotplugAttachmentTriggerPodTemplate(volume storagehotplug.Volume, ownerPod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance, isBlock, tempPod bool) (*k8sv1.Pod, error)
 	GetLauncherImage() string
 }
 

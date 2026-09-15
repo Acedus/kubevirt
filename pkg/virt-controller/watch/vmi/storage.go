@@ -36,6 +36,7 @@ import (
 
 	"kubevirt.io/kubevirt/pkg/controller"
 	backendstorage "kubevirt.io/kubevirt/pkg/storage/backend-storage"
+	storagehotplug "kubevirt.io/kubevirt/pkg/storage/hotplug"
 	storagetypes "kubevirt.io/kubevirt/pkg/storage/types"
 	"kubevirt.io/kubevirt/pkg/virt-controller/watch/common"
 )
@@ -236,10 +237,10 @@ func (c *Controller) updateVolumeStatus(vmi *virtv1.VirtualMachineInstance, virt
 		oldStatusMap[status.Name] = status
 	}
 
-	hotplugVolumes := storagetypes.GetHotplugVolumes(vmi, virtlauncherPod)
-	hotplugVolumesMap := make(map[string]*virtv1.Volume)
+	hotplugVolumes := storagehotplug.VolumesToAttach(vmi, virtlauncherPod)
+	hotplugVolumeNames := sets.New[string]()
 	for _, volume := range hotplugVolumes {
-		hotplugVolumesMap[volume.Name] = volume
+		hotplugVolumeNames.Insert(volume.Name)
 	}
 
 	attachmentPods, err := controller.AttachmentPods(virtlauncherPod, c.podIndexer)
@@ -297,7 +298,7 @@ func (c *Controller) updateVolumeStatus(vmi *virtv1.VirtualMachineInstance, virt
 		}
 		pvcName := storagetypes.PVCNameFromVirtVolume(&volume)
 
-		if _, ok := hotplugVolumesMap[volume.Name]; ok {
+		if hotplugVolumeNames.Has(volume.Name) {
 			c.processHotplugVolumeStatus(vmi, volume.Name, pvcName, &status, attachmentPodFor(volume.Name))
 		}
 		if volume.VolumeSource.PersistentVolumeClaim != nil || volume.VolumeSource.DataVolume != nil || volume.VolumeSource.MemoryDump != nil {

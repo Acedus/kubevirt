@@ -56,6 +56,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/network/istio"
 	"kubevirt.io/kubevirt/pkg/network/vmispec"
 	backendstorage "kubevirt.io/kubevirt/pkg/storage/backend-storage"
+	storagehotplug "kubevirt.io/kubevirt/pkg/storage/hotplug"
 	"kubevirt.io/kubevirt/pkg/storage/reservation"
 	"kubevirt.io/kubevirt/pkg/storage/types"
 	storageutils "kubevirt.io/kubevirt/pkg/storage/utils"
@@ -1052,7 +1053,7 @@ func sidecarContainerName(i int) string {
 	return fmt.Sprintf("hook-sidecar-%d", i)
 }
 
-func (t *TemplateService) RenderHotplugAttachmentPodTemplate(volumes []*v1.Volume, ownerPod *k8sv1.Pod, vmi *v1.VirtualMachineInstance, claimMap map[string]*k8sv1.PersistentVolumeClaim) (*k8sv1.Pod, error) {
+func (t *TemplateService) RenderHotplugAttachmentPodTemplate(volumes []storagehotplug.Volume, ownerPod *k8sv1.Pod, vmi *v1.VirtualMachineInstance, claimMap map[string]*k8sv1.PersistentVolumeClaim) (*k8sv1.Pod, error) {
 	zero := int64(0)
 	runUser := int64(util.NonRootUID)
 	sharedMount := k8sv1.MountPropagationHostToContainer
@@ -1152,23 +1153,16 @@ func (t *TemplateService) RenderHotplugAttachmentPodTemplate(volumes []*v1.Volum
 		}
 	}
 	for _, volume := range volumes {
-		claimName := types.PVCNameFromVirtVolume(volume)
-		if claimName == "" {
-			continue
-		}
-		// Skip container mounts for regular hotplug volumes already served by the old
-		// attachment pod (VolumeReady or HotplugVolumeMounted). Utility volumes always
-		// need a mount in the replacement pod so virt-handler can bind-mount when the
-		// volume set expands. Skipping during HotplugVolumeMounted avoids duplicate
-		// container mounts on overlapping attachment pods (same node as virt-launcher)
-		// while the disk is still attaching via the old pod.
+		// Directory volumes always need a mount so virt-handler can bind-mount them. Skip disk
+		// volumes the old attachment pod still serves: while it keeps serving them, both pods run on
+		// the virt-launcher node, and mounting them in both would duplicate their container mounts.
 		phase := hotplugVolumeStatusMap[volume.Name]
-		skipMount := !types.IsUtilityVolume(vmi, volume.Name) && (phase == v1.VolumeReady || phase == v1.HotplugVolumeMounted)
+		skipMount := volume.Kind == storagehotplug.KindDisk && (phase == v1.VolumeReady || phase == v1.HotplugVolumeMounted)
 		pod.Spec.Volumes = append(pod.Spec.Volumes, k8sv1.Volume{
 			Name: volume.Name,
 			VolumeSource: k8sv1.VolumeSource{
 				PersistentVolumeClaim: &k8sv1.PersistentVolumeClaimVolumeSource{
-					ClaimName: claimName,
+					ClaimName: volume.ClaimName,
 				},
 			},
 		})
@@ -1194,7 +1188,7 @@ func (t *TemplateService) RenderHotplugAttachmentPodTemplate(volumes []*v1.Volum
 	return pod, nil
 }
 
-func (t *TemplateService) RenderHotplugAttachmentTriggerPodTemplate(volume *v1.Volume, ownerPod *k8sv1.Pod, vmi *v1.VirtualMachineInstance, pvcName string, isBlock bool, tempPod bool) (*k8sv1.Pod, error) {
+func (t *TemplateService) RenderHotplugAttachmentTriggerPodTemplate(volume storagehotplug.Volume, ownerPod *k8sv1.Pod, vmi *v1.VirtualMachineInstance, isBlock bool, tempPod bool) (*k8sv1.Pod, error) {
 	zero := int64(0)
 	runUser := int64(util.NonRootUID)
 	sharedMount := k8sv1.MountPropagationHostToContainer
@@ -1282,7 +1276,7 @@ func (t *TemplateService) RenderHotplugAttachmentTriggerPodTemplate(volume *v1.V
 					Name: volume.Name,
 					VolumeSource: k8sv1.VolumeSource{
 						PersistentVolumeClaim: &k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: pvcName,
+							ClaimName: volume.ClaimName,
 							ReadOnly:  false,
 						},
 					},

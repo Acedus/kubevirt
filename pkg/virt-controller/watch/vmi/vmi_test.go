@@ -56,6 +56,7 @@ import (
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 
 	backendstorage "kubevirt.io/kubevirt/pkg/storage/backend-storage"
+	storagehotplug "kubevirt.io/kubevirt/pkg/storage/hotplug"
 	"kubevirt.io/kubevirt/pkg/storage/velero"
 
 	"kubevirt.io/kubevirt/pkg/libvmi"
@@ -3064,38 +3065,13 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			expectPodDoesNotExist(attachmentPod2.Namespace, attachmentPod2.Name)
 		})
 
-		It("CreateAttachmentPodTemplate should return error if volume is not DV or PVC", func() {
-			vmi := newPendingVirtualMachine("testvmi")
-			virtlauncherPod := newPodForVirtualMachine(vmi, k8sv1.PodRunning)
-			addVirtualMachine(vmi)
-			addPod(virtlauncherPod)
-			invalidVolume := &virtv1.Volume{
-				Name: "fake",
-				VolumeSource: virtv1.VolumeSource{
-					ConfigMap: &virtv1.ConfigMapVolumeSource{},
-				},
-			}
-			pod, err := controller.createAttachmentPodTemplate(vmi, virtlauncherPod, []*virtv1.Volume{invalidVolume})
-			Expect(pod).To(BeNil())
-			Expect(err).To(HaveOccurred())
-		})
-
 		It("CreateAttachmentPodTemplate should return error if volume has PVC that doesn't exist", func() {
 			vmi := newPendingVirtualMachine("testvmi")
 			virtlauncherPod := newPodForVirtualMachine(vmi, k8sv1.PodRunning)
 			addVirtualMachine(vmi)
 			addPod(virtlauncherPod)
-			nopvcVolume := &virtv1.Volume{
-				Name: "nopvc",
-				VolumeSource: virtv1.VolumeSource{
-					PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "noclaim",
-						},
-					},
-				},
-			}
-			pod, err := controller.createAttachmentPodTemplate(vmi, virtlauncherPod, []*virtv1.Volume{nopvcVolume})
+			nopvcVolume := storagehotplug.Volume{Name: "nopvc", ClaimName: "noclaim", Kind: storagehotplug.KindDisk}
+			pod, err := controller.createAttachmentPodTemplate(vmi, virtlauncherPod, []storagehotplug.Volume{nopvcVolume})
 			Expect(pod).To(BeNil())
 			Expect(err).To(HaveOccurred())
 		})
@@ -3108,20 +3084,8 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			addVirtualMachine(vmi)
 			addPod(virtlauncherPod)
 			addDataVolumePVC(pvc)
-			volume := &virtv1.Volume{
-				Name: "test-pvc-volume",
-				VolumeSource: virtv1.VolumeSource{
-					DataVolume: &virtv1.DataVolumeSource{
-						Name: "test-dv",
-					},
-					PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "test-dv",
-						},
-					},
-				},
-			}
-			pod, err := controller.createAttachmentPodTemplate(vmi, virtlauncherPod, []*virtv1.Volume{volume})
+			volume := storagehotplug.Volume{Name: "test-pvc-volume", ClaimName: "test-dv", Kind: storagehotplug.KindDisk}
+			pod, err := controller.createAttachmentPodTemplate(vmi, virtlauncherPod, []storagehotplug.Volume{volume})
 			Expect(pod).To(BeNil())
 			Expect(err).To(HaveOccurred())
 		})
@@ -3143,20 +3107,8 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			addDataVolume(dv)
 			addVirtualMachine(vmi)
 			addPod(virtlauncherPod)
-			volume := &virtv1.Volume{
-				Name: "test-pvc-volume",
-				VolumeSource: virtv1.VolumeSource{
-					DataVolume: &virtv1.DataVolumeSource{
-						Name: "test-dv",
-					},
-					PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "test-dv",
-						},
-					},
-				},
-			}
-			pod, err := controller.createAttachmentPodTemplate(vmi, virtlauncherPod, []*virtv1.Volume{volume})
+			volume := storagehotplug.Volume{Name: "test-pvc-volume", ClaimName: "test-dv", Kind: storagehotplug.KindDisk}
+			pod, err := controller.createAttachmentPodTemplate(vmi, virtlauncherPod, []storagehotplug.Volume{volume})
 			Expect(pod).To(BeNil())
 			Expect(err).ToNot(HaveOccurred())
 		})
@@ -3185,20 +3137,8 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			addDataVolume(dv)
 			addVirtualMachine(vmi)
 			addPod(virtlauncherPod)
-			volume := &virtv1.Volume{
-				Name: "test-pvc-volume",
-				VolumeSource: virtv1.VolumeSource{
-					DataVolume: &virtv1.DataVolumeSource{
-						Name: "test-dv",
-					},
-					PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "test-dv",
-						},
-					},
-				},
-			}
-			pod, err := controller.createAttachmentPodTemplate(vmi, virtlauncherPod, []*virtv1.Volume{volume})
+			volume := storagehotplug.Volume{Name: "test-pvc-volume", ClaimName: "test-dv", Kind: storagehotplug.KindDisk}
+			pod, err := controller.createAttachmentPodTemplate(vmi, virtlauncherPod, []storagehotplug.Volume{volume})
 			Expect(pod).To(BeNil())
 			Expect(err).ToNot(HaveOccurred())
 		})
@@ -3221,20 +3161,8 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			addDataVolume(dv)
 			addVirtualMachine(vmi)
 			addPod(virtlauncherPod)
-			volume := &virtv1.Volume{
-				Name: "test-pvc-volume",
-				VolumeSource: virtv1.VolumeSource{
-					DataVolume: &virtv1.DataVolumeSource{
-						Name: "test-dv",
-					},
-					PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "test-dv",
-						},
-					},
-				},
-			}
-			pod, err := controller.createAttachmentPodTemplate(vmi, virtlauncherPod, []*virtv1.Volume{volume})
+			volume := storagehotplug.Volume{Name: "test-pvc-volume", ClaimName: "test-dv", Kind: storagehotplug.KindDisk}
+			pod, err := controller.createAttachmentPodTemplate(vmi, virtlauncherPod, []storagehotplug.Volume{volume})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pod.GenerateName).To(Equal("hp-volume-"))
 			found := false
@@ -3312,6 +3240,18 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			return res
 		}
 
+		makeHotplugVolumes := func(indexes ...int) []storagehotplug.Volume {
+			res := make([]storagehotplug.Volume, 0)
+			for _, index := range indexes {
+				res = append(res, storagehotplug.Volume{
+					Name:      fmt.Sprintf("volume%d", index),
+					ClaimName: fmt.Sprintf("claim%d", index),
+					Kind:      storagehotplug.KindDisk,
+				})
+			}
+			return res
+		}
+
 		makeVolumesWithMemoryDump := func(total int, indexes ...int) []*virtv1.Volume {
 			res := make([]*virtv1.Volume, 0)
 			for i := 0; i < total; i++ {
@@ -3339,21 +3279,6 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 						},
 					})
 				}
-			}
-			return res
-		}
-
-		makeK8sVolumes := func(indexes ...int) []k8sv1.Volume {
-			res := make([]k8sv1.Volume, 0)
-			for _, index := range indexes {
-				res = append(res, k8sv1.Volume{
-					Name: fmt.Sprintf("volume%d", index),
-					VolumeSource: k8sv1.VolumeSource{
-						PersistentVolumeClaim: &k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: fmt.Sprintf("claim%d", index),
-						},
-					},
-				})
 			}
 			return res
 		}
@@ -3404,7 +3329,7 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			}
 		}
 
-		DescribeTable("handleHotplugVolumes should properly react to input", func(hotplugVolumes []*virtv1.Volume, hotplugAttachmentPods []*k8sv1.Pod, createPodReaction func(*k8sv1.Pod, ...int), pvcFunc func(...int), pvcIndexes []int, orgStatus []virtv1.VolumeStatus, expectedEvent string, expectedErr common.SyncError) {
+		DescribeTable("handleHotplugVolumes should properly react to input", func(hotplugVolumes []storagehotplug.Volume, hotplugAttachmentPods []*k8sv1.Pod, createPodReaction func(*k8sv1.Pod, ...int), pvcFunc func(...int), pvcIndexes []int, orgStatus []virtv1.VolumeStatus, expectedEvent string, expectedErr common.SyncError) {
 			vmi := newPendingVirtualMachine("testvmi")
 			vmi.Status.VolumeStatus = orgStatus
 			virtlauncherPod := newPodForVirtualMachine(vmi, k8sv1.PodRunning)
@@ -3436,7 +3361,7 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			}
 		},
 			Entry("when volumes and pods match, the status should remain the same",
-				makeVolumes(1),
+				makeHotplugVolumes(1),
 				makePods(1),
 				nil,
 				preparePVC,
@@ -3446,15 +3371,15 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 				nil),
 		)
 
-		DescribeTable("needsHandleHotplug", func(hotplugVolumes []*virtv1.Volume, hotplugAttachmentPods []*k8sv1.Pod, expected bool) {
+		DescribeTable("needsHandleHotplug", func(hotplugVolumes []storagehotplug.Volume, hotplugAttachmentPods []*k8sv1.Pod, expected bool) {
 			res := needsHandleHotplug(hotplugVolumes, hotplugAttachmentPods)
 			Expect(res).To(Equal(expected))
 		},
-			Entry("should return false if volumes and attachmentpods are empty", makeVolumes(), makePods(), false),
-			Entry("should return false if volumes and attachmentpods match", makeVolumes(1), makePods(1), false),
-			Entry("should return true if volumes > attachmentpods", makeVolumes(1, 2), makePods(1), true),
-			Entry("should return true if volumes < attachmentpods", makeVolumes(1), makePods(1, 2), true),
-			Entry("should return true if len(volumes) == len(attachmentpods), but contents differ", makeVolumes(1, 3), makePods(1, 2), true),
+			Entry("should return false if volumes and attachmentpods are empty", makeHotplugVolumes(), makePods(), false),
+			Entry("should return false if volumes and attachmentpods match", makeHotplugVolumes(1), makePods(1), false),
+			Entry("should return true if volumes > attachmentpods", makeHotplugVolumes(1, 2), makePods(1), true),
+			Entry("should return true if volumes < attachmentpods", makeHotplugVolumes(1), makePods(1, 2), true),
+			Entry("should return true if len(volumes) == len(attachmentpods), but contents differ", makeHotplugVolumes(1, 3), makePods(1, 2), true),
 		)
 
 		DescribeTable("virtlauncherAttachmentPods", func(podCount int) {
@@ -3500,32 +3425,6 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			Entry("should return number (0) of pods passed in", 0),
 			Entry("should return number (1) of pods passed in", 1),
 			Entry("should return number (2) of pods passed in", 2),
-		)
-
-		DescribeTable("getHotplugVolumes", func(virtlauncherVolumes []k8sv1.Volume, vmiVolumes []*virtv1.Volume, expectedIndexes ...int) {
-			vmi := newPendingVirtualMachine("testvmi")
-			for _, volume := range vmiVolumes {
-				vmi.Spec.Volumes = append(vmi.Spec.Volumes, *volume)
-			}
-			virtlauncherPod := newPodForVirtualMachine(vmi, k8sv1.PodRunning)
-			virtlauncherPod.Spec.Volumes = virtlauncherVolumes
-			res := storagetypes.GetHotplugVolumes(vmi, virtlauncherPod)
-			Expect(res).To(HaveLen(len(expectedIndexes)))
-			for _, index := range expectedIndexes {
-				found := false
-				for _, volume := range res {
-					if volume.Name == fmt.Sprintf("volume%d", index) {
-						found = true
-					}
-				}
-				Expect(found).To(BeTrue())
-			}
-		},
-			Entry("should return no volumes if vmi and virtlauncher have no volumes", makeK8sVolumes(), makeVolumes()),
-			Entry("should return a volume if vmi has one more than virtlauncher", makeK8sVolumes(), makeVolumes(1), 1),
-			Entry("should return a volume if vmi has one more than virtlauncher, with matching volumes", makeK8sVolumes(1, 3), makeVolumes(1, 2, 3), 2),
-			Entry("should return multiple volumes if vmi has multiple more than virtlauncher, with matching volumes", makeK8sVolumes(1, 3), makeVolumes(1, 2, 3, 4, 5), 2, 4, 5),
-			Entry("should return a memory dump volume if vmi has memory dump volume not on virtlauncher", makeK8sVolumes(0, 2), makeVolumesWithMemoryDump(3, 1), 1),
 		)
 
 		truncateSprintf := func(str string, args ...interface{}) string {
@@ -3670,46 +3569,39 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 				[]string{}),
 		)
 
-		DescribeTable("Should properly calculate if it needs to handle hotplug volumes", func(hotplugVolumes []*virtv1.Volume, attachmentPods []*k8sv1.Pod, match gomegaTypes.GomegaMatcher) {
+		DescribeTable("Should properly calculate if it needs to handle hotplug volumes", func(hotplugVolumes []storagehotplug.Volume, attachmentPods []*k8sv1.Pod, match gomegaTypes.GomegaMatcher) {
 			Expect(needsHandleHotplug(hotplugVolumes, attachmentPods)).To(match)
 		},
 			Entry("nil volumes, nil attachmentPods", nil, nil, BeFalse()),
-			Entry("empty volumes, empty attachmentPods", []*virtv1.Volume{}, []*k8sv1.Pod{}, BeFalse()),
-			Entry("single volume, empty attachmentPods", []*virtv1.Volume{
+			Entry("empty volumes, empty attachmentPods", []storagehotplug.Volume{}, []*k8sv1.Pod{}, BeFalse()),
+			Entry("single volume, empty attachmentPods", []storagehotplug.Volume{
 				{
 					Name: "test",
 				},
 			}, []*k8sv1.Pod{}, BeTrue()),
-			Entry("no volume, single attachmentPod", []*virtv1.Volume{}, makePods(0), BeTrue()),
-			Entry("matching volume, single attachmentPod", makeVolumes(0), makePods(0), BeFalse()),
-			Entry("mismatched volume, single attachmentPod", []*virtv1.Volume{
+			Entry("no volume, single attachmentPod", []storagehotplug.Volume{}, makePods(0), BeTrue()),
+			Entry("matching volume, single attachmentPod", makeHotplugVolumes(0), makePods(0), BeFalse()),
+			Entry("mismatched volume, single attachmentPod", []storagehotplug.Volume{
 				{
 					Name: "invalid",
 				},
 			}, makePods(0), BeTrue()),
-			Entry("matching volume, multiple attachmentPods", makeVolumes(0), []*k8sv1.Pod{makePods(0)[0], makePods(1)[0]}, BeTrue()),
+			Entry("matching volume, multiple attachmentPods", makeHotplugVolumes(0), []*k8sv1.Pod{makePods(0)[0], makePods(1)[0]}, BeTrue()),
 		)
 
-		DescribeTable("Should find active and old pods", func(hotplugVolumes []*virtv1.Volume, attachmentPods []*k8sv1.Pod, expectedActive *k8sv1.Pod, expectedOld []*k8sv1.Pod) {
+		DescribeTable("Should find active and old pods", func(hotplugVolumes []storagehotplug.Volume, attachmentPods []*k8sv1.Pod, expectedActive *k8sv1.Pod, expectedOld []*k8sv1.Pod) {
 			active, old := getActiveAndOldAttachmentPods(hotplugVolumes, attachmentPods)
 			Expect(active).To(Equal(expectedActive))
 			Expect(old).To(ContainElements(expectedOld))
 		},
 			Entry("nil volumes, nil attachmentPods", nil, nil, nil, nil),
-			Entry("empty volumes, empty attachmentPods", []*virtv1.Volume{}, []*k8sv1.Pod{}, nil, []*k8sv1.Pod{}),
-			Entry("matching volume, single attachmentPod", makeVolumes(0), makePods(0), makePods(0)[0], []*k8sv1.Pod{}),
-			Entry("matching volume, nil attachmentPods since marked for deletion", makeVolumes(0), makePodsWithDeletion(0), nil, []*k8sv1.Pod{}),
-			Entry("matching volume, multiple attachmentPods, first pod matches", makeVolumes(0), []*k8sv1.Pod{makePods(0)[0], makePods(1)[0]}, makePods(0)[0], makePods(1)),
-			Entry("matching volume, multiple attachmentPods, second pod matches", makeVolumes(1), []*k8sv1.Pod{makePods(0)[0], makePods(1)[0]}, makePods(1)[0], makePods(0)),
-			Entry("volume matching an attachment pod by name but not by claim", []*virtv1.Volume{
-				{
-					Name: "volume0",
-					VolumeSource: virtv1.VolumeSource{
-						PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-							PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{ClaimName: "another-claim"},
-						},
-					},
-				},
+			Entry("empty volumes, empty attachmentPods", []storagehotplug.Volume{}, []*k8sv1.Pod{}, nil, []*k8sv1.Pod{}),
+			Entry("matching volume, single attachmentPod", makeHotplugVolumes(0), makePods(0), makePods(0)[0], []*k8sv1.Pod{}),
+			Entry("matching volume, nil attachmentPods since marked for deletion", makeHotplugVolumes(0), makePodsWithDeletion(0), nil, []*k8sv1.Pod{}),
+			Entry("matching volume, multiple attachmentPods, first pod matches", makeHotplugVolumes(0), []*k8sv1.Pod{makePods(0)[0], makePods(1)[0]}, makePods(0)[0], makePods(1)),
+			Entry("matching volume, multiple attachmentPods, second pod matches", makeHotplugVolumes(1), []*k8sv1.Pod{makePods(0)[0], makePods(1)[0]}, makePods(1)[0], makePods(0)),
+			Entry("volume matching an attachment pod by name but not by claim", []storagehotplug.Volume{
+				{Name: "volume0", ClaimName: "another-claim", Kind: storagehotplug.KindDisk},
 			}, makePods(0), nil, makePods(0)),
 		)
 
@@ -3905,7 +3797,7 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 				Expect(controller.dataVolumeIndexer.Add(newDv(k8sv1.NamespaceDefault, "data", cdiv1.Succeeded))).To(Succeed())
 
 				By("Creating a replacement attachment pod backed by the new claim")
-				hotplugVolumes := storagetypes.GetHotplugVolumes(vmi, virtlauncherPod)
+				hotplugVolumes := storagehotplug.VolumesToAttach(vmi, virtlauncherPod)
 				Expect(controller.handleHotplugVolumes(hotplugVolumes, []*k8sv1.Pod{oldAttachmentPod}, vmi, virtlauncherPod, nil)).To(Succeed())
 				testutils.ExpectEvent(recorder, kvcontroller.SuccessfulCreatePodReason)
 				pods, err := kubeClient.CoreV1().Pods(vmi.Namespace).List(context.Background(), metav1.ListOptions{})
@@ -3941,7 +3833,7 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 				Expect(controller.pvcIndexer.Add(newHotplugPVC("served", k8sv1.NamespaceDefault, k8sv1.ClaimBound))).To(Succeed())
 				addBoundPVC("ready")
 
-				hotplugVolumes := storagetypes.GetHotplugVolumes(vmi, virtlauncherPod)
+				hotplugVolumes := storagehotplug.VolumesToAttach(vmi, virtlauncherPod)
 				Expect(controller.handleHotplugVolumes(hotplugVolumes, []*k8sv1.Pod{attachmentPod}, vmi, virtlauncherPod, nil)).To(Succeed())
 
 				Expect(controller.updateVolumeStatus(vmi, virtlauncherPod, nil)).To(Succeed())
@@ -4007,7 +3899,7 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			readyPVC.Status.Phase = k8sv1.ClaimBound
 			Expect(controller.pvcIndexer.Add(readyPVC)).To(Succeed())
 
-			hotplugVolumes := storagetypes.GetHotplugVolumes(vmi, virtlauncherPod)
+			hotplugVolumes := storagehotplug.VolumesToAttach(vmi, virtlauncherPod)
 			syncErr := controller.handleHotplugVolumes(hotplugVolumes, nil, vmi, virtlauncherPod, nil)
 			Expect(syncErr).To(HaveOccurred())
 			Expect(syncErr.Reason()).To(Equal(kvcontroller.PVCNotReadyReason))
@@ -4060,7 +3952,7 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 				return true, nil, fmt.Errorf("random error")
 			})
 
-			hotplugVolumes := storagetypes.GetHotplugVolumes(vmi, virtlauncherPod)
+			hotplugVolumes := storagehotplug.VolumesToAttach(vmi, virtlauncherPod)
 			syncErr := controller.handleHotplugVolumes(hotplugVolumes, nil, vmi, virtlauncherPod, nil)
 			Expect(syncErr).To(HaveOccurred())
 			Expect(syncErr.Reason()).To(Equal(kvcontroller.FailedCreatePodReason))
@@ -4193,172 +4085,41 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			Expect(vmi.Status.VolumeStatus[0].PersistentVolumeClaimInfo.ClaimName).To(Equal(legacyPVCName))
 		})
 
-		Context("isUtilityVolumeWithBlockPVC", func() {
-			It("should return true for a utility volume with block mode PVC", func() {
-				vmi := newPendingVirtualMachine("testvmi")
-				vmi.Spec.UtilityVolumes = []virtv1.UtilityVolume{
-					{
-						Name: "utility-vol",
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "block-pvc",
-						},
-					},
-				}
-
-				blockMode := k8sv1.PersistentVolumeBlock
-				blockPVC := &k8sv1.PersistentVolumeClaim{
+		Context("isDirectoryWithBlockPVC", func() {
+			addPVC := func(name string, volumeMode *k8sv1.PersistentVolumeMode) {
+				Expect(controller.pvcIndexer.Add(&k8sv1.PersistentVolumeClaim{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "block-pvc",
+						Name:      name,
 						Namespace: k8sv1.NamespaceDefault,
 					},
 					Spec: k8sv1.PersistentVolumeClaimSpec{
-						VolumeMode: &blockMode,
-						AccessModes: []k8sv1.PersistentVolumeAccessMode{
-							k8sv1.ReadWriteOnce,
-						},
+						VolumeMode: volumeMode,
 					},
 					Status: k8sv1.PersistentVolumeClaimStatus{
 						Phase: k8sv1.ClaimBound,
 					},
-				}
+				})).To(Succeed())
+			}
 
-				Expect(controller.pvcIndexer.Add(blockPVC)).To(Succeed())
+			DescribeTable("should detect block mode PVCs only for directory volumes", func(kind storagehotplug.Kind, volumeMode *k8sv1.PersistentVolumeMode, expected bool) {
+				addPVC("pvc", volumeMode)
+				volume := storagehotplug.Volume{Name: "volume", ClaimName: "pvc", Kind: kind}
 
-				utilityVolume := &virtv1.Volume{
-					Name: "utility-vol",
-					VolumeSource: virtv1.VolumeSource{
-						PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-							PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-								ClaimName: "block-pvc",
-							},
-							Hotpluggable: true,
-						},
-					},
-				}
-
-				isBlock, err := controller.isUtilityVolumeWithBlockPVC(vmi, utilityVolume)
+				isBlock, err := controller.isDirectoryWithBlockPVC(k8sv1.NamespaceDefault, volume)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(isBlock).To(BeTrue())
-			})
+				Expect(isBlock).To(Equal(expected))
+			},
+				Entry("directory volume with block mode PVC", storagehotplug.KindDirectory, new(k8sv1.PersistentVolumeBlock), true),
+				Entry("directory volume with filesystem mode PVC", storagehotplug.KindDirectory, new(k8sv1.PersistentVolumeFilesystem), false),
+				Entry("directory volume with unset volume mode PVC", storagehotplug.KindDirectory, nil, false),
+				Entry("disk volume with block mode PVC", storagehotplug.KindDisk, new(k8sv1.PersistentVolumeBlock), false),
+			)
 
-			It("should return false for a non-utility volume with block mode PVC", func() {
-				vmi := newPendingVirtualMachine("testvmi")
-				vmi.Spec.UtilityVolumes = []virtv1.UtilityVolume{
-					{
-						Name: "utility-vol",
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "block-pvc",
-						},
-					},
-				}
+			It("should return an error for a directory volume when the PVC does not exist", func() {
+				volume := storagehotplug.Volume{Name: "volume", ClaimName: "missing-pvc", Kind: storagehotplug.KindDirectory}
 
-				blockMode := k8sv1.PersistentVolumeBlock
-				blockPVC := &k8sv1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "block-pvc",
-						Namespace: k8sv1.NamespaceDefault,
-					},
-					Spec: k8sv1.PersistentVolumeClaimSpec{
-						VolumeMode: &blockMode,
-						AccessModes: []k8sv1.PersistentVolumeAccessMode{
-							k8sv1.ReadWriteOnce,
-						},
-					},
-					Status: k8sv1.PersistentVolumeClaimStatus{
-						Phase: k8sv1.ClaimBound,
-					},
-				}
-
-				Expect(controller.pvcIndexer.Add(blockPVC)).To(Succeed())
-
-				nonUtilityVolume := &virtv1.Volume{
-					Name: "non-utility-vol",
-					VolumeSource: virtv1.VolumeSource{
-						PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-							PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-								ClaimName: "block-pvc",
-							},
-							Hotpluggable: true,
-						},
-					},
-				}
-
-				isBlock, err := controller.isUtilityVolumeWithBlockPVC(vmi, nonUtilityVolume)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(isBlock).To(BeFalse())
-			})
-
-			It("should return an error when PVC does not exist", func() {
-				vmi := newPendingVirtualMachine("testvmi")
-				vmi.Spec.UtilityVolumes = []virtv1.UtilityVolume{
-					{
-						Name: "utility-vol",
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "missing-pvc",
-						},
-					},
-				}
-
-				missingPVCVolume := &virtv1.Volume{
-					Name: "utility-vol",
-					VolumeSource: virtv1.VolumeSource{
-						PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-							PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-								ClaimName: "missing-pvc",
-							},
-							Hotpluggable: true,
-						},
-					},
-				}
-
-				_, err := controller.isUtilityVolumeWithBlockPVC(vmi, missingPVCVolume)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("does not exist"))
-			})
-
-			It("should return false for a utility volume with filesystem PVC", func() {
-				vmi := newPendingVirtualMachine("testvmi")
-				vmi.Spec.UtilityVolumes = []virtv1.UtilityVolume{
-					{
-						Name: "utility-vol",
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "filesystem-pvc",
-						},
-					},
-				}
-
-				filesystemPVC := &k8sv1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "filesystem-pvc",
-						Namespace: k8sv1.NamespaceDefault,
-					},
-					Spec: k8sv1.PersistentVolumeClaimSpec{
-						AccessModes: []k8sv1.PersistentVolumeAccessMode{
-							k8sv1.ReadWriteOnce,
-						},
-					},
-					Status: k8sv1.PersistentVolumeClaimStatus{
-						Phase: k8sv1.ClaimBound,
-					},
-				}
-
-				Expect(controller.pvcIndexer.Add(filesystemPVC)).To(Succeed())
-
-				filesystemVolume := &virtv1.Volume{
-					Name: "utility-vol",
-					VolumeSource: virtv1.VolumeSource{
-						PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
-							PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-								ClaimName: "filesystem-pvc",
-							},
-							Hotpluggable: true,
-						},
-					},
-				}
-
-				isBlock, err := controller.isUtilityVolumeWithBlockPVC(vmi, filesystemVolume)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(isBlock).To(BeFalse())
+				_, err := controller.isDirectoryWithBlockPVC(k8sv1.NamespaceDefault, volume)
+				Expect(err).To(MatchError(ContainSubstring("does not exist")))
 			})
 		})
 

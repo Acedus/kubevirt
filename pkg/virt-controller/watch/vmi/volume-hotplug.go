@@ -35,11 +35,12 @@ import (
 
 	"kubevirt.io/kubevirt/pkg/controller"
 	"kubevirt.io/kubevirt/pkg/pointer"
+	storagehotplug "kubevirt.io/kubevirt/pkg/storage/hotplug"
 	storagetypes "kubevirt.io/kubevirt/pkg/storage/types"
 	"kubevirt.io/kubevirt/pkg/virt-controller/watch/common"
 )
 
-func needsHandleHotplug(hotplugVolumes []*v1.Volume, hotplugAttachmentPods []*k8sv1.Pod) bool {
+func needsHandleHotplug(hotplugVolumes []storagehotplug.Volume, hotplugAttachmentPods []*k8sv1.Pod) bool {
 	if len(hotplugAttachmentPods) > 1 {
 		return true
 	}
@@ -50,7 +51,7 @@ func needsHandleHotplug(hotplugVolumes []*v1.Volume, hotplugAttachmentPods []*k8
 	return len(hotplugVolumes) > 0 || len(hotplugAttachmentPods) > 0
 }
 
-func getActiveAndOldAttachmentPods(readyHotplugVolumes []*v1.Volume, hotplugAttachmentPods []*k8sv1.Pod) (*k8sv1.Pod, []*k8sv1.Pod) {
+func getActiveAndOldAttachmentPods(readyHotplugVolumes []storagehotplug.Volume, hotplugAttachmentPods []*k8sv1.Pod) (*k8sv1.Pod, []*k8sv1.Pod) {
 	var currentPod *k8sv1.Pod
 	oldPods := make([]*k8sv1.Pod, 0)
 	for _, attachmentPod := range hotplugAttachmentPods {
@@ -201,52 +202,46 @@ func podContainsVolumesToPreserve(pod *k8sv1.Pod, statusMap map[string]v1.Volume
 	return false
 }
 
-func (c *Controller) isUtilityVolumeWithBlockPVC(vmi *v1.VirtualMachineInstance, volume *v1.Volume) (bool, error) {
-	isUtilityVolume := false
-	for _, utilityVolume := range vmi.Spec.UtilityVolumes {
-		if utilityVolume.Name == volume.Name {
-			isUtilityVolume = true
-			break
-		}
-	}
-	if !isUtilityVolume {
+func (c *Controller) isDirectoryWithBlockPVC(namespace string, volume storagehotplug.Volume) (bool, error) {
+	if volume.Kind != storagehotplug.KindDirectory {
 		return false, nil
 	}
 
-	pvcInterface, pvcExists, _ := c.pvcIndexer.GetByKey(fmt.Sprintf("%s/%s", vmi.Namespace, volume.PersistentVolumeClaim.ClaimName))
-	if !pvcExists {
-		return false, fmt.Errorf("utility volume %s references PVC %s which does not exist", volume.Name, volume.PersistentVolumeClaim.ClaimName)
+	_, exists, isBlock, err := storagetypes.IsPVCBlockFromStore(c.pvcIndexer, namespace, volume.ClaimName)
+	if err != nil {
+		return false, err
 	}
-
-	pvc := pvcInterface.(*k8sv1.PersistentVolumeClaim)
-	return storagetypes.IsPVCBlock(pvc.Spec.VolumeMode), nil
+	if !exists {
+		return false, fmt.Errorf("volume %s references PVC %s which does not exist", volume.Name, volume.ClaimName)
+	}
+	return isBlock, nil
 }
 
-func (c *Controller) hotplugVolumeReadiness(vmi *v1.VirtualMachineInstance, volume *v1.Volume, attachmentPods []*k8sv1.Pod, dataVolumes []*cdiv1.DataVolume) (ready bool, wffc bool, err error) {
+func (c *Controller) hotplugVolumeReadiness(vmi *v1.VirtualMachineInstance, volume storagehotplug.Volume, attachmentPods []*k8sv1.Pod, dataVolumes []*cdiv1.DataVolume) (ready bool, wffc bool, err error) {
 	if servedByAttachmentPod(volume, attachmentPods) {
 		return true, false, nil
 	}
-	isUtilityVolumeWithBlockPVC, err := c.isUtilityVolumeWithBlockPVC(vmi, volume)
+	isDirectoryWithBlockPVC, err := c.isDirectoryWithBlockPVC(vmi.Namespace, volume)
 	if err != nil {
 		return false, false, err
 	}
-	if isUtilityVolumeWithBlockPVC {
+	if isDirectoryWithBlockPVC {
 		return false, false, nil
 	}
-	ready, wffc, err = storagetypes.VolumeReadyToAttachToNode(vmi.Namespace, storagetypes.PVCNameFromVirtVolume(volume), dataVolumes, c.dataVolumeIndexer, c.pvcIndexer)
+	ready, wffc, err = storagetypes.VolumeReadyToAttachToNode(vmi.Namespace, volume.ClaimName, dataVolumes, c.dataVolumeIndexer, c.pvcIndexer)
 	if err != nil {
 		return false, false, fmt.Errorf("Error determining volume status %v", err)
 	}
 	return ready, wffc, nil
 }
 
-func podServesVolume(podVolume k8sv1.Volume, volume *v1.Volume) bool {
+func podServesVolume(podVolume k8sv1.Volume, volume storagehotplug.Volume) bool {
 	return podVolume.Name == volume.Name &&
 		podVolume.PersistentVolumeClaim != nil &&
-		podVolume.PersistentVolumeClaim.ClaimName == storagetypes.PVCNameFromVirtVolume(volume)
+		podVolume.PersistentVolumeClaim.ClaimName == volume.ClaimName
 }
 
-func servedByAttachmentPod(volume *v1.Volume, attachmentPods []*k8sv1.Pod) bool {
+func servedByAttachmentPod(volume storagehotplug.Volume, attachmentPods []*k8sv1.Pod) bool {
 	return slices.ContainsFunc(attachmentPods, func(pod *k8sv1.Pod) bool {
 		// WaitForFirstConsumer trigger pods only bind the claim and serve nothing.
 		return pod.DeletionTimestamp == nil && !isTempPod(pod) && slices.ContainsFunc(pod.Spec.Volumes, func(podVolume k8sv1.Volume) bool {
@@ -255,8 +250,8 @@ func servedByAttachmentPod(volume *v1.Volume, attachmentPods []*k8sv1.Pod) bool 
 	})
 }
 
-func (c *Controller) readyHotplugVolumes(vmi *v1.VirtualMachineInstance, hotplugVolumes []*v1.Volume, attachmentPods []*k8sv1.Pod, dataVolumes []*cdiv1.DataVolume) []*v1.Volume {
-	return slices.DeleteFunc(slices.Clone(hotplugVolumes), func(volume *v1.Volume) bool {
+func (c *Controller) readyHotplugVolumes(vmi *v1.VirtualMachineInstance, hotplugVolumes []storagehotplug.Volume, attachmentPods []*k8sv1.Pod, dataVolumes []*cdiv1.DataVolume) []storagehotplug.Volume {
+	return slices.DeleteFunc(slices.Clone(hotplugVolumes), func(volume storagehotplug.Volume) bool {
 		ready, _, err := c.hotplugVolumeReadiness(vmi, volume, attachmentPods, dataVolumes)
 		if err != nil {
 			log.Log.Object(vmi).V(3).Infof("Not matching an attachment pod to volume %s, cannot determine its readiness: %v", volume.Name, err)
@@ -266,10 +261,10 @@ func (c *Controller) readyHotplugVolumes(vmi *v1.VirtualMachineInstance, hotplug
 	})
 }
 
-func (c *Controller) handleHotplugVolumes(hotplugVolumes []*v1.Volume, hotplugAttachmentPods []*k8sv1.Pod, vmi *v1.VirtualMachineInstance, virtLauncherPod *k8sv1.Pod, dataVolumes []*cdiv1.DataVolume) common.SyncError {
+func (c *Controller) handleHotplugVolumes(hotplugVolumes []storagehotplug.Volume, hotplugAttachmentPods []*k8sv1.Pod, vmi *v1.VirtualMachineInstance, virtLauncherPod *k8sv1.Pod, dataVolumes []*cdiv1.DataVolume) common.SyncError {
 	logger := log.Log.Object(vmi)
 
-	readyHotplugVolumes := make([]*v1.Volume, 0)
+	readyHotplugVolumes := make([]storagehotplug.Volume, 0)
 	// Report these once the other volumes are handled, so one volume cannot hold them all back.
 	var readinessErrs, populationErrs []error
 	// Find all ready volumes
@@ -327,7 +322,7 @@ func (c *Controller) handleHotplugVolumes(hotplugVolumes []*v1.Volume, hotplugAt
 	return nil
 }
 
-func (c *Controller) createAttachmentPod(vmi *v1.VirtualMachineInstance, virtLauncherPod *k8sv1.Pod, volumes []*v1.Volume) (*k8sv1.Pod, common.SyncError) {
+func (c *Controller) createAttachmentPod(vmi *v1.VirtualMachineInstance, virtLauncherPod *k8sv1.Pod, volumes []storagehotplug.Volume) (*k8sv1.Pod, common.SyncError) {
 	attachmentPodTemplate, _ := c.createAttachmentPodTemplate(vmi, virtLauncherPod, volumes)
 	if attachmentPodTemplate == nil {
 		return nil, nil
@@ -342,7 +337,7 @@ func (c *Controller) createAttachmentPod(vmi *v1.VirtualMachineInstance, virtLau
 	return pod, nil
 }
 
-func (c *Controller) triggerHotplugPopulation(volume *v1.Volume, vmi *v1.VirtualMachineInstance, virtLauncherPod *k8sv1.Pod) common.SyncError {
+func (c *Controller) triggerHotplugPopulation(volume storagehotplug.Volume, vmi *v1.VirtualMachineInstance, virtLauncherPod *k8sv1.Pod) common.SyncError {
 	populateHotplugPodTemplate, err := c.createAttachmentPopulateTriggerPodTemplate(volume, virtLauncherPod, vmi)
 	if err != nil {
 		return common.NewSyncError(fmt.Errorf("Error creating trigger pod template %v", err), controller.FailedCreatePodReason)
@@ -386,10 +381,10 @@ func findAttachmentPodByVolumeName(volumeName string, attachmentPods []*k8sv1.Po
 	return nil
 }
 
-func (c *Controller) createAttachmentPodTemplate(vmi *v1.VirtualMachineInstance, virtlauncherPod *k8sv1.Pod, volumes []*v1.Volume) (*k8sv1.Pod, error) {
+func (c *Controller) createAttachmentPodTemplate(vmi *v1.VirtualMachineInstance, virtlauncherPod *k8sv1.Pod, volumes []storagehotplug.Volume) (*k8sv1.Pod, error) {
 	logger := log.Log.Object(vmi)
 
-	volumeNamesPVCMap, err := storagetypes.VirtVolumesToPVCMap(volumes, c.pvcIndexer, virtlauncherPod.Namespace)
+	volumeNamesPVCMap, err := storagehotplug.PVCsByVolumeName(volumes, c.pvcIndexer, virtlauncherPod.Namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get PVC map: %v", err)
 	}
@@ -417,21 +412,15 @@ func (c *Controller) createAttachmentPodTemplate(vmi *v1.VirtualMachineInstance,
 	return nil, err
 }
 
-func (c *Controller) createAttachmentPopulateTriggerPodTemplate(volume *v1.Volume, virtlauncherPod *k8sv1.Pod, vmi *v1.VirtualMachineInstance) (*k8sv1.Pod, error) {
-	claimName := storagetypes.PVCNameFromVirtVolume(volume)
-	if claimName == "" {
-		return nil, errors.New("Unable to hotplug, claim not PVC or Datavolume")
-	}
-
-	pvc, exists, isBlock, err := storagetypes.IsPVCBlockFromStore(c.pvcIndexer, virtlauncherPod.Namespace, claimName)
+func (c *Controller) createAttachmentPopulateTriggerPodTemplate(volume storagehotplug.Volume, virtlauncherPod *k8sv1.Pod, vmi *v1.VirtualMachineInstance) (*k8sv1.Pod, error) {
+	_, exists, isBlock, err := storagetypes.IsPVCBlockFromStore(c.pvcIndexer, virtlauncherPod.Namespace, volume.ClaimName)
 	if err != nil {
 		return nil, err
 	}
 	if !exists {
-		return nil, fmt.Errorf("Unable to trigger hotplug population, claim %s not found", claimName)
+		return nil, fmt.Errorf("Unable to trigger hotplug population, claim %s not found", volume.ClaimName)
 	}
-	pod, err := c.templateService.RenderHotplugAttachmentTriggerPodTemplate(volume, virtlauncherPod, vmi, pvc.Name, isBlock, true)
-	return pod, err
+	return c.templateService.RenderHotplugAttachmentTriggerPodTemplate(volume, virtlauncherPod, vmi, isBlock, true)
 }
 
 func (c *Controller) deleteAllAttachmentPods(vmi *v1.VirtualMachineInstance) error {
@@ -501,7 +490,7 @@ func (c *Controller) deleteAttachmentPod(vmi *v1.VirtualMachineInstance, attachm
 	return nil
 }
 
-func podVolumesMatchesReadyVolumes(attachmentPod *k8sv1.Pod, volumes []*v1.Volume) bool {
+func podVolumesMatchesReadyVolumes(attachmentPod *k8sv1.Pod, volumes []storagehotplug.Volume) bool {
 	// -2 for empty dir and token
 	if len(attachmentPod.Spec.Volumes)-2 != len(volumes) {
 		return false

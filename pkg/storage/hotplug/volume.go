@@ -20,10 +20,12 @@
 package hotplug
 
 import (
+	"fmt"
 	"slices"
 
 	k8sv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/tools/cache"
 
 	v1 "kubevirt.io/api/core/v1"
 
@@ -89,4 +91,20 @@ func VolumesToAttach(vmi *v1.VirtualMachineInstance, launcherPod *k8sv1.Pod) []V
 	return slices.DeleteFunc(SpecVolumes(&vmi.Spec), func(volume Volume) bool {
 		return podVolumes.Has(volume.Name)
 	})
+}
+
+// PVCsByVolumeName looks up the claim of every volume in the PVC store, keyed by volume name.
+func PVCsByVolumeName(volumes []Volume, pvcStore cache.Store, namespace string) (map[string]*k8sv1.PersistentVolumeClaim, error) {
+	pvcs := make(map[string]*k8sv1.PersistentVolumeClaim, len(volumes))
+	for _, volume := range volumes {
+		pvc, err := storagetypes.GetPersistentVolumeClaimFromCache(namespace, volume.ClaimName, pvcStore)
+		if err != nil {
+			return nil, err
+		}
+		if pvc == nil {
+			return nil, fmt.Errorf("claim %s not found", volume.ClaimName)
+		}
+		pvcs[volume.Name] = pvc
+	}
+	return pvcs, nil
 }

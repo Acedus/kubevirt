@@ -55,6 +55,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/hooks"
 	"kubevirt.io/kubevirt/pkg/libvmi"
 	"kubevirt.io/kubevirt/pkg/network/istio"
+	storagehotplug "kubevirt.io/kubevirt/pkg/storage/hotplug"
 	storagetypes "kubevirt.io/kubevirt/pkg/storage/types"
 	"kubevirt.io/kubevirt/pkg/testutils"
 	"kubevirt.io/kubevirt/pkg/util"
@@ -4664,7 +4665,7 @@ var _ = Describe("Template", func() {
 
 			vmi.Status.SelinuxContext = "test_u:test_r:test_t:s0"
 			claimMap := map[string]*k8sv1.PersistentVolumeClaim{}
-			pod, err := svc.RenderHotplugAttachmentPodTemplate([]*v1.Volume{}, ownerPod, vmi, claimMap)
+			pod, err := svc.RenderHotplugAttachmentPodTemplate([]storagehotplug.Volume{}, ownerPod, vmi, claimMap)
 			Expect(err).ToNot(HaveOccurred())
 
 			runUser := int64(util.NonRootUID)
@@ -4692,7 +4693,7 @@ var _ = Describe("Template", func() {
 
 			// Hotplug pod rendering requires an SELinux context; the value is not relevant to this annotation test.
 			vmi.Status.SelinuxContext = "test_u:test_r:test_t:s0"
-			pod, err := svc.RenderHotplugAttachmentPodTemplate([]*v1.Volume{}, ownerPod, vmi, map[string]*k8sv1.PersistentVolumeClaim{})
+			pod, err := svc.RenderHotplugAttachmentPodTemplate([]storagehotplug.Volume{}, ownerPod, vmi, map[string]*k8sv1.PersistentVolumeClaim{})
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(pod.Annotations).To(HaveKeyWithValue(v1.OwnerVMINameAnnotation, vmi.Name))
@@ -4707,7 +4708,7 @@ var _ = Describe("Template", func() {
 
 			// Hotplug pod rendering requires an SELinux context; the value is not relevant to this annotation test.
 			vmi.Status.SelinuxContext = "test_u:test_r:test_t:s0"
-			pod, err := svc.RenderHotplugAttachmentTriggerPodTemplate(&v1.Volume{}, ownerPod, vmi, "test", true, false)
+			pod, err := svc.RenderHotplugAttachmentTriggerPodTemplate(storagehotplug.Volume{ClaimName: "test"}, ownerPod, vmi, true, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(pod.Annotations).To(HaveKeyWithValue(v1.OwnerVMINameAnnotation, vmi.Name))
@@ -4724,7 +4725,7 @@ var _ = Describe("Template", func() {
 
 			vmi.Status.SelinuxContext = "test_u:test_r:test_t:s0"
 			claimMap := map[string]*k8sv1.PersistentVolumeClaim{}
-			pod, err := svc.RenderHotplugAttachmentPodTemplate([]*v1.Volume{}, ownerPod, vmi, claimMap)
+			pod, err := svc.RenderHotplugAttachmentPodTemplate([]storagehotplug.Volume{}, ownerPod, vmi, claimMap)
 			Expect(err).ToNot(HaveOccurred())
 
 			expectedTolerations := []k8sv1.Toleration{
@@ -4769,25 +4770,15 @@ var _ = Describe("Template", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			vmi.Status.SelinuxContext = "test_u:test_r:test_t:s0"
-			pod, err := svc.RenderHotplugAttachmentTriggerPodTemplate(&v1.Volume{}, ownerPod, vmi, "test", true, false)
+			pod, err := svc.RenderHotplugAttachmentTriggerPodTemplate(storagehotplug.Volume{ClaimName: "test"}, ownerPod, vmi, true, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(pod.Spec.Tolerations).To(BeEquivalentTo(vmi.Spec.Tolerations))
 		})
 
 		DescribeTable("should mount filesystem hotplug volumes based on volume phase",
-			func(phase v1.VolumePhase, isUtility bool, expectVolumeMount bool) {
+			func(phase v1.VolumePhase, kind storagehotplug.Kind, expectVolumeMount bool) {
 				vmi := api.NewMinimalVMI("fake-vmi")
-				if isUtility {
-					vmi.Spec.UtilityVolumes = []v1.UtilityVolume{
-						{
-							Name: "testVolume",
-							PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-								ClaimName: "pvcDevice",
-							},
-						},
-					}
-				}
 				vmi.Status.VolumeStatus = []v1.VolumeStatus{
 					{
 						Name:          "testVolume",
@@ -4812,18 +4803,7 @@ var _ = Describe("Template", func() {
 					},
 				}
 				claimMap := map[string]*k8sv1.PersistentVolumeClaim{volumeName: &pvc}
-				volumes := []*v1.Volume{
-					{
-						Name: volumeName,
-						VolumeSource: v1.VolumeSource{
-							PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
-								PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-									ClaimName: pvcName,
-								},
-							},
-						},
-					},
-				}
+				volumes := []storagehotplug.Volume{{Name: volumeName, ClaimName: pvcName, Kind: kind}}
 
 				pod, err := svc.RenderHotplugAttachmentPodTemplate(volumes, ownerPod, vmi, claimMap)
 				Expect(err).ToNot(HaveOccurred())
@@ -4844,9 +4824,11 @@ var _ = Describe("Template", func() {
 				}
 				Expect(pod.Spec.Containers[0].VolumeMounts).To(Equal(expectedMounts))
 			},
-			Entry("utility volume at HotplugVolumeMounted", v1.HotplugVolumeMounted, true, true),
-			Entry("regular hotplug volume at HotplugVolumeMounted", v1.HotplugVolumeMounted, false, false),
-			Entry("regular hotplug volume at VolumeReady", v1.VolumeReady, false, false),
+			Entry("directory volume at HotplugVolumeMounted", v1.HotplugVolumeMounted, storagehotplug.KindDirectory, true),
+			Entry("directory volume at VolumeReady", v1.VolumeReady, storagehotplug.KindDirectory, true),
+			Entry("disk volume at HotplugVolumeMounted", v1.HotplugVolumeMounted, storagehotplug.KindDisk, false),
+			Entry("disk volume at VolumeReady", v1.VolumeReady, storagehotplug.KindDisk, false),
+			Entry("disk volume at HotplugVolumeAttachedToNode", v1.HotplugVolumeAttachedToNode, storagehotplug.KindDisk, true),
 		)
 
 		It("should compute the correct volumeDevice context when rendering hotplug attachment pods with the FS PersistentVolumeClaim", func() {
@@ -4868,17 +4850,7 @@ var _ = Describe("Template", func() {
 			}
 			claimMap := map[string]*k8sv1.PersistentVolumeClaim{volumeName: &pvc}
 
-			volumes := []*v1.Volume{}
-			volumes = append(volumes, &v1.Volume{
-				Name: volumeName,
-				VolumeSource: v1.VolumeSource{
-					PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: pvcName,
-						},
-					},
-				},
-			})
+			volumes := []storagehotplug.Volume{{Name: volumeName, ClaimName: pvcName, Kind: storagehotplug.KindDisk}}
 			pod, err := svc.RenderHotplugAttachmentPodTemplate(volumes, ownerPod, vmi, claimMap)
 			prop := k8sv1.MountPropagationHostToContainer
 			Expect(err).ToNot(HaveOccurred())
@@ -4915,17 +4887,7 @@ var _ = Describe("Template", func() {
 			}
 			claimMap := map[string]*k8sv1.PersistentVolumeClaim{volumeName: &pvc}
 
-			volumes := []*v1.Volume{}
-			volumes = append(volumes, &v1.Volume{
-				Name: volumeName,
-				VolumeSource: v1.VolumeSource{
-					PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
-						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-							ClaimName: pvcName,
-						},
-					},
-				},
-			})
+			volumes := []storagehotplug.Volume{{Name: volumeName, ClaimName: pvcName, Kind: storagehotplug.KindDisk}}
 			pod, err := svc.RenderHotplugAttachmentPodTemplate(volumes, ownerPod, vmi, claimMap)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pod.Spec.Containers[0].VolumeDevices).ToNot(BeNil())
@@ -4943,7 +4905,7 @@ var _ = Describe("Template", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			vmi.Status.SelinuxContext = "test_u:test_r:test_t:s0"
-			pod, err := svc.RenderHotplugAttachmentTriggerPodTemplate(&v1.Volume{}, ownerPod, vmi, "test", isBlock, false)
+			pod, err := svc.RenderHotplugAttachmentTriggerPodTemplate(storagehotplug.Volume{ClaimName: "test"}, ownerPod, vmi, isBlock, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			runUser := int64(util.NonRootUID)
@@ -4998,7 +4960,7 @@ var _ = Describe("Template", func() {
 				},
 			}
 			claimMap := map[string]*k8sv1.PersistentVolumeClaim{}
-			pod, err := svc.RenderHotplugAttachmentPodTemplate([]*v1.Volume{}, ownerPod, vmi, claimMap)
+			pod, err := svc.RenderHotplugAttachmentPodTemplate([]storagehotplug.Volume{}, ownerPod, vmi, claimMap)
 			Expect(err).ToNot(HaveOccurred())
 			verifyPodRequestLimits(pod)
 		})
@@ -5019,7 +4981,7 @@ var _ = Describe("Template", func() {
 					k8sv1.ResourceCPU:    resource.MustParse("1"),
 				},
 			}
-			pod, err := svc.RenderHotplugAttachmentTriggerPodTemplate(&v1.Volume{}, ownerPod, vmi, "test", isBlock, false)
+			pod, err := svc.RenderHotplugAttachmentTriggerPodTemplate(storagehotplug.Volume{ClaimName: "test"}, ownerPod, vmi, isBlock, false)
 			Expect(err).ToNot(HaveOccurred())
 			verifyPodRequestLimits(pod)
 		},

@@ -62,7 +62,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/controller"
 	workqueuemetrics "kubevirt.io/kubevirt/pkg/monitoring/metrics/common/workqueue"
 	backendstorage "kubevirt.io/kubevirt/pkg/storage/backend-storage"
-	storagetypes "kubevirt.io/kubevirt/pkg/storage/types"
+	storagehotplug "kubevirt.io/kubevirt/pkg/storage/hotplug"
 	migrationsutil "kubevirt.io/kubevirt/pkg/util/migrations"
 	traceUtils "kubevirt.io/kubevirt/pkg/util/trace"
 	"kubevirt.io/kubevirt/pkg/virt-controller/services"
@@ -109,7 +109,7 @@ var migrationBackoffError = errors.New(controller.MigrationBackoffReason)
 type templateService interface {
 	RenderMigrationManifest(vmi *virtv1.VirtualMachineInstance, migration *virtv1.VirtualMachineInstanceMigration, sourcePod *k8sv1.Pod) (*k8sv1.Pod, error)
 	RenderLaunchManifest(vmi *virtv1.VirtualMachineInstance) (*k8sv1.Pod, error)
-	RenderHotplugAttachmentPodTemplate(volumes []*virtv1.Volume, ownerPod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance, claimMap map[string]*k8sv1.PersistentVolumeClaim) (*k8sv1.Pod, error)
+	RenderHotplugAttachmentPodTemplate(volumes []storagehotplug.Volume, ownerPod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance, claimMap map[string]*k8sv1.PersistentVolumeClaim) (*k8sv1.Pod, error)
 	GetLauncherImage() string
 }
 
@@ -1459,9 +1459,9 @@ func (c *Controller) createAttachmentPod(migration *virtv1.VirtualMachineInstanc
 		return fmt.Errorf("failed to get current VMI pod: %v", err)
 	}
 
-	volumes := storagetypes.GetHotplugVolumes(vmi, sourcePod)
+	volumes := storagehotplug.VolumesToAttach(vmi, sourcePod)
 
-	volumeNamesPVCMap, err := storagetypes.VirtVolumesToPVCMap(volumes, c.pvcStore, virtLauncherPod.Namespace)
+	volumeNamesPVCMap, err := storagehotplug.PVCsByVolumeName(volumes, c.pvcStore, virtLauncherPod.Namespace)
 	if err != nil {
 		return fmt.Errorf("failed to get PVC map: %v", err)
 	}

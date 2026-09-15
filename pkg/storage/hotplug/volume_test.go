@@ -23,6 +23,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	k8sv1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/cache"
 
 	v1 "kubevirt.io/api/core/v1"
 
@@ -68,10 +70,24 @@ var _ = Describe("Hotplug volume descriptor", func() {
 	}
 
 	Context("SpecVolumes", func() {
-		It("should skip volumes that are not PVC-backed", func() {
-			vmi := libvmi.New(withContainerDisk)
+		DescribeTable("should skip volumes that are not PVC-backed", func(source v1.VolumeSource) {
+			vmi := libvmi.New()
+			vmi.Spec.Volumes = []v1.Volume{{Name: "volume", VolumeSource: source}}
 			Expect(hotplug.SpecVolumes(&vmi.Spec)).To(BeEmpty())
-		})
+		},
+			Entry("with HostDisk", v1.VolumeSource{HostDisk: &v1.HostDisk{}}),
+			Entry("with CloudInitNoCloud", v1.VolumeSource{CloudInitNoCloud: &v1.CloudInitNoCloudSource{}}),
+			Entry("with CloudInitConfigDrive", v1.VolumeSource{CloudInitConfigDrive: &v1.CloudInitConfigDriveSource{}}),
+			Entry("with Sysprep", v1.VolumeSource{Sysprep: &v1.SysprepSource{}}),
+			Entry("with ContainerDisk", v1.VolumeSource{ContainerDisk: &v1.ContainerDiskSource{}}),
+			Entry("with Ephemeral", v1.VolumeSource{Ephemeral: &v1.EphemeralVolumeSource{}}),
+			Entry("with EmptyDisk", v1.VolumeSource{EmptyDisk: &v1.EmptyDiskSource{}}),
+			Entry("with ConfigMap", v1.VolumeSource{ConfigMap: &v1.ConfigMapVolumeSource{}}),
+			Entry("with Secret", v1.VolumeSource{Secret: &v1.SecretVolumeSource{}}),
+			Entry("with DownwardAPI", v1.VolumeSource{DownwardAPI: &v1.DownwardAPIVolumeSource{}}),
+			Entry("with ServiceAccount", v1.VolumeSource{ServiceAccount: &v1.ServiceAccountVolumeSource{}}),
+			Entry("with DownwardMetrics", v1.VolumeSource{DownwardMetrics: &v1.DownwardMetricsVolumeSource{}}),
+		)
 
 		DescribeTable("should classify volumes", func(expected []hotplug.Volume, opts ...libvmi.Option) {
 			vmi := libvmi.New(opts...)
@@ -181,6 +197,53 @@ var _ = Describe("Hotplug volume descriptor", func() {
 				withUtilityVolume("utility", "utility-pvc", nil),
 			)
 			Expect(hotplug.VolumesToAttach(vmi, launcherPodWithVolumes("cold", "utility"))).To(BeEmpty())
+		})
+	})
+
+	Context("PVCsByVolumeName", func() {
+		const namespace = "default"
+
+		pvcStoreWith := func(claimNames ...string) cache.Store {
+			store := cache.NewStore(cache.MetaNamespaceKeyFunc)
+			for _, claimName := range claimNames {
+				Expect(store.Add(&k8sv1.PersistentVolumeClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: namespace},
+				})).To(Succeed())
+			}
+			return store
+		}
+
+		It("should key every claim by its volume name", func() {
+			volumes := []hotplug.Volume{
+				{Name: "disk", ClaimName: "disk-pvc", Kind: hotplug.KindDisk},
+				{Name: "utility", ClaimName: "utility-pvc", Kind: hotplug.KindDirectory},
+			}
+			pvcs, err := hotplug.PVCsByVolumeName(volumes, pvcStoreWith("disk-pvc", "utility-pvc"), namespace)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pvcs).To(HaveLen(2))
+			Expect(pvcs).To(HaveKeyWithValue("disk", HaveField("Name", "disk-pvc")))
+			Expect(pvcs).To(HaveKeyWithValue("utility", HaveField("Name", "utility-pvc")))
+		})
+
+		It("should fail when a claim is missing from the store", func() {
+			volumes := []hotplug.Volume{
+				{Name: "disk", ClaimName: "disk-pvc", Kind: hotplug.KindDisk},
+				{Name: "missing", ClaimName: "missing-pvc", Kind: hotplug.KindDisk},
+			}
+			_, err := hotplug.PVCsByVolumeName(volumes, pvcStoreWith("disk-pvc"), namespace)
+			Expect(err).To(MatchError(ContainSubstring("claim missing-pvc not found")))
+		})
+
+		It("should not match a claim in another namespace", func() {
+			volumes := []hotplug.Volume{{Name: "disk", ClaimName: "disk-pvc", Kind: hotplug.KindDisk}}
+			_, err := hotplug.PVCsByVolumeName(volumes, pvcStoreWith("disk-pvc"), "other")
+			Expect(err).To(MatchError(ContainSubstring("claim disk-pvc not found")))
+		})
+
+		It("should return an empty map for no volumes", func() {
+			pvcs, err := hotplug.PVCsByVolumeName(nil, pvcStoreWith(), namespace)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pvcs).To(BeEmpty())
 		})
 	})
 })

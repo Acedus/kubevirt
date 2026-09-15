@@ -136,25 +136,6 @@ func GetPVCsFromVolumes(volumes []virtv1.Volume) map[string]string {
 	return pvcs
 }
 
-func VirtVolumesToPVCMap(volumes []*virtv1.Volume, pvcStore cache.Store, namespace string) (map[string]*k8sv1.PersistentVolumeClaim, error) {
-	volumeNamesPVCMap := make(map[string]*k8sv1.PersistentVolumeClaim)
-	for _, volume := range volumes {
-		claimName := PVCNameFromVirtVolume(volume)
-		if claimName == "" {
-			return nil, fmt.Errorf("volume %s is not a PVC or Datavolume", volume.Name)
-		}
-		pvc, exists, _, err := IsPVCBlockFromStore(pvcStore, namespace, claimName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get PVC: %v", err)
-		}
-		if !exists {
-			return nil, fmt.Errorf("claim %s not found", claimName)
-		}
-		volumeNamesPVCMap[volume.Name] = pvc
-	}
-	return volumeNamesPVCMap, nil
-}
-
 var ErrPVCNotFound = errors.New("PVC not found")
 
 type PVCNotFoundError struct {

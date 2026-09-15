@@ -20,7 +20,6 @@
 package types
 
 import (
-	k8sv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	v1 "kubevirt.io/api/core/v1"
@@ -72,40 +71,6 @@ func IsUtilityVolume(vmi *v1.VirtualMachineInstance, volumeName string) bool {
 		}
 	}
 	return false
-}
-
-func GetHotplugVolumes(vmi *v1.VirtualMachineInstance, virtlauncherPod *k8sv1.Pod) []*v1.Volume {
-	hotplugVolumes := make([]*v1.Volume, 0)
-	podVolumes := virtlauncherPod.Spec.Volumes
-	vmiVolumes := vmi.Spec.Volumes
-
-	podVolumeMap := make(map[string]k8sv1.Volume)
-	for _, podVolume := range podVolumes {
-		podVolumeMap[podVolume.Name] = podVolume
-	}
-	for _, vmiVolume := range vmiVolumes {
-		if _, ok := podVolumeMap[vmiVolume.Name]; !ok && IsHotpluggableVolumeSource(&vmiVolume) {
-			hotplugVolumes = append(hotplugVolumes, vmiVolume.DeepCopy())
-		}
-	}
-
-	// Also include utility volumes, converting them to regular volumes
-	for _, utilityVolume := range vmi.Spec.UtilityVolumes {
-		if _, ok := podVolumeMap[utilityVolume.Name]; !ok {
-			volume := &v1.Volume{
-				Name: utilityVolume.Name,
-				VolumeSource: v1.VolumeSource{
-					PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
-						PersistentVolumeClaimVolumeSource: utilityVolume.PersistentVolumeClaimVolumeSource,
-						Hotpluggable:                      true,
-					},
-				},
-			}
-			hotplugVolumes = append(hotplugVolumes, volume)
-		}
-	}
-
-	return hotplugVolumes
 }
 
 func GetVolumesByName(vmiSpec *v1.VirtualMachineInstanceSpec) map[string]*v1.Volume {
