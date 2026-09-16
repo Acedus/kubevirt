@@ -21,7 +21,7 @@ package vmi
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	k8sv1 "k8s.io/api/core/v1"
@@ -230,23 +230,11 @@ func (c *Controller) processPVCInfo(status *virtv1.VolumeStatus, volume storageh
 
 // updateVolumeStatus updates the VMI's VolumeStatus based on pod and volume state.
 func (c *Controller) updateVolumeStatus(vmi *virtv1.VirtualMachineInstance, virtlauncherPod *k8sv1.Pod, dataVolumes []*cdiv1.DataVolume) error {
-	oldStatus := vmi.Status.DeepCopy().VolumeStatus
-	oldStatusMap := make(map[string]virtv1.VolumeStatus)
-	for _, status := range oldStatus {
-		oldStatusMap[status.Name] = status
-	}
-
 	hotplugVolumes := storagehotplug.VolumesToAttach(vmi, virtlauncherPod)
-	hotplugVolumeNames := sets.New[string]()
-	for _, volume := range hotplugVolumes {
-		hotplugVolumeNames.Insert(volume.Name)
-	}
-
 	attachmentPods, err := controller.AttachmentPods(virtlauncherPod, c.podIndexer)
 	if err != nil {
 		return err
 	}
-
 	// Attachment pods only hold ready volumes, so a volume that is not ready yet must not keep the
 	// others from matching theirs.
 	readyHotplugVolumes := c.readyHotplugVolumes(vmi, hotplugVolumes, attachmentPods, dataVolumes)
@@ -261,98 +249,116 @@ func (c *Controller) updateVolumeStatus(vmi *virtv1.VirtualMachineInstance, virt
 		}
 		return nil
 	}
+	hotplugVolumeNames := sets.New[string]()
+	for _, volume := range hotplugVolumes {
+		hotplugVolumeNames.Insert(volume.Name)
+	}
 
-	newStatus := make([]virtv1.VolumeStatus, 0)
+	oldStatuses := make(map[string]virtv1.VolumeStatus, len(vmi.Status.VolumeStatus))
+	for _, status := range vmi.Status.DeepCopy().VolumeStatus {
+		oldStatuses[status.Name] = status
+	}
 
-	backendStoragePVC := backendstorage.PVCForVMI(c.pvcIndexer, vmi)
-	if backendStoragePVC != nil {
-		backendStorage, ok := oldStatusMap[backendstorage.VolumeName]
-		if !ok {
-			// TODO https://github.com/kubevirt/kubevirt/issues/17369
-			// Fall back to the legacy volume name (the PVC name itself) used by older VMIs
-			backendStorage, ok = oldStatusMap[backendStoragePVC.Name]
-			if ok {
-				backendStorage.Name = backendstorage.VolumeName
-			}
-		}
-		if ok {
-			newStatus = append(newStatus, backendStorage)
-		}
+	newStatuses := make([]virtv1.VolumeStatus, 0)
+	if status, exists := c.backendStorageVolumeStatus(vmi, oldStatuses); exists {
+		newStatuses = append(newStatuses, status)
 	}
 
 	pvcVolumes := storagehotplug.SpecVolumesByName(&vmi.Spec)
-	for _, volume := range vmi.Spec.Volumes {
-		status := virtv1.VolumeStatus{}
-		if existingStatus, ok := oldStatusMap[volume.Name]; ok {
-			status = existingStatus
-		} else {
-			status.Name = volume.Name
+	memoryDumpVolumes := memoryDumpVolumeNames(&vmi.Spec)
+	specVolumes := specVolumeNames(&vmi.Spec)
+	for volumeName := range specVolumes {
+		status, exists := oldStatuses[volumeName]
+		if !exists {
+			status = virtv1.VolumeStatus{Name: volumeName}
 		}
-		// Remove from map so I can detect existing volumes that have been removed from spec.
-		delete(oldStatusMap, volume.Name)
-
-		if volume.MemoryDump != nil && status.MemoryDumpVolume == nil {
+		if memoryDumpVolumes.Has(volumeName) && status.MemoryDumpVolume == nil {
 			status.MemoryDumpVolume = &virtv1.DomainMemoryDumpInfo{
-				ClaimName: volume.Name,
+				ClaimName: volumeName,
 			}
 		}
-		if pvcVolume, isPVCVolume := pvcVolumes[status.Name]; isPVCVolume {
-			if hotplugVolumeNames.Has(status.Name) {
-				c.processHotplugVolumeStatus(vmi, pvcVolume, &status, attachmentPodFor(status.Name))
+		if volume, isPVCVolume := pvcVolumes[volumeName]; isPVCVolume {
+			if hotplugVolumeNames.Has(volumeName) {
+				c.processHotplugVolumeStatus(vmi, volume, &status, attachmentPodFor(volumeName))
 			}
-			if err := c.processPVCInfo(&status, pvcVolume, vmi.Namespace); err != nil {
+			if err := c.processPVCInfo(&status, volume, vmi.Namespace); err != nil {
 				return err
 			}
 		}
-		newStatus = append(newStatus, status)
+		newStatuses = append(newStatuses, status)
 	}
 
-	for _, utilityVolume := range vmi.Spec.UtilityVolumes {
-		status := virtv1.VolumeStatus{}
-		if existingStatus, ok := oldStatusMap[utilityVolume.Name]; ok {
-			status = existingStatus
-		} else {
-			status.Name = utilityVolume.Name
-		}
-		// Remove from map so we can detect volumes removed from spec
-		delete(oldStatusMap, utilityVolume.Name)
-		if pvcVolume, isPVCVolume := pvcVolumes[status.Name]; isPVCVolume {
-			if hotplugVolumeNames.Has(status.Name) {
-				c.processHotplugVolumeStatus(vmi, pvcVolume, &status, attachmentPodFor(status.Name))
-			}
-			if err := c.processPVCInfo(&status, pvcVolume, vmi.Namespace); err != nil {
-				return err
-			}
-		}
-		newStatus = append(newStatus, status)
-	}
+	newStatuses = append(newStatuses, c.detachingVolumeStatuses(vmi, specVolumes, oldStatuses, attachmentPods)...)
 
-	// We have updated the status of current volumes, but if a volume was removed, we want to keep that status, until there is no
-	// associated pod, then remove it. Any statuses left in the map are statuses without a matching volume in the spec.
-	for volumeName, status := range oldStatusMap {
-		attachmentPod := findAttachmentPodByVolumeName(volumeName, attachmentPods)
-		if attachmentPod != nil {
-			status.HotplugVolume.AttachPodName = attachmentPod.Name
-			status.HotplugVolume.AttachPodUID = attachmentPod.UID
-			status.Phase = phaseForUnpluggedVolume(status.Phase)
-			log.Log.V(3).Infof("Setting phase %s for volume %s", status.Phase, volumeName)
-			if status.Phase == virtv1.HotplugVolumeDetaching && attachmentPod.DeletionTimestamp != nil {
-				status.Message = fmt.Sprintf("Deleted hotplug attachment pod %s, for volume %s", attachmentPod.Name, volumeName)
-				status.Reason = controller.SuccessfulDeletePodReason
-				c.recorder.Event(vmi, k8sv1.EventTypeNormal, status.Reason, status.Message)
-			}
-			// If the pod exists, we keep the status.
-			newStatus = append(newStatus, status)
-		} else {
-			log.Log.Object(vmi).V(3).Infof("Deleted status for volume %s", volumeName)
-		}
-	}
-
-	sort.SliceStable(newStatus, func(i, j int) bool {
-		return strings.Compare(newStatus[i].Name, newStatus[j].Name) == -1
+	slices.SortStableFunc(newStatuses, func(a, b virtv1.VolumeStatus) int {
+		return strings.Compare(a.Name, b.Name)
 	})
-	vmi.Status.VolumeStatus = newStatus
+	vmi.Status.VolumeStatus = newStatuses
 	return nil
+}
+
+func (c *Controller) backendStorageVolumeStatus(vmi *virtv1.VirtualMachineInstance, oldStatuses map[string]virtv1.VolumeStatus) (virtv1.VolumeStatus, bool) {
+	pvc := backendstorage.PVCForVMI(c.pvcIndexer, vmi)
+	if pvc == nil {
+		return virtv1.VolumeStatus{}, false
+	}
+	if status, exists := oldStatuses[backendstorage.VolumeName]; exists {
+		return status, true
+	}
+	// TODO https://github.com/kubevirt/kubevirt/issues/17369
+	// Fall back to the legacy volume name (the PVC name itself) used by older VMIs
+	status, exists := oldStatuses[pvc.Name]
+	status.Name = backendstorage.VolumeName
+	return status, exists
+}
+
+// detachingVolumeStatuses keeps a status removed from the spec while an attachment pod still has it.
+func (c *Controller) detachingVolumeStatuses(vmi *virtv1.VirtualMachineInstance, specVolumes sets.Set[string], oldStatuses map[string]virtv1.VolumeStatus, attachmentPods []*k8sv1.Pod) []virtv1.VolumeStatus {
+	var statuses []virtv1.VolumeStatus
+	for volumeName, status := range oldStatuses {
+		if specVolumes.Has(volumeName) {
+			continue
+		}
+		attachmentPod := findAttachmentPodByVolumeName(volumeName, attachmentPods)
+		if attachmentPod == nil || status.HotplugVolume == nil {
+			log.Log.Object(vmi).V(3).Infof("Deleted status for volume %s", volumeName)
+			continue
+		}
+		status.HotplugVolume.AttachPodName = attachmentPod.Name
+		status.HotplugVolume.AttachPodUID = attachmentPod.UID
+		status.Phase = phaseForUnpluggedVolume(status.Phase)
+		log.Log.V(3).Infof("Setting phase %s for volume %s", status.Phase, volumeName)
+		if status.Phase == virtv1.HotplugVolumeDetaching && attachmentPod.DeletionTimestamp != nil {
+			status.Message = fmt.Sprintf("Deleted hotplug attachment pod %s, for volume %s", attachmentPod.Name, volumeName)
+			status.Reason = controller.SuccessfulDeletePodReason
+			c.recorder.Event(vmi, k8sv1.EventTypeNormal, status.Reason, status.Message)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
+}
+
+// specVolumeNames returns the name of every volume in the VMI spec, PVC-backed or not, and of every
+// utility volume.
+func specVolumeNames(spec *virtv1.VirtualMachineInstanceSpec) sets.Set[string] {
+	names := sets.New[string]()
+	for i := range spec.Volumes {
+		names.Insert(spec.Volumes[i].Name)
+	}
+	for i := range spec.UtilityVolumes {
+		names.Insert(spec.UtilityVolumes[i].Name)
+	}
+	return names
+}
+
+func memoryDumpVolumeNames(spec *virtv1.VirtualMachineInstanceSpec) sets.Set[string] {
+	names := sets.New[string]()
+	for i := range spec.Volumes {
+		if spec.Volumes[i].MemoryDump != nil {
+			names.Insert(spec.Volumes[i].Name)
+		}
+	}
+	return names
 }
 
 func phaseForUnpluggedVolume(phase virtv1.VolumePhase) virtv1.VolumePhase {
