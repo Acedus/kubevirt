@@ -66,6 +66,7 @@ import (
 	neterrors "kubevirt.io/kubevirt/pkg/network/errors"
 	"kubevirt.io/kubevirt/pkg/pointer"
 	"kubevirt.io/kubevirt/pkg/safepath"
+	storagehotplug "kubevirt.io/kubevirt/pkg/storage/hotplug"
 	"kubevirt.io/kubevirt/pkg/testutils"
 	"kubevirt.io/kubevirt/pkg/util"
 	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
@@ -1887,6 +1888,40 @@ var _ = Describe("VirtualMachineInstance", func() {
 			},
 				Entry("When target is set", "test"),
 				Entry("When target is unset", ""),
+			)
+
+			DescribeTable("should keep checking a hotplug volume until it settles", func(volume *storagehotplug.Volume, phase v1.VolumePhase, mounted, expectRefresh bool) {
+				vmi := api2.NewMinimalVMI("testvmi")
+				vmi.UID = vmiTestUUID
+				volumeStatus := v1.VolumeStatus{
+					Name:          "test",
+					Phase:         phase,
+					HotplugVolume: &v1.HotplugVolumeStatus{AttachPodName: "testpod", AttachPodUID: "1234"},
+				}
+				specVolumes := map[string]storagehotplug.Volume{}
+				if volume != nil {
+					volume.Name = "test"
+					specVolumes["test"] = *volume
+				}
+				mockHotplugVolumeMounter.EXPECT().IsMounted(vmi, "test", gomock.Any()).Return(mounted, nil)
+
+				_, needsRefresh := controller.updateHotplugVolumeStatus(vmi, volumeStatus, specVolumes)
+				Expect(needsRefresh).To(Equal(expectRefresh))
+			},
+				Entry("directory volume that is mounted",
+					&storagehotplug.Volume{Kind: storagehotplug.KindDirectory}, v1.HotplugVolumeMounted, true, false),
+				Entry("directory volume that is still attaching",
+					&storagehotplug.Volume{Kind: storagehotplug.KindDirectory}, v1.HotplugVolumeAttachedToNode, false, true),
+				Entry("directory volume while a memory dump runs",
+					&storagehotplug.Volume{Kind: storagehotplug.KindDirectory}, v1.MemoryDumpVolumeInProgress, true, false),
+				Entry("directory volume once a memory dump completed",
+					&storagehotplug.Volume{Kind: storagehotplug.KindDirectory}, v1.MemoryDumpVolumeCompleted, true, false),
+				Entry("disk volume that is mounted but not attached to the domain yet",
+					&storagehotplug.Volume{Kind: storagehotplug.KindDisk}, v1.HotplugVolumeMounted, true, true),
+				// The kind of a volume that left the spec is unknown, so it keeps being checked until
+				// virt-controller drops its status.
+				Entry("volume removed from the spec",
+					nil, v1.HotplugVolumeUnMounted, false, true),
 			)
 
 			It("Should generate a ready event when target is assigned", func() {

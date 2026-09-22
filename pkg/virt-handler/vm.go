@@ -496,12 +496,11 @@ func (c *VirtualMachineController) generateEventsForVolumeStatusChange(vmi *v1.V
 func (c *VirtualMachineController) updateHotplugVolumeStatus(vmi *v1.VirtualMachineInstance, volumeStatus v1.VolumeStatus, specVolumes map[string]storagehotplug.Volume) (v1.VolumeStatus, bool) {
 	needsRefresh := false
 	if volumeStatus.Target == "" {
-		needsRefresh = true
 		mounted, err := c.hotplugVolumeMounter.IsMounted(vmi, volumeStatus.Name, volumeStatus.HotplugVolume.AttachPodUID)
 		if err != nil {
 			c.logger.Object(vmi).Errorf("error occurred while checking if volume is mounted: %v", err)
 		}
-		_, inSpec := specVolumes[volumeStatus.Name]
+		volume, inSpec := specVolumes[volumeStatus.Name]
 		if mounted {
 			if inSpec && canUpdateToMounted(volumeStatus.Phase) {
 				log.DefaultLogger().Infof("Marking volume %s as mounted in pod, it can now be attached", volumeStatus.Name)
@@ -516,6 +515,7 @@ func (c *VirtualMachineController) updateHotplugVolumeStatus(vmi *v1.VirtualMach
 			volumeStatus.Message = fmt.Sprintf("Volume %s has been unmounted from virt-launcher pod", volumeStatus.Name)
 			volumeStatus.Reason = VolumeUnMountedFromPodReason
 		}
+		needsRefresh = !directoryVolumeSettled(volume, volumeStatus.Phase)
 	} else {
 		// Successfully attached to VM.
 		volumeStatus.Phase = v1.VolumeReady
@@ -523,6 +523,20 @@ func (c *VirtualMachineController) updateHotplugVolumeStatus(vmi *v1.VirtualMach
 		volumeStatus.Reason = VolumeReadyReason
 	}
 	return volumeStatus, needsRefresh
+}
+
+// directoryVolumeSettled reports whether a directory volume has nothing left to poll for: it never
+// becomes a domain disk, so it stops at HotplugVolumeMounted, and its memory dump phases arrive as
+// domain events. A volume that left the spec has no kind, so it keeps being polled.
+func directoryVolumeSettled(volume storagehotplug.Volume, phase v1.VolumePhase) bool {
+	if volume.Kind != storagehotplug.KindDirectory {
+		return false
+	}
+	switch phase {
+	case v1.HotplugVolumeMounted, v1.MemoryDumpVolumeInProgress, v1.MemoryDumpVolumeCompleted, v1.MemoryDumpVolumeFailed:
+		return true
+	}
+	return false
 }
 
 func (c *VirtualMachineController) updateVolumeStatusesFromDomain(vmi *v1.VirtualMachineInstance, domain *api.Domain) bool {
