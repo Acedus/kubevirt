@@ -37,6 +37,7 @@ import (
 
 	diskutils "kubevirt.io/kubevirt/pkg/ephemeral-disk-utils"
 	hotplugdisk "kubevirt.io/kubevirt/pkg/hotplug-disk"
+	storagehotplug "kubevirt.io/kubevirt/pkg/storage/hotplug"
 	storagetypes "kubevirt.io/kubevirt/pkg/storage/types"
 	"kubevirt.io/kubevirt/pkg/virt-handler/cgroup"
 	"kubevirt.io/kubevirt/pkg/virt-handler/isolation"
@@ -45,7 +46,6 @@ import (
 
 	devices "github.com/opencontainers/cgroups/devices/config"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/sets"
 
 	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/log"
@@ -310,26 +310,26 @@ func (m *volumeMounter) writePathToMountRecord(path string, vmi *v1.VirtualMachi
 
 func (m *volumeMounter) mountHotplugVolume(
 	vmi *v1.VirtualMachineInstance,
-	volumeName string,
+	volume storagehotplug.Volume,
 	sourceUID types.UID,
 	record *vmiMountTargetRecord,
-	mountDirectory bool,
 	cgroupManager cgroup.Manager,
 ) error {
 	logger := log.Log.Object(vmi)
-	logger.V(4).Infof("Hotplug check volume name: %s", volumeName)
-	if sourceUID != "" {
-		if m.isBlockVolume(&vmi.Status, volumeName) {
-			logger.V(3).Infof("Mounting block volume: %s", volumeName)
-			if err := m.mountBlockHotplugVolume(vmi, volumeName, sourceUID, record, cgroupManager); err != nil {
-				return fmt.Errorf("failed to mount block hotplug volume %s: %w", volumeName, err)
-			}
-		} else {
-			logger.V(3).Infof("Mounting file system volume: %s", volumeName)
-			if err := m.mountFileSystemHotplugVolume(vmi, volumeName, sourceUID, record, mountDirectory); err != nil {
-				return fmt.Errorf("failed to mount filesystem hotplug volume %s: %w", volumeName, err)
-			}
+	logger.V(4).Infof("Hotplug check volume name: %s", volume.Name)
+	if sourceUID == "" {
+		return nil
+	}
+	if m.isBlockVolume(&vmi.Status, volume.Name) {
+		logger.V(3).Infof("Mounting block volume: %s", volume.Name)
+		if err := m.mountBlockHotplugVolume(vmi, volume.Name, sourceUID, record, cgroupManager); err != nil {
+			return fmt.Errorf("failed to mount block hotplug volume %s: %w", volume.Name, err)
 		}
+		return nil
+	}
+	logger.V(3).Infof("Mounting file system volume: %s", volume.Name)
+	if err := m.mountFileSystemHotplugVolume(vmi, volume, sourceUID, record); err != nil {
+		return fmt.Errorf("failed to mount filesystem hotplug volume %s: %w", volume.Name, err)
 	}
 	return nil
 }
@@ -348,54 +348,40 @@ func (m *volumeMounter) mountFromPod(vmi *v1.VirtualMachineInstance, sourceUID t
 		return err
 	}
 
-	specVolumes := sets.New[string]()
-	for i := range vmi.Spec.Volumes {
-		specVolumes.Insert(vmi.Spec.Volumes[i].Name)
-	}
-	for i := range vmi.Spec.UtilityVolumes {
-		specVolumes.Insert(vmi.Spec.UtilityVolumes[i].Name)
-	}
-
-	for _, volumeStatus := range vmi.Status.VolumeStatus {
-		if volumeStatus.HotplugVolume == nil {
-			// Skip non hotplug volumes
-			continue
-		}
-
-		if !specVolumes.Has(volumeStatus.Name) {
-			log.Log.Object(vmi).V(3).Infof("Skipping mount for volume %s: no longer in VMI spec", volumeStatus.Name)
-			continue
-		}
-
-		if storagetypes.IsUtilityVolume(vmi, volumeStatus.Name) && m.isBlockVolume(&vmi.Status, volumeStatus.Name) {
-			log.Log.Object(vmi).Warningf("Skipping mount for utility volume %s: configured with block mode PVC, utility volumes require filesystem mode", volumeStatus.Name)
-			continue
-		}
-
-		mountDirectory := m.isDirectoryMounted(vmi, volumeStatus.Name)
+	specVolumes := storagehotplug.SpecVolumesByName(&vmi.Spec)
+	for _, volume := range hotplugVolumesInSpec(vmi, specVolumes) {
 		volumeSourceUID := sourceUID
 		if volumeSourceUID == "" {
-			volumeSourceUID = volumeStatus.HotplugVolume.AttachPodUID
+			volumeSourceUID = volume.attachPodUID
 		}
-		if err := m.mountHotplugVolume(vmi, volumeStatus.Name, volumeSourceUID, record, mountDirectory, cgroupManager); err != nil {
+		if err := m.mountHotplugVolume(vmi, volume.Volume, volumeSourceUID, record, cgroupManager); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (m *volumeMounter) isDirectoryMounted(vmi *v1.VirtualMachineInstance, volumeName string) bool {
-	for _, utilityVolume := range vmi.Spec.UtilityVolumes {
-		if utilityVolume.Name == volumeName {
-			return true
+type hotplugVolume struct {
+	storagehotplug.Volume
+	attachPodUID types.UID
+}
+
+// hotplugVolumesInSpec pairs the volume statuses that have an attachment pod with their descriptor,
+// in volume status order, skipping volumes that left the spec.
+func hotplugVolumesInSpec(vmi *v1.VirtualMachineInstance, specVolumes map[string]storagehotplug.Volume) []hotplugVolume {
+	var volumes []hotplugVolume
+	for _, volumeStatus := range vmi.Status.VolumeStatus {
+		if volumeStatus.HotplugVolume == nil {
+			continue
 		}
-	}
-	for _, volume := range vmi.Spec.Volumes {
-		if volume.Name == volumeName {
-			return volume.MemoryDump != nil
+		volume, inSpec := specVolumes[volumeStatus.Name]
+		if !inSpec {
+			log.Log.Object(vmi).V(3).Infof("Skipping volume %s: no longer in VMI spec", volumeStatus.Name)
+			continue
 		}
+		volumes = append(volumes, hotplugVolume{Volume: volume, attachPodUID: volumeStatus.HotplugVolume.AttachPodUID})
 	}
-	return false
+	return volumes
 }
 
 // isBlockVolume checks if the volumeDevices directory exists in the pod path, we assume there is a single volume associated with
@@ -417,7 +403,8 @@ func (m *volumeMounter) isBlockVolume(vmiStatus *v1.VirtualMachineInstanceStatus
 			}
 		}
 	}
-	// Check if the volumeDevices directory exists in the attachment pod, if so, its a block device, otherwise its file system.
+	// virt-controller leaves the claim info unset for a directory volume on a block PVC, so a
+	// directory volume never reports block here and is never mounted as one.
 	for _, status := range vmiStatus.VolumeStatus {
 		if status.Name == volumeName {
 			return status.PersistentVolumeClaimInfo != nil && storagetypes.IsPVCBlock(status.PersistentVolumeClaimInfo.VolumeMode)
@@ -546,19 +533,21 @@ func (m *volumeMounter) createBlockDeviceFile(basePath *safepath.Path, deviceNam
 	}
 }
 
-func (m *volumeMounter) mountFileSystemHotplugVolume(vmi *v1.VirtualMachineInstance, volume string, sourceUID types.UID, record *vmiMountTargetRecord, mountDirectory bool) error {
+func (m *volumeMounter) fileSystemTargetPath(virtlauncherUID types.UID, volume storagehotplug.Volume, create bool) (*safepath.Path, error) {
+	if volume.Kind == storagehotplug.KindDirectory {
+		return m.hotplugDiskManager.GetFileSystemDirectoryTargetPathFromHostView(virtlauncherUID, volume.Name, create)
+	}
+	return m.hotplugDiskManager.GetFileSystemDiskTargetPathFromHostView(virtlauncherUID, volume.Name, create)
+}
+
+func (m *volumeMounter) mountFileSystemHotplugVolume(vmi *v1.VirtualMachineInstance, volume storagehotplug.Volume, sourceUID types.UID, record *vmiMountTargetRecord) error {
 	virtlauncherUID := m.findVirtlauncherUID(vmi)
 	if virtlauncherUID == "" {
 		// This is not the node the pod is running on.
 		return nil
 	}
-	var target *safepath.Path
-	var err error
-	if mountDirectory {
-		target, err = m.hotplugDiskManager.GetFileSystemDirectoryTargetPathFromHostView(virtlauncherUID, volume, true)
-	} else {
-		target, err = m.hotplugDiskManager.GetFileSystemDiskTargetPathFromHostView(virtlauncherUID, volume, true)
-	}
+	mountDirectory := volume.Kind == storagehotplug.KindDirectory
+	target, err := m.fileSystemTargetPath(virtlauncherUID, volume, true)
 	if err != nil {
 		return err
 	}
@@ -568,9 +557,9 @@ func (m *volumeMounter) mountFileSystemHotplugVolume(vmi *v1.VirtualMachineInsta
 		return fmt.Errorf("failed to determine if %s is already mounted: %v", target, err)
 	}
 	if !isMounted {
-		sourcePath, err := m.getSourcePodFilePath(sourceUID, vmi, volume)
+		sourcePath, err := m.getSourcePodFilePath(sourceUID, vmi, volume.Name)
 		if err != nil {
-			return fmt.Errorf("failed to get source path for volume %s from source pod %s: %v: %w", volume, sourceUID, err, ErrWaitingForHotplugMount)
+			return fmt.Errorf("failed to get source path for volume %s from source pod %s: %v: %w", volume.Name, sourceUID, err, ErrWaitingForHotplugMount)
 		}
 		if err := m.writePathToMountRecord(unsafepath.UnsafeAbsolute(target.Raw()), vmi, record); err != nil {
 			return err
@@ -584,7 +573,7 @@ func (m *volumeMounter) mountFileSystemHotplugVolume(vmi *v1.VirtualMachineInsta
 		if out, err := mountCommand(sourcePath, target); err != nil {
 			return fmt.Errorf("failed to bindmount hotplug volume source from %v to %v: %v : %v", sourcePath, target, string(out), err)
 		}
-		log.Log.Object(vmi).V(1).Infof("successfully mounted hotplug volume %s", volume)
+		log.Log.Object(vmi).V(1).Infof("successfully mounted hotplug volume %s", volume.Name)
 	}
 
 	return m.ownershipManager.SetFileOwnership(target)
@@ -694,45 +683,15 @@ func (m *volumeMounter) Unmount(vmi *v1.VirtualMachineInstance, cgroupManager cg
 		// 2. The domain syncs before unmount is called
 		// 3. Unmount will not get called if VMI sync fails
 		// we should be good
-		for _, volume := range vmi.Spec.Volumes {
-			if !storagetypes.IsHotplugVolume(&volume) {
-				continue
-			}
+		specVolumes := storagehotplug.SpecVolumesByName(&vmi.Spec)
+		for _, volume := range hotplugVolumesInSpec(vmi, specVolumes) {
 			var path *safepath.Path
 			var err error
 			if m.isBlockVolume(&vmi.Status, volume.Name) {
 				path, err = safepath.JoinNoFollow(basePath, volume.Name)
-				if errors.Is(err, os.ErrNotExist) {
-					// already unmounted or never mounted
-					continue
-				}
-			} else if m.isDirectoryMounted(vmi, volume.Name) {
-				path, err = m.hotplugDiskManager.GetFileSystemDirectoryTargetPathFromHostView(virtlauncherUID, volume.Name, false)
-				if errors.Is(err, os.ErrNotExist) {
-					// already unmounted or never mounted
-					continue
-				}
 			} else {
-				path, err = m.hotplugDiskManager.GetFileSystemDiskTargetPathFromHostView(virtlauncherUID, volume.Name, false)
-				if errors.Is(err, os.ErrNotExist) {
-					// already unmounted or never mounted
-					continue
-				}
+				path, err = m.fileSystemTargetPath(virtlauncherUID, volume.Volume, false)
 			}
-			if err != nil {
-				return err
-			}
-			currentHotplugPaths[unsafepath.UnsafeAbsolute(path.Raw())] = virtlauncherUID
-		}
-		for _, utilityVolume := range vmi.Spec.UtilityVolumes {
-			if m.isBlockVolume(&vmi.Status, utilityVolume.Name) {
-				log.Log.Object(vmi).Warningf("Skipping unmount cleanup for utility volume %s: configured with block mode PVC", utilityVolume.Name)
-				continue
-			}
-
-			var path *safepath.Path
-			var err error
-			path, err = m.hotplugDiskManager.GetFileSystemDirectoryTargetPathFromHostView(virtlauncherUID, utilityVolume.Name, false)
 			if errors.Is(err, os.ErrNotExist) {
 				// already unmounted or never mounted
 				continue
@@ -900,22 +859,18 @@ func (m *volumeMounter) IsMounted(vmi *v1.VirtualMachineInstance, volume string,
 		isBlockExists, _ := isBlockDevice(deviceName)
 		return isBlockExists, nil
 	}
-	if m.isDirectoryMounted(vmi, volume) {
-		path, err := safepath.JoinNoFollow(targetPath, volume)
+	// Check both shapes, so that a volume already removed from the spec is still reported as mounted.
+	for _, name := range []string{volume, fmt.Sprintf("%s.img", volume)} {
+		path, err := safepath.JoinNoFollow(targetPath, name)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return false, nil
-			}
 			return false, err
 		}
-		return isMounted(path)
-	}
-	path, err := safepath.JoinNoFollow(targetPath, fmt.Sprintf("%s.img", volume))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+		if mounted, err := isMounted(path); err != nil || mounted {
+			return mounted, err
 		}
-		return false, err
 	}
-	return isMounted(path)
+	return false, nil
 }

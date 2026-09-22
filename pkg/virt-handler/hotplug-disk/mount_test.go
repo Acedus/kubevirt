@@ -52,6 +52,7 @@ import (
 	devices "github.com/opencontainers/cgroups/devices/config"
 
 	hotplugdisk "kubevirt.io/kubevirt/pkg/hotplug-disk"
+	storagehotplug "kubevirt.io/kubevirt/pkg/storage/hotplug"
 	"kubevirt.io/kubevirt/pkg/virt-handler/cgroup"
 
 	diskutils "kubevirt.io/kubevirt/pkg/ephemeral-disk-utils"
@@ -346,41 +347,6 @@ var _ = Describe("HotplugVolume", func() {
 			Expect(res).To(BeTrue())
 		})
 
-		It("should skip mounting utility volumes with block mode PVCs", func() {
-			vmi := api.NewMinimalVMI("fake-vmi")
-			vmi.UID = "1234"
-			vmi.Spec.UtilityVolumes = []v1.UtilityVolume{
-				{
-					Name: "utility-vol",
-					PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{
-						ClaimName: "test-pvc",
-					},
-				},
-			}
-			blockMode := k8sv1.PersistentVolumeBlock
-			vmi.Status.VolumeStatus = []v1.VolumeStatus{
-				{
-					Name:  "utility-vol",
-					Phase: v1.VolumePending,
-					HotplugVolume: &v1.HotplugVolumeStatus{
-						AttachPodName: "test-pod",
-						AttachPodUID:  "test-uid",
-					},
-					PersistentVolumeClaimInfo: &v1.PersistentVolumeClaimInfo{
-						VolumeMode: &blockMode,
-					},
-				},
-			}
-
-			cgroupManagerMock.EXPECT().GetCgroupVersion().Return(cgroup.V2).AnyTimes()
-			err = m.mountFromPod(vmi, "", cgroupManagerMock)
-			Expect(err).ToNot(HaveOccurred())
-
-			record, err := m.getMountTargetRecord(vmi)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(record.MountTargetEntries).To(BeEmpty())
-		})
-
 		It("should skip mounting hotplug volumes no longer in VMI spec", func() {
 			vmi := api.NewMinimalVMI("fake-vmi")
 			vmi.UID = "1234"
@@ -545,10 +511,16 @@ var _ = Describe("HotplugVolume", func() {
 					},
 				},
 			}
-			vmi.Spec.Volumes = []v1.Volume{
-				{Name: "volume-a"},
-				{Name: "volume-b"},
-				{Name: "volume-c"},
+			for _, name := range []string{"volume-a", "volume-b", "volume-c"} {
+				vmi.Spec.Volumes = append(vmi.Spec.Volumes, v1.Volume{
+					Name: name,
+					VolumeSource: v1.VolumeSource{
+						PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{ClaimName: name},
+							Hotpluggable:                      true,
+						},
+					},
+				})
 			}
 
 			for _, volume := range []struct {
@@ -850,7 +822,7 @@ var _ = Describe("HotplugVolume", func() {
 			}
 			ownershipManager.EXPECT().SetFileOwnership(targetFilePath)
 
-			err = m.mountFileSystemHotplugVolume(vmi, "testvolume", types.UID(sourcePodUID), record, false)
+			err = m.mountFileSystemHotplugVolume(vmi, storagehotplug.Volume{Name: "testvolume", Kind: storagehotplug.KindDisk}, types.UID(sourcePodUID), record)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(record.MountTargetEntries).To(HaveLen(1))
 			Expect(record.MountTargetEntries[0].TargetFile).To(Equal(unsafepath.UnsafeAbsolute(targetFilePath.Raw())))
@@ -869,12 +841,47 @@ var _ = Describe("HotplugVolume", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
+		It("should mount a directory volume into a directory of its own", func() {
+			sourcePodUID := "ghfjk"
+			path, err := newDir(tempDir, sourcePodUID, "volumes")
+			Expect(err).ToNot(HaveOccurred())
+			findMntByVolume = func(volumeName string, pid int) ([]byte, error) {
+				return []byte(fmt.Sprintf(findmntByVolumeRes, "testvolume", unsafepath.UnsafeAbsolute(path.Raw()))), nil
+			}
+			mountCommand = func(sourcePath, targetPath *safepath.Path) ([]byte, error) {
+				// The whole volume directory is bind-mounted, not the disk image inside it.
+				Expect(unsafepath.UnsafeRelative(sourcePath.Raw())).To(Equal(unsafepath.UnsafeAbsolute(path.Raw())))
+				Expect(unsafepath.UnsafeAbsolute(targetPath.Raw())).To(Equal(filepath.Join(unsafepath.UnsafeAbsolute(targetPodPath.Raw()), "testvolume")))
+				return []byte("Success"), nil
+			}
+			ownershipManager.EXPECT().SetFileOwnership(gomock.Any())
+
+			err = m.mountFileSystemHotplugVolume(vmi, storagehotplug.Volume{Name: "testvolume", Kind: storagehotplug.KindDirectory}, types.UID(sourcePodUID), record)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(record.MountTargetEntries).To(HaveLen(1))
+			Expect(record.MountTargetEntries[0].TargetFile).To(Equal(filepath.Join(unsafepath.UnsafeAbsolute(targetPodPath.Raw()), "testvolume")))
+		})
+
+		DescribeTable("IsMounted should find a volume that is no longer in the VMI spec", func(targetName string) {
+			target, err := newDir(unsafepath.UnsafeAbsolute(targetPodPath.Raw()), targetName)
+			Expect(err).ToNot(HaveOccurred())
+			isMounted = func(path *safepath.Path) (bool, error) {
+				return unsafepath.UnsafeAbsolute(path.Raw()) == unsafepath.UnsafeAbsolute(target.Raw()), nil
+			}
+
+			Expect(vmi.Spec.Volumes).To(BeEmpty())
+			Expect(m.IsMounted(vmi, "testvolume", "")).To(BeTrue())
+		},
+			Entry("mounted as a directory", "testvolume"),
+			Entry("mounted as a disk image", "testvolume.img"),
+		)
+
 		It("mountFileSystemHotplugVolume should return os.ErrNotExist if disk.img is missing", func() {
 			findMntByVolume = func(volumeName string, pid int) ([]byte, error) {
 				return fmt.Appendf(nil, findmntByVolumeRes, "testvolume", tempDir), nil
 			}
 
-			err = m.mountFileSystemHotplugVolume(vmi, "testvolume", types.UID("ghfjk"), record, false)
+			err = m.mountFileSystemHotplugVolume(vmi, storagehotplug.Volume{Name: "testvolume", Kind: storagehotplug.KindDisk}, types.UID("ghfjk"), record)
 			Expect(err).To(HaveOccurred())
 			Expect(err).To(MatchError(os.ErrNotExist), "expected os.ErrNotExist for missing disk.img")
 		})
@@ -886,7 +893,7 @@ var _ = Describe("HotplugVolume", func() {
 				}
 			}
 
-			err = m.mountFileSystemHotplugVolume(vmi, "testvolume", types.UID("ghfjk"), record, false)
+			err = m.mountFileSystemHotplugVolume(vmi, storagehotplug.Volume{Name: "testvolume", Kind: storagehotplug.KindDisk}, types.UID("ghfjk"), record)
 			Expect(err).To(HaveOccurred())
 			Expect(err).To(MatchError(ErrWaitingForHotplugMount), "expected error waiting for hotplug mount")
 		})
@@ -926,7 +933,7 @@ var _ = Describe("HotplugVolume", func() {
 			m.kubeletPodsDir = "/var/lib/kubelet/pods"
 			ownershipManager.EXPECT().SetFileOwnership(targetFilePath)
 
-			err = m.mountFileSystemHotplugVolume(vmi, "testvolume", types.UID(expectedSourceUID), record, false)
+			err = m.mountFileSystemHotplugVolume(vmi, storagehotplug.Volume{Name: "testvolume", Kind: storagehotplug.KindDisk}, types.UID(expectedSourceUID), record)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(uidWasVerified).To(BeTrue(), "parentPathForMount mock should have been called and verified the UID")
 		})

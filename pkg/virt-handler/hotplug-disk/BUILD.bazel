@@ -14,6 +14,7 @@ go_library(
         "//pkg/ephemeral-disk-utils:go_default_library",
         "//pkg/hotplug-disk:go_default_library",
         "//pkg/safepath:go_default_library",
+        "//pkg/storage/hotplug:go_default_library",
         "//pkg/storage/types:go_default_library",
         "//pkg/unsafepath:go_default_library",
         "//pkg/virt-handler/cgroup:go_default_library",
@@ -26,7 +27,6 @@ go_library(
         "//vendor/go.uber.org/mock/gomock:go_default_library",
         "//vendor/golang.org/x/sys/unix:go_default_library",
         "//vendor/k8s.io/apimachinery/pkg/types:go_default_library",
-        "//vendor/k8s.io/apimachinery/pkg/util/sets:go_default_library",
     ],
 )
 
@@ -44,6 +44,7 @@ go_test(
         "//pkg/ephemeral-disk-utils:go_default_library",
         "//pkg/hotplug-disk:go_default_library",
         "//pkg/safepath:go_default_library",
+        "//pkg/storage/hotplug:go_default_library",
         "//pkg/unsafepath:go_default_library",
         "//pkg/virt-handler/cgroup:go_default_library",
         "//pkg/virt-handler/isolation:go_default_library",
