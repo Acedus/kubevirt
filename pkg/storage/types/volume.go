@@ -64,15 +64,6 @@ func IsHotplugVolume(vol *v1.Volume) bool {
 	return false
 }
 
-func IsUtilityVolume(vmi *v1.VirtualMachineInstance, volumeName string) bool {
-	for _, utilityVolume := range vmi.Spec.UtilityVolumes {
-		if utilityVolume.Name == volumeName {
-			return true
-		}
-	}
-	return false
-}
-
 func GetVolumesByName(vmiSpec *v1.VirtualMachineInstanceSpec) map[string]*v1.Volume {
 	volumes := map[string]*v1.Volume{}
 	for _, vol := range vmiSpec.Volumes {
