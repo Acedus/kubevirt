@@ -151,7 +151,7 @@ func (c *Controller) processHotplugVolumeStatus(
 	usePVCStatus := false
 
 	if attachmentPod == nil {
-		if !c.volumeReady(statusCopy.Phase) {
+		if !volumeServedToLauncher(volume, statusCopy.Phase) {
 			statusCopy.HotplugVolume.AttachPodUID = ""
 			// Volume is not hotplugged in VM and Pod is gone, or hasn't been created yet, check for the PVC associated with the volume to set phase and message
 			usePVCStatus = true
@@ -371,9 +371,20 @@ func phaseForUnpluggedVolume(phase virtv1.VolumePhase) virtv1.VolumePhase {
 	return virtv1.HotplugVolumeDetaching
 }
 
-// volumeReady checks if a volume is in a ready state.
-func (c *Controller) volumeReady(phase virtv1.VolumePhase) bool {
-	return phase == virtv1.VolumeReady
+// volumeServedToLauncher reports whether virt-launcher already has the volume: a disk volume once it
+// is attached to the domain, a directory volume once it is mounted.
+func volumeServedToLauncher(volume storagehotplug.Volume, phase virtv1.VolumePhase) bool {
+	if phase == virtv1.VolumeReady {
+		return true
+	}
+	if volume.Kind != storagehotplug.KindDirectory {
+		return false
+	}
+	switch phase {
+	case virtv1.HotplugVolumeMounted, virtv1.MemoryDumpVolumeInProgress, virtv1.MemoryDumpVolumeCompleted, virtv1.MemoryDumpVolumeFailed:
+		return true
+	}
+	return false
 }
 
 // getVolumePhaseMessageReason determines the phase, reason, and message for a volume.

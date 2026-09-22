@@ -3966,6 +3966,55 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 			Expect(attachmentPods[0].Spec.Volumes).ToNot(ContainElement(HaveField("Name", "wffc")))
 		})
 
+		It("Should keep a mounted utility volume mounted while another hotplug volume is not ready", func() {
+			vmi := newPendingVirtualMachine("testvmi")
+			vmi.Spec.UtilityVolumes = []virtv1.UtilityVolume{{
+				Name:                              "utility-vol",
+				PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{ClaimName: "utility-pvc"},
+			}}
+			// A second hotplug volume was just added, and its PVC does not exist yet, so the
+			// attachment pod still only serves the utility volume.
+			vmi.Spec.Volumes = []virtv1.Volume{{
+				Name: "pending-vol",
+				VolumeSource: virtv1.VolumeSource{
+					PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
+						PersistentVolumeClaimVolumeSource: k8sv1.PersistentVolumeClaimVolumeSource{ClaimName: "pending-pvc"},
+						Hotpluggable:                      true,
+					},
+				},
+			}}
+			Expect(controller.pvcIndexer.Add(&k8sv1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: "utility-pvc", Namespace: k8sv1.NamespaceDefault},
+				Status:     k8sv1.PersistentVolumeClaimStatus{Phase: k8sv1.ClaimBound},
+			})).To(Succeed())
+
+			virtlauncherPod := newPodForVirtualMachine(vmi, k8sv1.PodRunning)
+			attachmentPod := newPodForVirtlauncher(virtlauncherPod, "hp-volume-utility", "abcd", k8sv1.PodRunning)
+			attachmentPod.Spec.Volumes = append(attachmentPod.Spec.Volumes, k8sv1.Volume{
+				Name: "utility-vol",
+				VolumeSource: k8sv1.VolumeSource{
+					PersistentVolumeClaim: &k8sv1.PersistentVolumeClaimVolumeSource{ClaimName: "utility-pvc"},
+				},
+			})
+			attachmentPod.Status.ContainerStatuses = []k8sv1.ContainerStatus{{Ready: true}}
+			Expect(controller.podIndexer.Add(attachmentPod)).To(Succeed())
+			addVolumeStatuses(vmi, virtv1.VolumeStatus{
+				Name:  "utility-vol",
+				Phase: virtv1.HotplugVolumeMounted,
+				HotplugVolume: &virtv1.HotplugVolumeStatus{
+					AttachPodName: attachmentPod.Name,
+					AttachPodUID:  attachmentPod.UID,
+				},
+			})
+
+			Expect(controller.updateVolumeStatus(vmi, virtlauncherPod, nil)).To(Succeed())
+
+			utilityStatus := vmi.Status.VolumeStatus[1]
+			Expect(utilityStatus.Name).To(Equal("utility-vol"))
+			Expect(utilityStatus.Phase).To(Equal(virtv1.HotplugVolumeMounted))
+			Expect(utilityStatus.HotplugVolume.AttachPodUID).To(Equal(attachmentPod.UID))
+		})
+
 		Context("with a block mode PVC", func() {
 			BeforeEach(func() {
 				Expect(controller.pvcIndexer.Add(&k8sv1.PersistentVolumeClaim{
