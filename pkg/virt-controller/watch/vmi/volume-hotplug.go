@@ -222,7 +222,10 @@ func (c *Controller) isUtilityVolumeWithBlockPVC(vmi *v1.VirtualMachineInstance,
 	return storagetypes.IsPVCBlock(pvc.Spec.VolumeMode), nil
 }
 
-func (c *Controller) hotplugVolumeReadiness(vmi *v1.VirtualMachineInstance, volume *v1.Volume, dataVolumes []*cdiv1.DataVolume) (ready bool, wffc bool, err error) {
+func (c *Controller) hotplugVolumeReadiness(vmi *v1.VirtualMachineInstance, volume *v1.Volume, attachmentPods []*k8sv1.Pod, dataVolumes []*cdiv1.DataVolume) (ready bool, wffc bool, err error) {
+	if servedByAttachmentPod(volume, attachmentPods) {
+		return true, false, nil
+	}
 	isUtilityVolumeWithBlockPVC, err := c.isUtilityVolumeWithBlockPVC(vmi, volume)
 	if err != nil {
 		return false, false, err
@@ -237,9 +240,24 @@ func (c *Controller) hotplugVolumeReadiness(vmi *v1.VirtualMachineInstance, volu
 	return ready, wffc, nil
 }
 
-func (c *Controller) readyHotplugVolumes(vmi *v1.VirtualMachineInstance, hotplugVolumes []*v1.Volume, dataVolumes []*cdiv1.DataVolume) []*v1.Volume {
+func podServesVolume(podVolume k8sv1.Volume, volume *v1.Volume) bool {
+	return podVolume.Name == volume.Name &&
+		podVolume.PersistentVolumeClaim != nil &&
+		podVolume.PersistentVolumeClaim.ClaimName == storagetypes.PVCNameFromVirtVolume(volume)
+}
+
+func servedByAttachmentPod(volume *v1.Volume, attachmentPods []*k8sv1.Pod) bool {
+	return slices.ContainsFunc(attachmentPods, func(pod *k8sv1.Pod) bool {
+		// WaitForFirstConsumer trigger pods only bind the claim and serve nothing.
+		return pod.DeletionTimestamp == nil && !isTempPod(pod) && slices.ContainsFunc(pod.Spec.Volumes, func(podVolume k8sv1.Volume) bool {
+			return podServesVolume(podVolume, volume)
+		})
+	})
+}
+
+func (c *Controller) readyHotplugVolumes(vmi *v1.VirtualMachineInstance, hotplugVolumes []*v1.Volume, attachmentPods []*k8sv1.Pod, dataVolumes []*cdiv1.DataVolume) []*v1.Volume {
 	return slices.DeleteFunc(slices.Clone(hotplugVolumes), func(volume *v1.Volume) bool {
-		ready, _, err := c.hotplugVolumeReadiness(vmi, volume, dataVolumes)
+		ready, _, err := c.hotplugVolumeReadiness(vmi, volume, attachmentPods, dataVolumes)
 		if err != nil {
 			log.Log.Object(vmi).V(3).Infof("Not matching an attachment pod to volume %s, cannot determine its readiness: %v", volume.Name, err)
 			return true
@@ -254,7 +272,7 @@ func (c *Controller) handleHotplugVolumes(hotplugVolumes []*v1.Volume, hotplugAt
 	readyHotplugVolumes := make([]*v1.Volume, 0)
 	// Find all ready volumes
 	for _, volume := range hotplugVolumes {
-		ready, wffc, err := c.hotplugVolumeReadiness(vmi, volume, dataVolumes)
+		ready, wffc, err := c.hotplugVolumeReadiness(vmi, volume, hotplugAttachmentPods, dataVolumes)
 		if err != nil {
 			return common.NewSyncError(err, controller.PVCNotReadyReason)
 		}
@@ -485,6 +503,10 @@ func podVolumesMatchesReadyVolumes(attachmentPod *k8sv1.Pod, volumes []*v1.Volum
 		}
 	}
 	for _, volume := range volumes {
+		podVolume, found := podVolumeMap[volume.Name]
+		if !found || !podServesVolume(podVolume, volume) {
+			return false
+		}
 		delete(podVolumeMap, volume.Name)
 	}
 	return len(podVolumeMap) == 0
