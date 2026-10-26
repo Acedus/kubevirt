@@ -27,6 +27,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"kubevirt.io/kubevirt/pkg/libvmi"
+	"kubevirt.io/kubevirt/pkg/storage/cbt"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/premigration-hook-server/disk"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/storage"
 )
@@ -80,6 +81,16 @@ var _ = Describe("CBTOverlayHook", func() {
 		Entry("with a filesystem data store", libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: fsDataPath}}, fsDataPath),
 		Entry("with a block data store", libvirtxml.DomainDiskSource{Block: &libvirtxml.DomainDiskSourceBlock{Dev: blkDataPath}}, blkDataPath),
 	)
+
+	It("should create the overlay at the path of the claim the target VMI names", func() {
+		vmi := libvmi.New(libvmi.WithPersistentVolumeClaim("disk0", "dst"))
+		targetOverlay := cbt.GetQCOW2OverlayPath(vmi, &vmi.Spec.Volumes[0])
+		domain := domainWith(cbtDisk(libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: fsDataPath}}))
+
+		Expect(disk.CBTOverlayHook(nil, vmi, domain)).To(Succeed())
+		Expect(calls).To(ConsistOf(overlayCall{targetOverlay, fsDataPath}))
+		Expect(domain.Devices.Disks[0].Source.File.File).To(Equal(targetOverlay))
+	})
 
 	It("should ignore disks without a data store", func() {
 		domain := domainWith(libvirtxml.DomainDisk{
