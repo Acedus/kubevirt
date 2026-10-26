@@ -585,4 +585,26 @@ var _ = Describe("CBT", func() {
 			Expect(cbt.PathForCBT(vmi)).To(Equal(filepath.Join(util.VMStatePVCMountPath, util.VMStateDirCBT)))
 		})
 	})
+
+	Context("GetQCOW2OverlayPath", func() {
+		overlayPath := func(volumeName, claimName string, withVolume func(diskName, pvcName string, diskOpts ...libvmi.DiskOption) libvmi.Option) string {
+			vmi := libvmi.New(withVolume(volumeName, claimName))
+			return cbt.GetQCOW2OverlayPath(vmi, &vmi.Spec.Volumes[0])
+		}
+
+		It("should give a volume pointed at another claim a different overlay", func() {
+			Expect(overlayPath("disk", "claim-a", libvmi.WithPersistentVolumeClaim)).
+				ToNot(Equal(overlayPath("disk", "claim-b", libvmi.WithPersistentVolumeClaim)))
+		})
+
+		It("should give each volume on a claim its own overlay", func() {
+			Expect(overlayPath("disk-a", "claim", libvmi.WithPersistentVolumeClaim)).
+				ToNot(Equal(overlayPath("disk-b", "claim", libvmi.WithPersistentVolumeClaim)))
+		})
+
+		It("should keep the overlay when a DataVolume volume is referenced by its PVC", func() {
+			Expect(overlayPath("disk", "claim", libvmi.WithDataVolume)).
+				To(Equal(overlayPath("disk", "claim", libvmi.WithPersistentVolumeClaim)))
+		})
+	})
 })

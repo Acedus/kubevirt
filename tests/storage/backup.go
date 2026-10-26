@@ -529,8 +529,7 @@ var _ = Describe(SIG("Backup", func() {
 
 		pvcName := backendstorage.CurrentPVCName(vmi)
 		Expect(pvcName).ToNot(BeEmpty(), "Backend storage PVC name should not be empty")
-		volumeName := vm.Spec.Template.Spec.Volumes[0].Name
-		cbtOverlayPath := fmt.Sprintf("/cbt/%s.qcow2", volumeName)
+		cbtOverlayPath := cbt.GetQCOW2OverlayBackendPath(&vm.Spec.Template.Spec.Volumes[0])
 
 		err = virtClient.VirtualMachine(vm.Namespace).Stop(context.Background(), vm.Name, &v1.StopOptions{})
 		Expect(err).ToNot(HaveOccurred())
@@ -1680,7 +1679,7 @@ func corruptBitmap(virtClient kubecli.KubevirtClient, namespace, pvcName, cbtOve
 
 	executorPod := createExecutorPod(pvc)
 
-	fullPath := fmt.Sprintf("%s%s", libstorage.DefaultPvcMountPath, cbtOverlayPath)
+	fullPath := filepath.Join(libstorage.DefaultPvcMountPath, cbtOverlayPath)
 
 	By("Listing backend storage PVC contents before deletion")
 	lsOutput, err := exec.ExecuteCommandOnPod(
