@@ -616,6 +616,15 @@ func (ctrl *VMExportController) updateVMExport(vmExport *exportv1.VirtualMachine
 		if vmBackup.Status == nil || vmBackup.Status.StartTimestamp == nil {
 			return 0, fmt.Errorf("backup has not started")
 		}
+		if offline, err := ctrl.isOfflineBackup(vmBackup); err != nil {
+			return 0, err
+		} else if offline {
+			source, err := ctrl.getOfflineBackupSource(vmExport, vmBackup)
+			if err != nil {
+				return 0, err
+			}
+			return ctrl.handleSource(vmExport, source)
+		}
 		vmi, err := ctrl.getBackupSourceVMI(vmBackup)
 		if err != nil {
 			return 0, err
@@ -665,7 +674,7 @@ func (ctrl *VMExportController) manageExporterPod(vmExport *exportv1.VirtualMach
 		}
 
 		if source.IsSourceAvailable() {
-			if err := ctrl.checkPod(vmExport, pod); err != nil {
+			if err := ctrl.checkPod(vmExport, pod, source); err != nil {
 				return nil, err
 			}
 		} else {
@@ -687,21 +696,33 @@ func (ctrl *VMExportController) deleteExporterPod(vmExport *exportv1.VirtualMach
 	return nil
 }
 
-func (ctrl *VMExportController) checkPod(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod) error {
+func (ctrl *VMExportController) checkPod(vmExport *exportv1.VirtualMachineExport, pod *corev1.Pod, source exportSource) error {
 	if pod.DeletionTimestamp != nil {
 		return nil
 	}
 
-	if ttlExpiration := getExpirationTime(vmExport); !time.Now().Before(ttlExpiration) {
-		if err := ctrl.Client.VirtualMachineExport(vmExport.Namespace).Delete(context.Background(), vmExport.Name, metav1.DeleteOptions{}); err != nil {
-			return err
+	if !isOfflinePushSource(source) {
+		if ttlExpiration := getExpirationTime(vmExport); !time.Now().Before(ttlExpiration) {
+			if err := ctrl.Client.VirtualMachineExport(vmExport.Namespace).Delete(context.Background(), vmExport.Name, metav1.DeleteOptions{}); err != nil {
+				return err
+			}
+			return nil
 		}
-		return nil
 	}
 
 	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		// Keep a terminal offline pod so the backup controller can observe the outcome. A Succeeded
+		// pull pod is the exception: it exited on certificate rotation and must be recreated to keep serving.
+		if backup, ok := source.(*VMBackupSource); ok && backup.isOffline() && (backup.isOfflinePush() || pod.Status.Phase == corev1.PodFailed) {
+			return nil
+		}
 		// The server died or completed, delete the pod.
 		return ctrl.deleteExporterPod(vmExport, pod, exporterPodFailedOrCompletedEvent, fmt.Sprintf("Exporter pod %s/%s is in phase %s", pod.Namespace, pod.Name, pod.Status.Phase))
+	}
+
+	// Offline push serves no TLS, so recreating it on cert rotation would only restart a long convert from zero.
+	if isOfflinePushSource(source) {
+		return nil
 	}
 
 	certParams, err := ctrl.getCertParams()
@@ -1034,7 +1055,7 @@ func (ctrl *VMExportController) createExporterPodManifest(vmExport *exportv1.Vir
 		Value: "/token/token",
 	}, corev1.EnvVar{
 		Name:  "DEADLINE",
-		Value: getDeadlineValue(deadline, vmExport).Format(time.RFC3339),
+		Value: deadlineEnvValue(deadline, vmExport, source),
 	}, corev1.EnvVar{
 		Name:  "EXPORT_SECRET_DEF_URI",
 		Value: secretManifestPath,
@@ -1429,15 +1450,26 @@ func populateInitialVMExportStatus(vmExport *exportv1.VirtualMachineExport) {
 	}
 }
 
+func deadlineEnvValue(deadline time.Duration, vmExport *exportv1.VirtualMachineExport, source exportSource) string {
+	if isOfflinePushSource(source) {
+		return ""
+	}
+	return getDeadlineValue(deadline, vmExport).Format(time.RFC3339)
+}
+
 func getDeadlineValue(deadline time.Duration, vmExport *exportv1.VirtualMachineExport) time.Time {
 	// Pod needs to shutdown to either cert rotate or because export TTL expired altogether
 	rotate := currentTime().Add(deadline)
 	ttlExpiration := getExpirationTime(vmExport)
-
 	if ttlExpiration.After(rotate) {
 		return rotate
 	}
 	return ttlExpiration
+}
+
+func isOfflinePushSource(source exportSource) bool {
+	backup, ok := source.(*VMBackupSource)
+	return ok && backup.isOfflinePush()
 }
 
 func getExpirationTime(vmExport *exportv1.VirtualMachineExport) time.Time {

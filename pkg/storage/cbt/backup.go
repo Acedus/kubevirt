@@ -400,7 +400,7 @@ func (ctrl *VMBackupController) Execute() bool {
 	return true
 }
 
-func isIncrementalBackup(backup *backupv1.VirtualMachineBackup, backupTracker *backupv1.VirtualMachineBackupTracker) bool {
+func IsIncrementalBackup(backup *backupv1.VirtualMachineBackup, backupTracker *backupv1.VirtualMachineBackupTracker) bool {
 	return !backup.Spec.ForceFullBackup &&
 		backupTracker != nil && backupTracker.Status != nil &&
 		backupTracker.Status.LatestCheckpoint != nil &&
@@ -692,7 +692,7 @@ func (ctrl *VMBackupController) startBackup(backup *backupv1.VirtualMachineBacku
 	}
 
 	log.Log.Object(backup).Infof("Starting backup for VMI %s with mode %s", vmi.Name, backupOptions.Mode)
-	if isIncrementalBackup(backup, backupTracker) {
+	if IsIncrementalBackup(backup, backupTracker) {
 		backupOptions.Incremental = pointer.P(backupTracker.Status.LatestCheckpoint.Name)
 		backupOptions.IncrementalCreationTime = backupTracker.Status.LatestCheckpoint.CreationTime
 		log.Log.Object(backup).Infof("Setting incremental backup from checkpoint: %s", backupTracker.Status.LatestCheckpoint.Name)
