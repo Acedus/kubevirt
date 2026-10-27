@@ -87,6 +87,7 @@ type VMBackupController struct {
 	vmiStore              cache.Store
 	pvcStore              cache.Store
 	vmExportStore         cache.Store
+	podIndexer            cache.Indexer
 	recorder              record.EventRecorder
 	clusterConfig         *virtconfig.ClusterConfig
 	backupQueue           workqueue.TypedRateLimitingInterface[string]
@@ -101,6 +102,7 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 	vmiInformer cache.SharedIndexInformer,
 	pvcInformer cache.SharedIndexInformer,
 	vmExportInformer cache.SharedIndexInformer,
+	podInformer cache.SharedIndexInformer,
 	recorder record.EventRecorder,
 	clusterConfig *virtconfig.ClusterConfig,
 ) (*VMBackupController, error) {
@@ -119,13 +121,14 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 		vmiStore:              vmiInformer.GetStore(),
 		pvcStore:              pvcInformer.GetStore(),
 		vmExportStore:         vmExportInformer.GetStore(),
+		podIndexer:            podInformer.GetIndexer(),
 		recorder:              recorder,
 		clusterConfig:         clusterConfig,
 		client:                client,
 	}
 
 	c.hasSynced = func() bool {
-		return backupInformer.HasSynced() && backupTrackerInformer.HasSynced() && vmInformer.HasSynced() && vmiInformer.HasSynced() && pvcInformer.HasSynced() && vmExportInformer.HasSynced()
+		return backupInformer.HasSynced() && backupTrackerInformer.HasSynced() && vmInformer.HasSynced() && vmiInformer.HasSynced() && pvcInformer.HasSynced() && vmExportInformer.HasSynced() && podInformer.HasSynced()
 	}
 
 	_, err := backupInformer.AddEventHandler(
@@ -142,6 +145,15 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 		cache.ResourceEventHandlerFuncs{
 			UpdateFunc: c.handleUpdateVM,
 			DeleteFunc: c.handleDeleteVM,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	_, err = podInformer.AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			UpdateFunc: func(_, newObj interface{}) { c.handlePod(newObj) },
+			DeleteFunc: c.handlePod,
 		},
 	)
 	if err != nil {
@@ -478,6 +490,12 @@ func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) erro
 		return err
 	}
 
+	if vm, held, err := ctrl.heldSourceVM(backup, sourceName); err != nil {
+		return err
+	} else if held {
+		return ctrl.reconcileOffline(backup, vm, backupTracker, backupDeleting)
+	}
+
 	backupStatus := getBackupStatus(vmi)
 	switch {
 	case backupStatus != nil && backupStatus.Completed:
@@ -500,9 +518,6 @@ func (ctrl *VMBackupController) reconcileStart(backup *backupv1.VirtualMachineBa
 	if backupDeleting {
 		log.Log.Object(backup).V(3).Infof("Backup deleting during initialization")
 		if !vmiExists {
-			if err := ctrl.releaseSourceVM(backup); err != nil {
-				return err
-			}
 			return ctrl.removeBackupFinalizer(backup)
 		}
 		done, err := ctrl.cleanupVMIState(backup, vmi)
@@ -518,10 +533,8 @@ func (ctrl *VMBackupController) reconcileStart(backup *backupv1.VirtualMachineBa
 
 	if backup.Status.StartTimestamp != nil {
 		if !vmiExists {
-			if isPullMode(backup) {
-				if err := ctrl.cleanupBackupExport(backup); err != nil {
-					return err
-				}
+			if err := ctrl.cleanupBackupExport(backup); err != nil {
+				return err
 			}
 			ctrl.setFailed(backup, backupv1.ReasonSourceLost, "VMI was deleted during backup")
 			return nil
@@ -619,7 +632,8 @@ func (ctrl *VMBackupController) reconcileActive(backup *backupv1.VirtualMachineB
 
 func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, backupTracker *backupv1.VirtualMachineBackupTracker, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
 	if backupTracker != nil && backupStatus.CheckpointName != nil && !backupStatus.Failed {
-		if err := ctrl.updateBackupTracker(backup.Namespace, backupTracker, backupStatus); err != nil {
+		checkpoint := backupv1.BackupCheckpoint{Name: *backupStatus.CheckpointName, CreationTime: backupStatus.StartTimestamp}
+		if err := ctrl.updateBackupTracker(backup.Namespace, backupTracker, checkpoint); err != nil {
 			log.Log.Object(backup).Reason(err).Error("Failed to update BackupTracker")
 			return err
 		}
@@ -1002,14 +1016,9 @@ func (ctrl *VMBackupController) resolveCompletion(backup *backupv1.VirtualMachin
 	ctrl.recorder.Eventf(backup, corev1.EventTypeNormal, backupCompletedEvent, backupCompleted)
 }
 
-func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *backupv1.VirtualMachineBackupTracker, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
+func (ctrl *VMBackupController) updateBackupTracker(namespace string, tracker *backupv1.VirtualMachineBackupTracker, newCheckpoint backupv1.BackupCheckpoint) error {
 	if tracker == nil {
 		return nil
-	}
-
-	newCheckpoint := backupv1.BackupCheckpoint{
-		Name:         *backupStatus.CheckpointName,
-		CreationTime: backupStatus.StartTimestamp,
 	}
 
 	newStatus := &backupv1.VirtualMachineBackupTrackerStatus{

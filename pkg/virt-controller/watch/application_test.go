@@ -294,6 +294,7 @@ var _ = Describe("Application", func() {
 			vmiInformer,
 			pvcInformer,
 			vmExportInformer,
+			podInformer,
 			recorder,
 			config,
 		)

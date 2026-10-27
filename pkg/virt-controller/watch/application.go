@@ -1023,6 +1023,7 @@ func (vca *VirtControllerApp) initBackupController() {
 		vca.vmiInformer,
 		vca.persistentVolumeClaimInformer,
 		vca.vmExportInformer,
+		vca.kvPodInformer,
 		recorder,
 		vca.clusterConfig,
 	)

@@ -321,6 +321,7 @@ var _ = Describe("Backup Controller", func() {
 		vmiInformer, _ = testutils.NewFakeInformerFor(&v1.VirtualMachineInstance{})
 		pvcInformer, _ = testutils.NewFakeInformerFor(&corev1.PersistentVolumeClaim{})
 		vmExportInformer, _ = testutils.NewFakeInformerFor(&exportv1.VirtualMachineExport{})
+		podInformer, _ := testutils.NewFakeInformerFor(&corev1.Pod{})
 
 		recorder = record.NewFakeRecorder(100)
 		recorder.IncludeObject = true
@@ -333,6 +334,7 @@ var _ = Describe("Backup Controller", func() {
 			vmiStore:              vmiInformer.GetStore(),
 			pvcStore:              pvcInformer.GetStore(),
 			vmExportStore:         vmExportInformer.GetStore(),
+			podIndexer:            podInformer.GetIndexer(),
 			recorder:              recorder,
 			backupQueue: workqueue.NewTypedRateLimitingQueueWithConfig(
 				workqueue.DefaultTypedControllerRateLimiter[string](),
@@ -569,7 +571,7 @@ var _ = Describe("Backup Controller", func() {
 				Expect(cond.Message).To(Equal(fmt.Sprintf(vmNotRunningMsg, vmName)))
 			})
 
-			Context("offline backup hold", func() {
+			Context("offline backup", func() {
 				BeforeEach(func() {
 					controller.clusterConfig, _, _ = testutils.NewFakeClusterConfigUsingKVConfig(&v1.KubeVirtConfiguration{
 						DeveloperConfiguration: &v1.DeveloperConfiguration{
@@ -656,6 +658,189 @@ var _ = Describe("Backup Controller", func() {
 
 					_, err := syncBackup(completedBackup())
 					Expect(err).ToNot(HaveOccurred())
+				})
+
+				Context("of a held VM", func() {
+					const checkpoint = "test-checkpoint"
+
+					offlineVM := func() *v1.VirtualMachine {
+						vm := heldVM(backupName)
+						vm.Spec.Template = &v1.VirtualMachineInstanceTemplateSpec{Spec: v1.VirtualMachineInstanceSpec{Volumes: []v1.Volume{
+							{Name: "rootdisk", VolumeSource: v1.VolumeSource{PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
+								PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{ClaimName: "rootdisk-pvc"},
+							}}},
+							{Name: "cloudinit", VolumeSource: v1.VolumeSource{CloudInitNoCloud: &v1.CloudInitNoCloudSource{}}},
+						}}}
+						vm.Status.ChangedBlockTracking = &v1.ChangedBlockTrackingStatus{State: v1.ChangedBlockTrackingEnabled}
+						return vm
+					}
+
+					startedBackup := func(backup *backupv1.VirtualMachineBackup) *backupv1.VirtualMachineBackup {
+						backup.Finalizers = []string{backupv1.VirtualMachineBackupFinalizer}
+						backup.CreationTimestamp = metav1.Now()
+						backup.Status = &backupv1.VirtualMachineBackupStatus{
+							StartTimestamp:  new(metav1.Now()),
+							CheckpointName:  new(checkpoint),
+							IncludedVolumes: []backupv1.BackupVolumeInfo{{VolumeName: "rootdisk", Type: backupv1.Incremental}},
+						}
+						setProgressing(backup)
+						return backup
+					}
+
+					exporterPod := func(phase corev1.PodPhase) *corev1.Pod {
+						return &corev1.Pod{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      "exporter",
+								Namespace: testNamespace,
+								OwnerReferences: []metav1.OwnerReference{
+									{Kind: virtualMachineExportKind, Name: backupName, Controller: new(true)},
+								},
+							},
+							Status: corev1.PodStatus{Phase: phase},
+						}
+					}
+
+					addExport := func(backup *backupv1.VirtualMachineBackup, phase exportv1.VirtualMachineExportPhase) {
+						vmExport := createBackupVMExport(backup)
+						vmExport.Status = &exportv1.VirtualMachineExportStatus{
+							Phase: phase,
+							Links: &exportv1.VirtualMachineExportLinks{Internal: &exportv1.VirtualMachineExportLink{Cert: "cert"}},
+						}
+						controller.vmExportStore.Add(vmExport)
+						_, err := kubevirtClient.ExportV1().VirtualMachineExports(testNamespace).Create(context.Background(), vmExport, metav1.CreateOptions{})
+						Expect(err).ToNot(HaveOccurred())
+					}
+
+					expectExportDeleted := func() {
+						_, err := kubevirtClient.ExportV1().VirtualMachineExports(testNamespace).Get(context.Background(), backupName, metav1.GetOptions{})
+						Expect(errors.IsNotFound(err)).To(BeTrue())
+					}
+
+					condition := func(backup *backupv1.VirtualMachineBackup, condType backupv1.ConditionType) *metav1.Condition {
+						return meta.FindStatusCondition(backup.Status.Conditions, string(condType))
+					}
+
+					BeforeEach(func() {
+						controller.vmStore.Add(offlineVM())
+					})
+
+					It("should start backing up the VM's PVC volumes", func() {
+						backup := createBackup(backupName, vmName, pvcName, backupv1.PullMode)
+						backup.Finalizers = []string{backupv1.VirtualMachineBackupFinalizer}
+
+						backupCopy, err := syncBackup(backup)
+						Expect(err).ToNot(HaveOccurred())
+						Expect(backupCopy.Status.IncludedVolumes).To(Equal([]backupv1.BackupVolumeInfo{{VolumeName: "rootdisk", Type: backupv1.Full}}))
+						Expect(backupCopy.Status.CheckpointName).To(HaveValue(HavePrefix(backupName + "-")))
+						Expect(backupCopy.Status.StartTimestamp).ToNot(BeNil())
+						Expect(condition(backupCopy, backupv1.ConditionProgressing)).To(HaveField("Reason", backupv1.ReasonInitiated))
+					})
+
+					It("should wait for the VM's launcher pods to terminate before starting", func() {
+						Expect(controller.podIndexer.Add(&corev1.Pod{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:        "virt-launcher",
+								Namespace:   testNamespace,
+								Labels:      map[string]string{v1.AppLabel: "virt-launcher"},
+								Annotations: map[string]string{v1.DomainAnnotation: vmName},
+							},
+							Status: corev1.PodStatus{Phase: corev1.PodRunning},
+						})).To(Succeed())
+						backup := createBackup(backupName, vmName, pvcName, backupv1.PullMode)
+
+						backupCopy, err := syncBackup(backup)
+						Expect(err).ToNot(HaveOccurred())
+						Expect(backupCopy.Status.StartTimestamp).To(BeNil())
+						Expect(initializingMessage(backupCopy)).To(Equal(fmt.Sprintf(launcherPodsRunningMsg, vmName)))
+					})
+
+					It("should report the volumes prepare fell back to a full backup once exported", func() {
+						backup := startedBackup(createBackup(backupName, vmName, pvcName, backupv1.PullMode))
+						addExport(backup, exportv1.Ready)
+						pod := exporterPod(corev1.PodRunning)
+						pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
+							Name: OfflineBackupPrepareContainerName,
+							State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+								Message: `[{"volumeName":"rootdisk","type":"Full"}]`,
+							}},
+						}}
+						Expect(controller.podIndexer.Add(pod)).To(Succeed())
+
+						backupCopy, err := syncBackup(backup)
+						Expect(err).ToNot(HaveOccurred())
+						Expect(backupCopy.Status.IncludedVolumes).To(Equal([]backupv1.BackupVolumeInfo{{VolumeName: "rootdisk", Type: backupv1.Full}}))
+						Expect(backupCopy.Status.Links).ToNot(BeNil())
+						Expect(condition(backupCopy, backupv1.ConditionProgressing)).To(HaveField("Reason", backupv1.ReasonExportReady))
+					})
+
+					It("should complete a push backup and advance its tracker once the exporter succeeded", func() {
+						tracker := createBackupTracker(backupTrackerName, vmName, "")
+						controller.backupTrackerInformer.GetStore().Add(tracker)
+						_, err := kubevirtClient.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Create(context.Background(), tracker, metav1.CreateOptions{})
+						Expect(err).ToNot(HaveOccurred())
+						virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
+							Return(kubevirtClient.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace)).AnyTimes()
+
+						backup := startedBackup(createBackupWithTracker(backupName, vmName, pvcName))
+						addExport(backup, exportv1.Ready)
+						Expect(controller.podIndexer.Add(exporterPod(corev1.PodSucceeded))).To(Succeed())
+
+						backupCopy, err := syncBackup(backup)
+						Expect(err).ToNot(HaveOccurred())
+						Expect(condition(backupCopy, backupv1.ConditionComplete)).To(HaveField("Status", metav1.ConditionTrue))
+						expectExportDeleted()
+						updated, err := kubevirtClient.BackupV1alpha1().VirtualMachineBackupTrackers(testNamespace).Get(context.Background(), backupTrackerName, metav1.GetOptions{})
+						Expect(err).ToNot(HaveOccurred())
+						Expect(updated.Status.LatestCheckpoint).To(HaveField("Name", checkpoint))
+					})
+
+					It("should fail with the exporter's termination message", func() {
+						backup := startedBackup(createBackup(backupName, vmName, pvcName, backupv1.PushMode))
+						addExport(backup, exportv1.Pending)
+						pod := exporterPod(corev1.PodFailed)
+						pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+							Name: "exporter",
+							State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+								ExitCode: 1, Message: "target PVC is full",
+							}},
+						}}
+						Expect(controller.podIndexer.Add(pod)).To(Succeed())
+
+						backupCopy, err := syncBackup(backup)
+						Expect(err).ToNot(HaveOccurred())
+						Expect(condition(backupCopy, backupv1.ConditionFailed)).To(HaveField("Message", ContainSubstring("target PVC is full")))
+						expectExportDeleted()
+					})
+
+					Context("being deleted", func() {
+						deletedBackup := func(exported bool) *backupv1.VirtualMachineBackup {
+							backup := startedBackup(createBackup(backupName, vmName, pvcName, backupv1.PullMode))
+							backup.DeletionTimestamp = new(metav1.Now())
+							if exported {
+								setExportReady(backup)
+							}
+							return backup
+						}
+
+						It("should wait for the exporter pod to terminate", func() {
+							Expect(controller.podIndexer.Add(exporterPod(corev1.PodRunning))).To(Succeed())
+
+							_, err := syncBackup(deletedBackup(true))
+							Expect(err).To(MatchError(errCleanupPending))
+						})
+
+						It("should complete a pull backup that was exported", func() {
+							backupCopy, err := syncBackup(deletedBackup(true))
+							Expect(err).ToNot(HaveOccurred())
+							Expect(condition(backupCopy, backupv1.ConditionComplete)).To(HaveField("Status", metav1.ConditionTrue))
+						})
+
+						It("should fail a backup that was never exported", func() {
+							backupCopy, err := syncBackup(deletedBackup(false))
+							Expect(err).ToNot(HaveOccurred())
+							Expect(condition(backupCopy, backupv1.ConditionFailed)).To(HaveField("Message", ContainSubstring(offlineDeletedMsg)))
+						})
+					})
 				})
 			})
 
