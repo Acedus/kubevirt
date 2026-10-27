@@ -49,6 +49,7 @@ import (
 
 	"kubevirt.io/kubevirt/pkg/pointer"
 	"kubevirt.io/kubevirt/pkg/testutils"
+	"kubevirt.io/kubevirt/pkg/virt-config/featuregate"
 )
 
 const (
@@ -338,6 +339,7 @@ var _ = Describe("Backup Controller", func() {
 				workqueue.TypedRateLimitingQueueConfig[string]{Name: "test-backup-queue"},
 			),
 		}
+		controller.clusterConfig, _, _ = testutils.NewFakeClusterConfigUsingKVConfig(&v1.KubeVirtConfiguration{})
 		controller.hasSynced = func() bool {
 			return backupInformer.HasSynced() && backupTrackerInformer.HasSynced() && vmInformer.HasSynced() && vmiInformer.HasSynced() && pvcInformer.HasSynced()
 		}
@@ -565,6 +567,96 @@ var _ = Describe("Backup Controller", func() {
 				Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 				Expect(cond.Reason).To(Equal(backupv1.ReasonInitializing))
 				Expect(cond.Message).To(Equal(fmt.Sprintf(vmNotRunningMsg, vmName)))
+			})
+
+			Context("offline backup hold", func() {
+				BeforeEach(func() {
+					controller.clusterConfig, _, _ = testutils.NewFakeClusterConfigUsingKVConfig(&v1.KubeVirtConfiguration{
+						DeveloperConfiguration: &v1.DeveloperConfiguration{
+							FeatureGates: []string{featuregate.IncrementalBackupGate, featuregate.OfflineIncrementalBackupGate},
+						},
+					})
+				})
+
+				heldVM := func(holder string) *v1.VirtualMachine {
+					vm := createVM(vmName)
+					vm.Status.BackupInProgress = new(holder)
+					return vm
+				}
+
+				completedBackup := func() *backupv1.VirtualMachineBackup {
+					backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
+					backup.Status = &backupv1.VirtualMachineBackupStatus{Conditions: []metav1.Condition{
+						newCondition(string(backupv1.ConditionComplete), metav1.ConditionTrue, "", ""),
+					}}
+					return backup
+				}
+
+				expectHolder := func(holder *string) {
+					vmInterface.EXPECT().UpdateStatus(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(_ context.Context, vm *v1.VirtualMachine, _ metav1.UpdateOptions) (*v1.VirtualMachine, error) {
+							Expect(vm.Status.BackupInProgress).To(Equal(holder))
+							return vm, nil
+						})
+				}
+
+				initializingMessage := func(backup *backupv1.VirtualMachineBackup) string {
+					cond := meta.FindStatusCondition(backup.Status.Conditions, string(backupv1.ConditionProgressing))
+					Expect(cond).NotTo(BeNil())
+					Expect(cond.Reason).To(Equal(backupv1.ReasonInitializing))
+					return cond.Message
+				}
+
+				It("should hold a stopped VM for the backup", func() {
+					backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
+					controller.vmStore.Add(createVM(vmName))
+					expectHolder(new(backupName))
+
+					backupCopy, err := syncBackup(backup)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(initializingMessage(backupCopy)).To(Equal(fmt.Sprintf(vmHeldForOfflineBackupMsg, vmName)))
+				})
+
+				DescribeTable("should not hold a VM", func(vm *v1.VirtualMachine) {
+					backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
+					controller.vmStore.Add(vm)
+
+					backupCopy, err := syncBackup(backup)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(initializingMessage(backupCopy)).To(Equal(fmt.Sprintf(vmNotRunningMsg, vmName)))
+				},
+					Entry("that is set to start", func() *v1.VirtualMachine {
+						vm := createVM(vmName)
+						vm.Spec.RunStrategy = new(v1.RunStrategyAlways)
+						return vm
+					}()),
+					Entry("whose VMI was created", func() *v1.VirtualMachine {
+						vm := createVM(vmName)
+						vm.Status.Created = true
+						return vm
+					}()),
+					Entry("held by another backup", heldVM("other")),
+					Entry("being restored", func() *v1.VirtualMachine {
+						vm := createVM(vmName)
+						vm.Status.RestoreInProgress = new("restore")
+						return vm
+					}()),
+				)
+
+				It("should release the VM once the backup is terminal", func() {
+					controller.vmStore.Add(heldVM(backupName))
+					expectHolder(nil)
+
+					_, err := syncBackup(completedBackup())
+					Expect(err).ToNot(HaveOccurred())
+				})
+
+				It("should not release a VM held by another backup", func() {
+					controller.vmStore.Add(heldVM("other"))
+
+					_, err := syncBackup(completedBackup())
+					Expect(err).ToNot(HaveOccurred())
+				})
 			})
 
 			It("should wait when VMI doesn't have CBT eligible volumes", func() {

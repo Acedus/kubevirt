@@ -47,6 +47,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/pointer"
 	hotplugdisk "kubevirt.io/kubevirt/pkg/storage/hotplug-disk"
 	migrations "kubevirt.io/kubevirt/pkg/util/migrations"
+	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
 )
 
 const (
@@ -87,6 +88,7 @@ type VMBackupController struct {
 	pvcStore              cache.Store
 	vmExportStore         cache.Store
 	recorder              record.EventRecorder
+	clusterConfig         *virtconfig.ClusterConfig
 	backupQueue           workqueue.TypedRateLimitingInterface[string]
 	trackerQueue          workqueue.TypedRateLimitingInterface[string]
 	hasSynced             func() bool
@@ -100,6 +102,7 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 	pvcInformer cache.SharedIndexInformer,
 	vmExportInformer cache.SharedIndexInformer,
 	recorder record.EventRecorder,
+	clusterConfig *virtconfig.ClusterConfig,
 ) (*VMBackupController, error) {
 	c := &VMBackupController{
 		backupQueue: workqueue.NewTypedRateLimitingQueueWithConfig(
@@ -117,6 +120,7 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 		pvcStore:              pvcInformer.GetStore(),
 		vmExportStore:         vmExportInformer.GetStore(),
 		recorder:              recorder,
+		clusterConfig:         clusterConfig,
 		client:                client,
 	}
 
@@ -129,6 +133,15 @@ func NewVMBackupController(client kubecli.KubevirtClient,
 			AddFunc:    c.handleBackup,
 			UpdateFunc: func(oldObj, newObj interface{}) { c.handleBackup(newObj) },
 			DeleteFunc: c.handleBackup,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	_, err = vmInformer.AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			UpdateFunc: c.handleUpdateVM,
+			DeleteFunc: c.handleDeleteVM,
 		},
 	)
 	if err != nil {
@@ -435,6 +448,9 @@ func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) erro
 	backupDeleting := isBackupDeleting(backup)
 
 	if IsBackupTerminal(backup) {
+		if err := ctrl.releaseSourceVM(backup); err != nil {
+			return err
+		}
 		if !backupDeleting {
 			log.Log.Object(backup).V(4).Info("Backup is already done, skipping reconciliation")
 			return nil
@@ -484,6 +500,9 @@ func (ctrl *VMBackupController) reconcileStart(backup *backupv1.VirtualMachineBa
 	if backupDeleting {
 		log.Log.Object(backup).V(3).Infof("Backup deleting during initialization")
 		if !vmiExists {
+			if err := ctrl.releaseSourceVM(backup); err != nil {
+				return err
+			}
 			return ctrl.removeBackupFinalizer(backup)
 		}
 		done, err := ctrl.cleanupVMIState(backup, vmi)
@@ -538,6 +557,16 @@ func (ctrl *VMBackupController) checkPrerequisites(backup *backupv1.VirtualMachi
 		return fmt.Sprintf(vmNotFoundMsg, backup.Namespace, sourceName), nil
 	}
 	if !vmiExists {
+		if !ctrl.clusterConfig.OfflineIncrementalBackupEnabled() {
+			return fmt.Sprintf(vmNotRunningMsg, sourceName), nil
+		}
+		held, err := ctrl.holdSourceVM(backup, sourceName)
+		if err != nil {
+			return "", err
+		}
+		if held {
+			return fmt.Sprintf(vmHeldForOfflineBackupMsg, sourceName), nil
+		}
 		return fmt.Sprintf(vmNotRunningMsg, sourceName), nil
 	}
 	if reason := ctrl.verifyVMIEligibleForBackup(vmi); reason != "" {

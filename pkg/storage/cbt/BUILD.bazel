@@ -8,6 +8,7 @@ go_library(
         "backuptracker.go",
         "cbt.go",
         "memory.go",
+        "offline.go",
         "pull_mode.go",
     ],
     importpath = "kubevirt.io/kubevirt/pkg/storage/cbt",
