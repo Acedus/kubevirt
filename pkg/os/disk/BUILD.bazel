@@ -15,6 +15,7 @@ go_test(
     name = "go_default_test",
     srcs = [
         "disk_suite_test.go",
+        "disk_test.go",
         "validation_test.go",
     ],
     embed = [":go_default_library"],
