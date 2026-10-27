@@ -54,4 +54,29 @@ var _ = Describe("Offline backup", func() {
 			Expect(err).To(HaveOccurred())
 		})
 	})
+
+	Describe("mkdirAllNoFollow", func() {
+		It("creates the target dir under the root", func() {
+			root := GinkgoT().TempDir()
+
+			_, err := mkdirAllNoFollow(root, filepath.Join(root, "vm", "backup"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(filepath.Join(root, "vm", "backup")).To(BeADirectory())
+		})
+
+		It("refuses a target dir outside of the root", func() {
+			root := GinkgoT().TempDir()
+
+			_, err := mkdirAllNoFollow(root, filepath.Dir(root))
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("refuses to follow a symlink in the target dir", func() {
+			root := GinkgoT().TempDir()
+			Expect(os.Symlink(GinkgoT().TempDir(), filepath.Join(root, "vm"))).To(Succeed())
+
+			_, err := mkdirAllNoFollow(root, filepath.Join(root, "vm", "backup"))
+			Expect(err).To(HaveOccurred())
+		})
+	})
 })

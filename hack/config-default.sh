@@ -17,6 +17,7 @@ binaries="
     cmd/virt-tail
     cmd/virt-backup-prepare
     cmd/virt-backup-serve
+    cmd/virt-backup-push
 "
 
 docker_images="

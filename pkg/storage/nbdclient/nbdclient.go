@@ -52,6 +52,10 @@ type Extent struct {
 	Description string
 }
 
+func (e Extent) Dirty() bool {
+	return e.Flags&uint64(libnbd.STATE_DIRTY) != 0
+}
+
 type descFn func(uint64) string
 
 // mapHandler consumes the extents of one BlockStatus64 call through

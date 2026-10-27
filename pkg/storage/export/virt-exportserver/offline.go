@@ -27,7 +27,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
+
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	backupv1 "kubevirt.io/api/backup/v1alpha1"
 	"kubevirt.io/client-go/log"
@@ -36,11 +41,15 @@ import (
 	"kubevirt.io/kubevirt/pkg/safepath"
 	"kubevirt.io/kubevirt/pkg/storage/cbt"
 	"kubevirt.io/kubevirt/pkg/storage/export/export"
+	"kubevirt.io/kubevirt/pkg/storage/nbdclient"
 )
 
 const (
 	terminationLogPath    = "/dev/termination-log"
 	qemuStorageDaemonPath = "/usr/bin/qemu-storage-daemon"
+
+	servingPollInterval = time.Second
+	servingTimeout      = time.Minute
 )
 
 // Keeps the report under the kubelet's 4096-byte termination-message cap, past which it would be
@@ -278,6 +287,128 @@ func volumeDataPath(mountPath string) (string, string, error) {
 		return mountPath, "host_device", nil
 	}
 	return filepath.Join(mountPath, "disk.img"), "file", nil
+}
+
+// RunOfflinePush copies every planned volume from the NBD socket into targetDir, in the layout of
+// an online push backup.
+func RunOfflinePush(planPath, socket, bitmap, targetDir, backupName string) error {
+	err := runOfflinePush(context.Background(), planPath, socket, bitmap, targetDir, backupName)
+	if err != nil {
+		writeTerminationMessage([]byte(err.Error()))
+	}
+	return err
+}
+
+func runOfflinePush(ctx context.Context, planPath, socket, bitmap, targetDir, backupName string) error {
+	plan, err := readOfflinePlan(planPath)
+	if err != nil {
+		return err
+	}
+
+	client := nbdclient.NewNBDClient(socket)
+	if err := wait.PollUntilContextTimeout(ctx, servingPollInterval, servingTimeout, true, func(context.Context) (bool, error) {
+		return client.Serving(servingPollInterval) == nil, nil
+	}); err != nil {
+		return fmt.Errorf("no NBD server on %s: %w", socket, err)
+	}
+
+	dir, err := mkdirAllNoFollow(export.OfflineBackupTargetPath, targetDir)
+	if err != nil {
+		return fmt.Errorf("failed to create backup target dir %s: %w", targetDir, err)
+	}
+	for _, volume := range plan {
+		name := fmt.Sprintf("%s-%s.qcow2", backupName, volume.VolumeName)
+		volumeBitmap := ""
+		if volume.Type == backupv1.Incremental {
+			volumeBitmap = bitmap
+		}
+		if err := pushVolume(ctx, client, socket, dir, volume.VolumeName, name, volumeBitmap); err != nil {
+			return err
+		}
+		log.Log.Infof("Offline push backup wrote %s", filepath.Join(targetDir, name))
+	}
+	return nil
+}
+
+func pushVolume(ctx context.Context, client *nbdclient.NBDClient, socket string, dir *safepath.Path, volume, name, bitmap string) error {
+	target, err := createNoFollow(dir, name)
+	if err != nil {
+		return fmt.Errorf("failed to create backup target %s: %w", name, err)
+	}
+	defer target.Close()
+	targetFiles := []*os.File{target}
+
+	if bitmap == "" {
+		srcOpts := fmt.Sprintf("driver=nbd,server.type=unix,server.path=%s,export=%s", socket, volume)
+		if _, err := osdisk.QEMUImg(ctx, targetFiles, "convert", "--image-opts", srcOpts, "-O", "qcow2", osdisk.ExtraFilePath(0)); err != nil {
+			return fmt.Errorf("failed to copy volume %s: %w", volume, err)
+		}
+		return nil
+	}
+
+	var size uint64
+	var dirty []nbdclient.Extent
+	for extent, err := range client.Map(ctx, volume, bitmap, 0, 0) {
+		if err != nil {
+			return fmt.Errorf("failed to map volume %s: %w", volume, err)
+		}
+		size = extent.Offset + extent.Length
+		if extent.Dirty() {
+			dirty = append(dirty, extent)
+		}
+	}
+
+	if _, err := osdisk.QEMUImg(ctx, targetFiles, "create", "-f", "qcow2", osdisk.ExtraFilePath(0), strconv.FormatUint(size, 10)); err != nil {
+		return fmt.Errorf("failed to create incremental target %s: %w", name, err)
+	}
+	for _, e := range dirty {
+		srcOpts := fmt.Sprintf("driver=raw,offset=%d,size=%d,file.driver=nbd,file.server.type=unix,file.server.path=%s,file.export=%s",
+			e.Offset, e.Length, socket, volume)
+		dstOpts := fmt.Sprintf("driver=raw,offset=%d,file.driver=qcow2,file.file.driver=file,file.file.filename=%s", e.Offset, osdisk.ExtraFilePath(0))
+		if _, err := osdisk.QEMUImg(ctx, targetFiles, "convert", "-n", "--image-opts", srcOpts, "--target-image-opts", dstOpts); err != nil {
+			return fmt.Errorf("failed to copy extent [%d,%d) of volume %s: %w", e.Offset, e.Offset+e.Length, volume, err)
+		}
+	}
+	return nil
+}
+
+func mkdirAllNoFollow(root, dir string) (*safepath.Path, error) {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return nil, fmt.Errorf("%s is outside of %s", dir, root)
+	}
+	current, err := safepath.JoinAndResolveWithRelativeRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	for _, element := range strings.Split(rel, string(filepath.Separator)) {
+		if element == "." {
+			continue
+		}
+		if err := safepath.MkdirAtNoFollow(current, element, 0o755); err != nil && !errors.Is(err, syscall.EEXIST) {
+			return nil, err
+		}
+		if current, err = safepath.JoinNoFollow(current, element); err != nil {
+			return nil, err
+		}
+	}
+	return current, nil
+}
+
+func createNoFollow(dir *safepath.Path, name string) (*os.File, error) {
+	if err := safepath.TouchAtNoFollow(dir, name, 0o644); err != nil && !errors.Is(err, syscall.EEXIST) {
+		return nil, err
+	}
+	path, err := safepath.JoinNoFollow(dir, name)
+	if err != nil {
+		return nil, err
+	}
+	fd, err := safepath.OpenAtNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	defer fd.Close()
+	return os.OpenFile(fd.SafePath(), os.O_RDWR, 0)
 }
 
 func writeTerminationMessage(message []byte) {

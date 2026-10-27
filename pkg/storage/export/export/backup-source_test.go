@@ -795,7 +795,7 @@ var _ = Describe("Offline backup source", func() {
 			source.ConfigurePod(pod)
 
 			container := &pod.Spec.Containers[0]
-			Expect(container.VolumeMounts).To(ContainElement(HaveField("MountPath", offlineTargetMountPath)))
+			Expect(container.VolumeMounts).To(ContainElement(HaveField("MountPath", OfflineBackupTargetPath)))
 		})
 
 		It("prepares the backup in an init container", func() {
@@ -839,7 +839,7 @@ var _ = Describe("Offline backup source", func() {
 			Expect(envValue(container, "BACKUP_PLAN")).To(Equal(OfflineBackupPlanPath))
 			Expect(envValue(container, "BACKUP_NBD_SOCKET")).To(Equal(offlineNBDSocketPath))
 			Expect(envValue(container, "BACKUP_CHECKPOINT")).To(BeEmpty())
-			Expect(envValue(container, "BACKUP_MODE")).To(BeEmpty())
+			Expect(container.Command).To(BeEmpty())
 			Expect(envValue(container, "BACKUP0_BACKUP_PATH")).To(Equal("rootdisk"))
 			Expect(envValue(container, "BACKUP0_TYPE")).To(Equal(string(backupv1.Full)))
 		})
@@ -852,7 +852,7 @@ var _ = Describe("Offline backup source", func() {
 			Expect(envValue(&pod.Spec.Containers[0], "BACKUP_CHECKPOINT")).To(Equal("backup-previous"))
 		})
 
-		It("mounts the target PVC and sets push env in push mode", func() {
+		It("pushes to the target PVC instead of serving in push mode", func() {
 			backup := pushBackup(backupv1.Full)
 			backup.CreationTimestamp = metav1.Date(2026, 9, 18, 10, 30, 0, 0, metav1.Now().Location())
 			source := NewOfflineVMBackupSource(backup, "testvm", dataPVCs(), statePVC, targetPVC, "")
@@ -860,10 +860,10 @@ var _ = Describe("Offline backup source", func() {
 			source.ConfigurePod(pod)
 
 			container := &pod.Spec.Containers[0]
-			Expect(container.VolumeMounts).To(ContainElement(HaveField("MountPath", offlineTargetMountPath)))
-			Expect(envValue(container, "BACKUP_MODE")).To(Equal(string(backupv1.PushMode)))
+			Expect(container.Command).To(Equal([]string{"/usr/bin/virt-backup-push"}))
+			Expect(container.VolumeMounts).To(ContainElement(HaveField("MountPath", OfflineBackupTargetPath)))
 			Expect(envValue(container, "BACKUP_NAME")).To(Equal("backup"))
-			Expect(envValue(container, "BACKUP_TARGET_DIR")).To(HavePrefix(offlineTargetMountPath + "/testvm/backup-"))
+			Expect(envValue(container, "BACKUP_TARGET_DIR")).To(HavePrefix(OfflineBackupTargetPath + "/testvm/backup-"))
 		})
 
 		It("treats an unset Mode as push, matching isPushMode in pkg/storage/cbt/backup.go", func() {
@@ -874,8 +874,7 @@ var _ = Describe("Offline backup source", func() {
 			source.ConfigurePod(pod)
 
 			container := &pod.Spec.Containers[0]
-			Expect(container.VolumeMounts).To(ContainElement(HaveField("MountPath", offlineTargetMountPath)))
-			Expect(envValue(container, "BACKUP_MODE")).To(Equal(string(backupv1.PushMode)))
+			Expect(container.Command).To(Equal([]string{"/usr/bin/virt-backup-push"}))
 		})
 
 		It("does not mount the target PVC in pull mode", func() {
@@ -884,7 +883,7 @@ var _ = Describe("Offline backup source", func() {
 			source.ConfigurePod(pod)
 
 			Expect(pod.Spec.Volumes).ToNot(ContainElement(HaveField("Name", offlineTargetVolume)))
-			Expect(envValue(&pod.Spec.Containers[0], "BACKUP_TARGET_DIR")).To(BeEmpty())
+			Expect(pod.Spec.Containers[0].Command).To(BeEmpty())
 		})
 	})
 })

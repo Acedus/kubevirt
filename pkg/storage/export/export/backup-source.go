@@ -354,15 +354,15 @@ func (ctrl *VMExportController) getBackupSourceVMI(vmBackup *backupv1.VirtualMac
 }
 
 const (
-	offlineStateMountPath  = "/backup-state"
-	offlineSocketDir       = "/sockets"
-	offlineTargetMountPath = "/backup-target"
-	offlineVolumesDir      = "/backup-volumes"
-	offlinePlanDir         = "/backup-plan"
-	offlinePlanVolume      = "backup-plan"
-	offlineSocketVolume    = "backup-sockets"
-	offlineStateVolume     = "backup-state"
-	offlineTargetVolume    = "backup-target"
+	offlineStateMountPath   = "/backup-state"
+	offlineSocketDir        = "/sockets"
+	OfflineBackupTargetPath = "/backup-target"
+	offlineVolumesDir       = "/backup-volumes"
+	offlinePlanDir          = "/backup-plan"
+	offlinePlanVolume       = "backup-plan"
+	offlineSocketVolume     = "backup-sockets"
+	offlineStateVolume      = "backup-state"
+	offlineTargetVolume     = "backup-target"
 
 	backupTimeFormat = "2006-01-02_15-04-05"
 )
@@ -402,7 +402,7 @@ func NewOfflineVMBackupSource(vmBackup *backupv1.VirtualMachineBackup, vmName st
 
 func (o *offlineBackup) targetDir(vmBackup *backupv1.VirtualMachineBackup) string {
 	backupTime := vmBackup.CreationTimestamp.UTC().Format(backupTimeFormat)
-	return fmt.Sprintf("%s/%s/%s-%s", offlineTargetMountPath, o.vmName, vmBackup.Name, backupTime)
+	return fmt.Sprintf("%s/%s/%s-%s", OfflineBackupTargetPath, o.vmName, vmBackup.Name, backupTime)
 }
 
 func (o *offlineBackup) configurePod(pod *corev1.Pod, vmBackup *backupv1.VirtualMachineBackup) {
@@ -431,9 +431,9 @@ func (o *offlineBackup) configurePod(pod *corev1.Pod, vmBackup *backupv1.Virtual
 	mountEmptyDir(pod, offlineSocketVolume, offlineSocketDir, serve, container)
 
 	if vmBackup.IsPushMode() && o.targetPVC != nil {
-		mountPVC(pod, offlineTargetVolume, o.targetPVC, offlineTargetMountPath, container)
+		container.Command = []string{"/usr/bin/virt-backup-push"}
+		mountPVC(pod, offlineTargetVolume, o.targetPVC, OfflineBackupTargetPath, container)
 		container.Env = append(container.Env,
-			corev1.EnvVar{Name: "BACKUP_MODE", Value: string(backupv1.PushMode)},
 			corev1.EnvVar{Name: "BACKUP_TARGET_DIR", Value: o.targetDir(vmBackup)},
 			corev1.EnvVar{Name: "BACKUP_NAME", Value: vmBackup.Name},
 		)
