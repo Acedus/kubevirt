@@ -225,34 +225,30 @@ func (ctrl *VMBackupController) handleDeleteVMI(obj interface{}) {
 
 func (ctrl *VMBackupController) enqueueBackupsOfVMI(vmi *v1.VirtualMachineInstance) {
 	key := types.NamespacedName{Namespace: vmi.Namespace, Name: vmi.Name}.String()
+	for _, backupKey := range backupKeysOfVM(ctrl.backupInformer.GetIndexer(), ctrl.backupTrackerInformer.GetIndexer(), key) {
+		ctrl.backupQueue.Add(backupKey)
+	}
+}
 
-	// Find backups directly referencing this VMI
-	keys, err := ctrl.backupInformer.GetIndexer().IndexKeys("vmi", key)
+// backupKeysOfVM returns the backups referencing the VM directly or through a BackupTracker.
+func backupKeysOfVM(backupIndexer, trackerIndexer cache.Indexer, vmKey string) []string {
+	keys, err := backupIndexer.IndexKeys("vmi", vmKey)
 	if err != nil {
-		return
+		return nil
 	}
 
-	for _, key := range keys {
-		ctrl.backupQueue.Add(key)
-	}
-
-	// Find backups referencing this VMI via BackupTracker
-	// First find all trackers that reference this VMI
-	trackerKeys, err := ctrl.backupTrackerInformer.GetIndexer().IndexKeys("vmi", key)
+	trackerKeys, err := trackerIndexer.IndexKeys("vmi", vmKey)
 	if err != nil {
-		return
+		return keys
 	}
-
-	// For each tracker, find all backups that reference it
 	for _, trackerKey := range trackerKeys {
-		backupKeys, err := ctrl.backupInformer.GetIndexer().IndexKeys("backupTracker", trackerKey)
+		backupKeys, err := backupIndexer.IndexKeys("backupTracker", trackerKey)
 		if err != nil {
 			continue
 		}
-		for _, backupKey := range backupKeys {
-			ctrl.backupQueue.Add(backupKey)
-		}
+		keys = append(keys, backupKeys...)
 	}
+	return keys
 }
 
 func (ctrl *VMBackupController) handleBackupTracker(obj interface{}) {
@@ -798,13 +794,30 @@ func getSourceName(backup *backupv1.VirtualMachineBackup, backupTracker *backupv
 	return backup.Spec.Source.Name
 }
 
+// BackupSourceVMName returns the name of the VM a backup targets, directly or through its
+// BackupTracker, or "" while that tracker is not found.
+func BackupSourceVMName(trackerStore cache.Store, backup *backupv1.VirtualMachineBackup) (string, error) {
+	tracker, err := backupTrackerFromStore(trackerStore, backup)
+	if err != nil {
+		return "", err
+	}
+	if tracker == nil && backup.Spec.Source.Kind == backupv1.VirtualMachineBackupTrackerGroupVersionKind.Kind {
+		return "", nil
+	}
+	return getSourceName(backup, tracker), nil
+}
+
 func (ctrl *VMBackupController) getBackupTracker(backup *backupv1.VirtualMachineBackup) (*backupv1.VirtualMachineBackupTracker, error) {
+	return backupTrackerFromStore(ctrl.backupTrackerInformer.GetStore(), backup)
+}
+
+func backupTrackerFromStore(trackerStore cache.Store, backup *backupv1.VirtualMachineBackup) (*backupv1.VirtualMachineBackupTracker, error) {
 	if backup.Spec.Source.Kind != backupv1.VirtualMachineBackupTrackerGroupVersionKind.Kind {
 		return nil, nil
 	}
 
 	objKey := types.NamespacedName{Namespace: backup.Namespace, Name: backup.Spec.Source.Name}.String()
-	obj, exists, err := ctrl.backupTrackerInformer.GetStore().GetByKey(objKey)
+	obj, exists, err := trackerStore.GetByKey(objKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get BackupTracker from store: %w", err)
 	}
