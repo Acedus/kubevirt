@@ -1,0 +1,19 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "go_default_library",
+    srcs = ["virt-backup-prepare.go"],
+    importpath = "kubevirt.io/kubevirt/cmd/virt-backup-prepare",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/storage/export/export:go_default_library",
+        "//pkg/storage/export/virt-exportserver:go_default_library",
+        "//staging/src/kubevirt.io/client-go/log:go_default_library",
+    ],
+)
+
+go_binary(
+    name = "virt-backup-prepare",
+    embed = [":go_default_library"],
+    visibility = ["//visibility:public"],
+)

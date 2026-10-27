@@ -5,12 +5,15 @@ go_library(
     srcs = [
         "exportserver.go",
         "oci.go",
+        "offline.go",
     ],
     importpath = "kubevirt.io/kubevirt/pkg/storage/export/virt-exportserver",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/os/disk:go_default_library",
         "//pkg/safepath:go_default_library",
         "//pkg/service:go_default_library",
+        "//pkg/storage/cbt:go_default_library",
         "//pkg/storage/export/export:go_default_library",
         "//pkg/storage/nbdclient:go_default_library",
         "//pkg/storage/oci:go_default_library",
@@ -37,6 +40,7 @@ go_test(
         "exportserver_suite_test.go",
         "exportserver_test.go",
         "oci_test.go",
+        "offline_test.go",
     ],
     embed = [":go_default_library"],
     race = "on",

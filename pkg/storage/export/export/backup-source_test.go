@@ -791,6 +791,26 @@ var _ = Describe("Offline backup source", func() {
 			Expect(container.VolumeMounts).To(ContainElement(HaveField("MountPath", offlineTargetMountPath)))
 		})
 
+		It("prepares the backup in an init container that shares the volumes and the plan with the server", func() {
+			source := NewOfflineVMBackupSource(offlineVMBackup(backupv1.Incremental), "testvm", dataPVCs(), statePVC, nil, "backup-previous")
+			pod := newPod()
+			source.ConfigurePod(pod)
+
+			Expect(pod.Spec.InitContainers).To(HaveLen(1))
+			prepare := &pod.Spec.InitContainers[0]
+			Expect(prepare.Name).To(Equal(cbt.OfflineBackupPrepareContainerName))
+			Expect(prepare.Command).To(Equal([]string{"/usr/bin/virt-backup-prepare"}))
+			Expect(envValue(prepare, "BACKUP_CHECKPOINT")).To(Equal("backup-backup"))
+			Expect(envValue(prepare, "BACKUP_BASE_CHECKPOINT")).To(Equal("backup-previous"))
+			Expect(envValue(prepare, "BACKUP0_BACKUP_PATH")).To(Equal("rootdisk"))
+			Expect(prepare.VolumeMounts).To(ContainElements(
+				HaveField("MountPath", offlineStateMountPath),
+				HaveField("MountPath", OfflineBackupVolumePath("rootdisk")),
+				HaveField("MountPath", offlinePlanDir),
+			))
+			Expect(pod.Spec.Containers[0].VolumeMounts).To(ContainElement(HaveField("MountPath", offlinePlanDir)))
+		})
+
 		It("sets the offline environment for a full backup", func() {
 			source := NewOfflineVMBackupSource(offlineVMBackup(backupv1.Full), "testvm", dataPVCs(), statePVC, nil, "")
 			pod := newPod()

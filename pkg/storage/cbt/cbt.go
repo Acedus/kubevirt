@@ -354,6 +354,13 @@ func qemuStatePath(vmi *v1.VirtualMachineInstance) string {
 }
 
 func GetQCOW2OverlayPath(vmi *v1.VirtualMachineInstance, volumeName string) string {
-	cbtPath := PathForCBT(vmi)
-	return filepath.Join(cbtPath, volumeName+".qcow2")
+	return filepath.Join(PathForCBT(vmi), qcow2OverlayFileName(volumeName))
+}
+
+func GetQCOW2OverlayPVCPath(volumeName string) string {
+	return filepath.Join(CBTDirName, qcow2OverlayFileName(volumeName))
+}
+
+func qcow2OverlayFileName(volumeName string) string {
+	return volumeName + ".qcow2"
 }

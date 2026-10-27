@@ -15,6 +15,7 @@ binaries="
     cmd/fake-qemu-process
     cmd/virt-chroot
     cmd/virt-tail
+    cmd/virt-backup-prepare
 "
 
 docker_images="

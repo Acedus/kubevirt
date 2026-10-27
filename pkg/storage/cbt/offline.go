@@ -35,7 +35,11 @@ import (
 	"kubevirt.io/kubevirt/pkg/controller"
 )
 
-const vmHeldForOfflineBackupMsg = "vm %s is held for an offline backup"
+const (
+	vmHeldForOfflineBackupMsg = "vm %s is held for an offline backup"
+
+	OfflineBackupPrepareContainerName = "backup-prepare"
+)
 
 func (ctrl *VMBackupController) handleUpdateVM(oldObj, newObj interface{}) {
 	oldVM, ok := oldObj.(*v1.VirtualMachine)
