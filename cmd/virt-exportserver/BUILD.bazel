@@ -60,6 +60,7 @@ pkg_tar(
     srcs = [
         ":virt-exportserver",
         "//cmd/virt-backup-prepare",
+        "//cmd/virt-backup-serve",
     ],
     package_dir = "/usr/bin",
 )

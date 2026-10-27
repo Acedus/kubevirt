@@ -22,8 +22,12 @@ package virtexportserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
+	"syscall"
 
 	backupv1 "kubevirt.io/api/backup/v1alpha1"
 	"kubevirt.io/client-go/log"
@@ -34,7 +38,10 @@ import (
 	"kubevirt.io/kubevirt/pkg/storage/export/export"
 )
 
-const terminationLogPath = "/dev/termination-log"
+const (
+	terminationLogPath    = "/dev/termination-log"
+	qemuStorageDaemonPath = "/usr/bin/qemu-storage-daemon"
+)
 
 // Keeps the report under the kubelet's 4096-byte termination-message cap, past which it would be
 // truncated into invalid JSON.
@@ -203,6 +210,74 @@ func (v *offlineVolume) imageOpts() string {
 func (v *offlineVolume) close() {
 	_ = v.overlay.Close()
 	_ = v.data.Close()
+}
+
+// RunOfflineServe replaces the process with a qemu-storage-daemon serving every planned volume on
+// socket, exporting the base checkpoint's bitmap for each incremental one.
+func RunOfflineServe(statePath, socket, baseCheckpoint string) error {
+	plan, err := readOfflinePlan(export.OfflineBackupPlanPath)
+	if err != nil {
+		return err
+	}
+
+	args := []string{qemuStorageDaemonPath, "--nbd-server", "addr.type=unix,addr.path=" + socket}
+	for i, volume := range plan {
+		dataPath, dataDriver, err := volumeDataPath(export.OfflineBackupVolumePath(volume.VolumeName))
+		if err != nil {
+			return fmt.Errorf("failed to find the data of volume %s: %w", volume.VolumeName, err)
+		}
+		node := fmt.Sprintf("vol%d", i)
+		args = append(args, "--blockdev", fmt.Sprintf(
+			"node-name=%s,read-only=on,driver=qcow2,file.driver=file,file.filename=%s,data-file.driver=%s,data-file.filename=%s",
+			node, filepath.Join(statePath, cbt.GetQCOW2OverlayPVCPath(volume.VolumeName)), dataDriver, dataPath))
+		nbdExport := fmt.Sprintf("type=nbd,id=%s,node-name=%s,name=%s", node, node, volume.VolumeName)
+		if volume.Type == backupv1.Incremental {
+			nbdExport += ",bitmaps.0=" + baseCheckpoint
+		}
+		args = append(args, "--export", nbdExport)
+	}
+
+	if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to remove stale socket %s: %w", socket, err)
+	}
+	return syscall.Exec(qemuStorageDaemonPath, args, os.Environ())
+}
+
+// ApplyOfflineBackupPlan sets each volume's backup type to the one prepare decided on.
+func ApplyOfflineBackupPlan(paths *export.ServerPaths, planPath string) error {
+	plan, err := readOfflinePlan(planPath)
+	if err != nil {
+		return err
+	}
+	for _, volume := range plan {
+		if i := slices.IndexFunc(paths.Backups, func(bi export.BackupInfo) bool { return bi.Path == volume.VolumeName }); i >= 0 {
+			paths.Backups[i].Type = string(volume.Type)
+		}
+	}
+	return nil
+}
+
+func readOfflinePlan(path string) ([]backupv1.BackupVolumeInfo, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the offline backup plan: %w", err)
+	}
+	var plan []backupv1.BackupVolumeInfo
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		return nil, fmt.Errorf("failed to parse the offline backup plan: %w", err)
+	}
+	return plan, nil
+}
+
+func volumeDataPath(mountPath string) (string, string, error) {
+	info, err := os.Stat(mountPath)
+	if err != nil {
+		return "", "", err
+	}
+	if !info.IsDir() {
+		return mountPath, "host_device", nil
+	}
+	return filepath.Join(mountPath, "disk.img"), "file", nil
 }
 
 func writeTerminationMessage(message []byte) {

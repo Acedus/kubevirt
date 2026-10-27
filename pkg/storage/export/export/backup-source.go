@@ -141,6 +141,11 @@ func (s *VMBackupSource) ConfigurePod(pod *corev1.Pod) {
 			Value: string(volume.Type),
 		})
 	}
+	if s.isOffline() {
+		s.offline.configurePod(pod, s.vmBackup)
+		return
+	}
+
 	if s.vmBackup.Status != nil {
 		if s.vmBackup.Status.CheckpointName != nil {
 			pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
@@ -148,11 +153,6 @@ func (s *VMBackupSource) ConfigurePod(pod *corev1.Pod) {
 				Value: *s.vmBackup.Status.CheckpointName,
 			})
 		}
-	}
-
-	if s.isOffline() {
-		s.offline.configurePod(pod, s.vmBackup)
-		return
 	}
 
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
@@ -375,7 +375,12 @@ type offlineBackup struct {
 	baseCheckpoint string
 }
 
-const OfflineBackupPlanPath = offlinePlanDir + "/plan.json"
+const (
+	OfflineBackupPlanPath = offlinePlanDir + "/plan.json"
+	offlineNBDSocketPath  = offlineSocketDir + "/nbd.sock"
+
+	offlineBackupServeContainerName = "backup-serve"
+)
 
 // OfflineBackupVolumePath is where the exporter pod finds the data of an offline backup's volume.
 func OfflineBackupVolumePath(volumeName string) string {
@@ -402,33 +407,28 @@ func (o *offlineBackup) targetDir(vmBackup *backupv1.VirtualMachineBackup) strin
 
 func (o *offlineBackup) configurePod(pod *corev1.Pod, vmBackup *backupv1.VirtualMachineBackup) {
 	container := &pod.Spec.Containers[0]
-	prepare := corev1.Container{
-		Name:            cbt.OfflineBackupPrepareContainerName,
-		Image:           container.Image,
-		ImagePullPolicy: container.ImagePullPolicy,
-		SecurityContext: container.SecurityContext,
-		Resources:       container.Resources,
-		Command:         []string{"/usr/bin/virt-backup-prepare"},
-		Env:             []corev1.EnvVar{{Name: "BACKUP_STATE_PATH", Value: offlineStateMountPath}},
-	}
+	prepare := supportContainer(container, cbt.OfflineBackupPrepareContainerName, "/usr/bin/virt-backup-prepare")
+	serve := supportContainer(container, offlineBackupServeContainerName, "/usr/bin/virt-backup-serve")
+	serve.RestartPolicy = new(corev1.ContainerRestartPolicyAlways)
+
+	stateEnv := corev1.EnvVar{Name: "BACKUP_STATE_PATH", Value: offlineStateMountPath}
+	socketEnv := corev1.EnvVar{Name: "BACKUP_NBD_SOCKET", Value: offlineNBDSocketPath}
+	prepare.Env = append(prepare.Env, stateEnv)
+	serve.Env = append(serve.Env, stateEnv, socketEnv)
+	container.Env = append(container.Env, corev1.EnvVar{Name: "BACKUP_PLAN", Value: OfflineBackupPlanPath}, socketEnv)
 	if vmBackup.Status.CheckpointName != nil {
 		prepare.Env = append(prepare.Env, corev1.EnvVar{Name: "BACKUP_CHECKPOINT", Value: *vmBackup.Status.CheckpointName})
 	}
-
-	mountPVC(pod, offlineStateVolume, o.statePVC, offlineStateMountPath, container, &prepare)
-	mountEmptyDir(pod, offlinePlanVolume, offlinePlanDir, container, &prepare)
-	mountEmptyDir(pod, offlineSocketVolume, offlineSocketDir, container)
-
-	container.Env = append(container.Env,
-		corev1.EnvVar{Name: "OFFLINE_BACKUP", Value: "true"},
-		corev1.EnvVar{Name: "BACKUP_STATE_PATH", Value: offlineStateMountPath},
-		corev1.EnvVar{Name: "SOCKET_DIR", Value: offlineSocketDir},
-	)
 	if o.baseCheckpoint != "" {
-		baseCheckpoint := corev1.EnvVar{Name: "BACKUP_BASE_CHECKPOINT", Value: o.baseCheckpoint}
-		container.Env = append(container.Env, baseCheckpoint)
-		prepare.Env = append(prepare.Env, baseCheckpoint)
+		baseEnv := corev1.EnvVar{Name: "BACKUP_BASE_CHECKPOINT", Value: o.baseCheckpoint}
+		prepare.Env = append(prepare.Env, baseEnv)
+		serve.Env = append(serve.Env, baseEnv)
+		container.Env = append(container.Env, corev1.EnvVar{Name: "BACKUP_CHECKPOINT", Value: o.baseCheckpoint})
 	}
+
+	mountPVC(pod, offlineStateVolume, o.statePVC, offlineStateMountPath, prepare, serve)
+	mountEmptyDir(pod, offlinePlanVolume, offlinePlanDir, prepare, serve, container)
+	mountEmptyDir(pod, offlineSocketVolume, offlineSocketDir, serve, container)
 
 	if vmBackup.IsPushMode() && o.targetPVC != nil {
 		mountPVC(pod, offlineTargetVolume, o.targetPVC, offlineTargetMountPath, container)
@@ -442,11 +442,22 @@ func (o *offlineBackup) configurePod(pod *corev1.Pod, vmBackup *backupv1.Virtual
 	for index, volume := range vmBackup.Status.IncludedVolumes {
 		prepare.Env = append(prepare.Env, corev1.EnvVar{Name: fmt.Sprintf("BACKUP%d_BACKUP_PATH", index), Value: volume.VolumeName})
 		if pvc := o.dataPVCs[volume.VolumeName]; pvc != nil {
-			mountPVC(pod, fmt.Sprintf("backup-vol%d", index), pvc, OfflineBackupVolumePath(volume.VolumeName), container, &prepare)
+			mountPVC(pod, fmt.Sprintf("backup-vol%d", index), pvc, OfflineBackupVolumePath(volume.VolumeName), prepare, serve)
 		}
 	}
 
-	pod.Spec.InitContainers = append(pod.Spec.InitContainers, prepare)
+	pod.Spec.InitContainers = append(pod.Spec.InitContainers, *prepare, *serve)
+}
+
+func supportContainer(container *corev1.Container, name, command string) *corev1.Container {
+	return &corev1.Container{
+		Name:            name,
+		Image:           container.Image,
+		ImagePullPolicy: container.ImagePullPolicy,
+		SecurityContext: container.SecurityContext,
+		Resources:       container.Resources,
+		Command:         []string{command},
+	}
 }
 
 // always RW: qemu-img bitmap --add/--remove needs write access to the data disk too

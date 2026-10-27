@@ -16,6 +16,7 @@ binaries="
     cmd/virt-chroot
     cmd/virt-tail
     cmd/virt-backup-prepare
+    cmd/virt-backup-serve
 "
 
 docker_images="

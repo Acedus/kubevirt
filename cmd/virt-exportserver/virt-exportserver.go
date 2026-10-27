@@ -41,6 +41,13 @@ func main() {
 	log.InitializeLogging("virt-exportserver-" + os.Getenv("POD_NAME"))
 	log.Log.Info("Starting export server")
 
+	paths := export.CreateServerPaths(export.EnvironToMap())
+	if plan := getBackupPlan(); plan != "" {
+		if err := exportServer.ApplyOfflineBackupPlan(paths, plan); err != nil {
+			panic(err)
+		}
+	}
+
 	certFile, keyFile := getCert()
 	config := exportServer.ExportServerConfig{
 		CertFile:            certFile,
@@ -48,12 +55,12 @@ func main() {
 		Deadline:            getDeadline(),
 		ListenAddr:          getListenAddr(),
 		TokenFile:           getTokenFile(),
-		Paths:               export.CreateServerPaths(export.EnvironToMap()),
+		Paths:               paths,
 		TLSMinVersion:       getTLSMinVersion(),
 		TLSCipherSuites:     getTLSCipherSuites(),
 		TLSCurvePreferences: getTLSCurvePreferences(),
 	}
-	if len(config.Paths.Backups) > 0 {
+	if len(paths.Backups) > 0 {
 		config.NBDSocket = getNBDSocket()
 		config.BackupCheckpoint = getBackupCheckpoint()
 	}
@@ -113,6 +120,10 @@ func getNBDSocket() string {
 func getBackupCheckpoint() string {
 	checkpointName := os.Getenv("BACKUP_CHECKPOINT")
 	return checkpointName
+}
+
+func getBackupPlan() string {
+	return os.Getenv("BACKUP_PLAN")
 }
 
 func getTLSMinVersion() uint16 {

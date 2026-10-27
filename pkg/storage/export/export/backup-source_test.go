@@ -752,24 +752,32 @@ var _ = Describe("Offline backup source", func() {
 			return map[string]*k8sv1.PersistentVolumeClaim{"rootdisk": dataPVC("rootdisk-pvc", k8sv1.PersistentVolumeFilesystem)}
 		}
 
-		It("mounts the state PVC and a sockets emptyDir", func() {
+		initContainer := func(pod *k8sv1.Pod, name string) *k8sv1.Container {
+			for i := range pod.Spec.InitContainers {
+				if pod.Spec.InitContainers[i].Name == name {
+					return &pod.Spec.InitContainers[i]
+				}
+			}
+			Fail("no init container " + name)
+			return nil
+		}
+
+		It("gives the VM's disks to the prepare and serve containers only", func() {
 			source := NewOfflineVMBackupSource(offlineVMBackup(backupv1.Full), "testvm", dataPVCs(), statePVC, nil, "")
 			pod := newPod()
 			source.ConfigurePod(pod)
 
-			container := &pod.Spec.Containers[0]
-			Expect(container.VolumeMounts).To(ContainElement(HaveField("MountPath", offlineStateMountPath)))
-			Expect(container.VolumeMounts).To(ContainElement(HaveField("MountPath", offlineSocketDir)))
-			Expect(pod.Spec.Volumes).To(ContainElement(HaveField("Name", offlineSocketVolume)))
-		})
-
-		It("mounts a filesystem-mode data PVC at the disk mount path", func() {
-			source := NewOfflineVMBackupSource(offlineVMBackup(backupv1.Full), "testvm", dataPVCs(), statePVC, nil, "")
-			pod := newPod()
-			source.ConfigurePod(pod)
-
-			container := &pod.Spec.Containers[0]
-			Expect(container.VolumeMounts).To(ContainElement(HaveField("MountPath", OfflineBackupVolumePath("rootdisk"))))
+			for _, name := range []string{cbt.OfflineBackupPrepareContainerName, offlineBackupServeContainerName} {
+				Expect(initContainer(pod, name).VolumeMounts).To(ContainElements(
+					HaveField("MountPath", offlineStateMountPath),
+					HaveField("MountPath", OfflineBackupVolumePath("rootdisk")),
+					HaveField("MountPath", offlinePlanDir),
+				))
+			}
+			Expect(pod.Spec.Containers[0].VolumeMounts).ToNot(ContainElements(
+				HaveField("MountPath", offlineStateMountPath),
+				HaveField("MountPath", OfflineBackupVolumePath("rootdisk")),
+			))
 		})
 
 		It("mounts a block-mode data PVC as a volume device", func() {
@@ -778,8 +786,7 @@ var _ = Describe("Offline backup source", func() {
 			pod := newPod()
 			source.ConfigurePod(pod)
 
-			container := &pod.Spec.Containers[0]
-			Expect(container.VolumeDevices).To(ContainElement(HaveField("DevicePath", OfflineBackupVolumePath("rootdisk"))))
+			Expect(initContainer(pod, offlineBackupServeContainerName).VolumeDevices).To(ContainElement(HaveField("DevicePath", OfflineBackupVolumePath("rootdisk"))))
 		})
 
 		It("mounts the push-mode target PVC", func() {
@@ -791,24 +798,36 @@ var _ = Describe("Offline backup source", func() {
 			Expect(container.VolumeMounts).To(ContainElement(HaveField("MountPath", offlineTargetMountPath)))
 		})
 
-		It("prepares the backup in an init container that shares the volumes and the plan with the server", func() {
+		It("prepares the backup in an init container", func() {
 			source := NewOfflineVMBackupSource(offlineVMBackup(backupv1.Incremental), "testvm", dataPVCs(), statePVC, nil, "backup-previous")
 			pod := newPod()
 			source.ConfigurePod(pod)
 
-			Expect(pod.Spec.InitContainers).To(HaveLen(1))
 			prepare := &pod.Spec.InitContainers[0]
 			Expect(prepare.Name).To(Equal(cbt.OfflineBackupPrepareContainerName))
+			Expect(prepare.RestartPolicy).To(BeNil())
 			Expect(prepare.Command).To(Equal([]string{"/usr/bin/virt-backup-prepare"}))
 			Expect(envValue(prepare, "BACKUP_CHECKPOINT")).To(Equal("backup-backup"))
 			Expect(envValue(prepare, "BACKUP_BASE_CHECKPOINT")).To(Equal("backup-previous"))
 			Expect(envValue(prepare, "BACKUP0_BACKUP_PATH")).To(Equal("rootdisk"))
-			Expect(prepare.VolumeMounts).To(ContainElements(
-				HaveField("MountPath", offlineStateMountPath),
-				HaveField("MountPath", OfflineBackupVolumePath("rootdisk")),
+		})
+
+		It("serves the disks from a sidecar that shares its socket with the server", func() {
+			source := NewOfflineVMBackupSource(offlineVMBackup(backupv1.Incremental), "testvm", dataPVCs(), statePVC, nil, "backup-previous")
+			pod := newPod()
+			source.ConfigurePod(pod)
+
+			serve := &pod.Spec.InitContainers[1]
+			Expect(serve.Name).To(Equal(offlineBackupServeContainerName))
+			Expect(serve.RestartPolicy).To(HaveValue(Equal(k8sv1.ContainerRestartPolicyAlways)))
+			Expect(serve.Command).To(Equal([]string{"/usr/bin/virt-backup-serve"}))
+			Expect(envValue(serve, "BACKUP_NBD_SOCKET")).To(Equal(offlineNBDSocketPath))
+			Expect(envValue(serve, "BACKUP_BASE_CHECKPOINT")).To(Equal("backup-previous"))
+			Expect(serve.VolumeMounts).To(ContainElement(HaveField("MountPath", offlineSocketDir)))
+			Expect(pod.Spec.Containers[0].VolumeMounts).To(ContainElements(
+				HaveField("MountPath", offlineSocketDir),
 				HaveField("MountPath", offlinePlanDir),
 			))
-			Expect(pod.Spec.Containers[0].VolumeMounts).To(ContainElement(HaveField("MountPath", offlinePlanDir)))
 		})
 
 		It("sets the offline environment for a full backup", func() {
@@ -817,22 +836,20 @@ var _ = Describe("Offline backup source", func() {
 			source.ConfigurePod(pod)
 
 			container := &pod.Spec.Containers[0]
-			Expect(envValue(container, "OFFLINE_BACKUP")).To(Equal("true"))
-			Expect(envValue(container, "BACKUP_STATE_PATH")).To(Equal(offlineStateMountPath))
-			Expect(envValue(container, "SOCKET_DIR")).To(Equal(offlineSocketDir))
-			Expect(envValue(container, "BACKUP_CHECKPOINT")).To(Equal("backup-backup"))
-			Expect(envValue(container, "BACKUP_BASE_CHECKPOINT")).To(BeEmpty())
+			Expect(envValue(container, "BACKUP_PLAN")).To(Equal(OfflineBackupPlanPath))
+			Expect(envValue(container, "BACKUP_NBD_SOCKET")).To(Equal(offlineNBDSocketPath))
+			Expect(envValue(container, "BACKUP_CHECKPOINT")).To(BeEmpty())
 			Expect(envValue(container, "BACKUP_MODE")).To(BeEmpty())
 			Expect(envValue(container, "BACKUP0_BACKUP_PATH")).To(Equal("rootdisk"))
 			Expect(envValue(container, "BACKUP0_TYPE")).To(Equal(string(backupv1.Full)))
 		})
 
-		It("sets the base checkpoint for an incremental backup", func() {
+		It("serves the base checkpoint's bitmap for an incremental backup", func() {
 			source := NewOfflineVMBackupSource(offlineVMBackup(backupv1.Incremental), "testvm", dataPVCs(), statePVC, nil, "backup-previous")
 			pod := newPod()
 			source.ConfigurePod(pod)
 
-			Expect(envValue(&pod.Spec.Containers[0], "BACKUP_BASE_CHECKPOINT")).To(Equal("backup-previous"))
+			Expect(envValue(&pod.Spec.Containers[0], "BACKUP_CHECKPOINT")).To(Equal("backup-previous"))
 		})
 
 		It("mounts the target PVC and sets push env in push mode", func() {
