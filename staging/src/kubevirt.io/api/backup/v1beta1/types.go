@@ -105,8 +105,9 @@ const (
 type BackupCmd string
 
 const (
-	Start BackupCmd = "Start"
-	Abort BackupCmd = "Abort"
+	Start    BackupCmd = "Start"
+	Abort    BackupCmd = "Abort"
+	Finalize BackupCmd = "Finalize"
 )
 
 // BackupOptions are options used to configure virtual machine backup job

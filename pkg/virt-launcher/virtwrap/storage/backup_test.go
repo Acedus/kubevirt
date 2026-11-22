@@ -940,6 +940,58 @@ var _ = Describe("Backup", func() {
 		})
 	})
 
+	Describe("FinalizeVirtualMachineBackup", func() {
+		It("should clear the record of an ended backup", func() {
+			metadataCache.Backup.Store(api.BackupMetadata{
+				Name:           backupOptions.BackupName,
+				StartTimestamp: backupOptions.BackupStartTime,
+				EndTimestamp:   new(metav1.Now()),
+				Completed:      true,
+			})
+
+			Expect(manager.FinalizeVirtualMachineBackup(backupOptions)).To(Succeed())
+
+			recorded, _ := metadataCache.Backup.Load()
+			Expect(recorded).To(Equal(api.BackupMetadata{}))
+		})
+
+		It("should refuse a backup that has not ended and keep its record", func() {
+			running := api.BackupMetadata{
+				Name:           backupOptions.BackupName,
+				StartTimestamp: backupOptions.BackupStartTime,
+				JobStarted:     true,
+			}
+			metadataCache.Backup.Store(running)
+
+			Expect(manager.FinalizeVirtualMachineBackup(backupOptions)).To(MatchError(ContainSubstring("has not ended")))
+
+			recorded, _ := metadataCache.Backup.Load()
+			Expect(recorded).To(Equal(running))
+		})
+
+		DescribeTable("should succeed and leave the record alone when it is not the named backup's", func(recorded api.BackupMetadata) {
+			metadataCache.Backup.Store(recorded)
+			backupOptions.BackupStartTime = new(metav1.Date(1, 1, 1, 1, 1, 1, 1, time.Local))
+
+			Expect(manager.FinalizeVirtualMachineBackup(backupOptions)).To(Succeed())
+
+			after, _ := metadataCache.Backup.Load()
+			Expect(after).To(Equal(recorded))
+		},
+			Entry("with no backup recorded", api.BackupMetadata{}),
+			Entry("with another backup's name recorded", api.BackupMetadata{
+				Name:           "wrong-name",
+				StartTimestamp: new(metav1.Date(1, 1, 1, 1, 1, 1, 1, time.Local)),
+				Completed:      true,
+			}),
+			Entry("with another start timestamp recorded", api.BackupMetadata{
+				Name:           backupName,
+				StartTimestamp: new(metav1.Date(2, 2, 2, 2, 2, 2, 2, time.Local)),
+				Completed:      true,
+			}),
+		)
+	})
+
 	Describe("utility functions", func() {
 		Describe("getBackupPath", func() {
 			It("should create correct path", func() {

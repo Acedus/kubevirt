@@ -406,6 +406,21 @@ func (m *StorageManager) AbortVirtualMachineBackup(vmi *v1.VirtualMachineInstanc
 	return m.abortBackup(vmi, backupMetadata)
 }
 
+func (m *StorageManager) FinalizeVirtualMachineBackup(backupOptions *backupv1.BackupOptions) error {
+	var err error
+	m.metadataCache.Backup.WithSafeBlock(func(backupMetadata *api.BackupMetadata, _ bool) {
+		if backupMetadata.Name != backupOptions.BackupName || !backupMetadata.StartTimestamp.Equal(backupOptions.BackupStartTime) {
+			return
+		}
+		if !backupMetadata.Completed {
+			err = fmt.Errorf("cannot finalize backup %s, it has not ended", backupMetadata.Name)
+			return
+		}
+		*backupMetadata = api.BackupMetadata{}
+	})
+	return err
+}
+
 func (m *StorageManager) abortBackup(vmi *v1.VirtualMachineInstance, backupMetadata api.BackupMetadata) error {
 	domName := api.VMINamespaceKeyFunc(vmi)
 	dom, err := m.virConn.LookupDomainByName(domName)
