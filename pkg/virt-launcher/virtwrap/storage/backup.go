@@ -412,8 +412,9 @@ func jobFailure(reason string, job *libvirt.DomainJobInfo) string {
 
 func (m *StorageManager) AbortVirtualMachineBackup(vmi *v1.VirtualMachineInstance, backupOptions *backupv1.BackupOptions) error {
 	backupMetadata, exists := m.metadataCache.Backup.Load()
-	if err := checkBackupEligibility(exists, backupMetadata, backupOptions); err != nil {
-		return fmt.Errorf("failed to abort backup: %w", err)
+	if !exists || !isOngoingBackup(backupMetadata, backupOptions) {
+		log.Log.Object(vmi).Infof("backup %s is not running, nothing to abort", backupOptions.BackupName)
+		return nil
 	}
 	return m.abortBackup(vmi, backupMetadata)
 }
@@ -579,18 +580,9 @@ func redefineCheckpoint(dom cli.VirDomain, domainCheckpoint *api.DomainCheckpoin
 	return nil
 }
 
-func checkBackupEligibility(exists bool, backupMetadata api.BackupMetadata, backupOptions *backupv1.BackupOptions) error {
-	if !exists || backupMetadata.Name == "" {
-		return fmt.Errorf("could not find ongoing backup")
-	}
-	if backupMetadata.StartTimestamp == nil {
-		return fmt.Errorf("backup did not start yet")
-	}
-	if backupMetadata.Name != backupOptions.BackupName || !backupMetadata.StartTimestamp.Equal(backupOptions.BackupStartTime) {
-		return fmt.Errorf("requested backup differs from ongoing one")
-	}
-	if backupMetadata.Completed {
-		return fmt.Errorf("backup already completed")
-	}
-	return nil
+func isOngoingBackup(backupMetadata api.BackupMetadata, backupOptions *backupv1.BackupOptions) bool {
+	return backupMetadata.Name != "" &&
+		backupMetadata.Name == backupOptions.BackupName &&
+		backupMetadata.StartTimestamp.Equal(backupOptions.BackupStartTime) &&
+		!backupMetadata.Completed
 }

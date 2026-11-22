@@ -797,59 +797,27 @@ var _ = Describe("Backup", func() {
 
 	Describe("AbortVirtualMachineBackup", func() {
 		Context("abort backup", func() {
-			DescribeTable("should fail to abort a backup that is not associated with the domain", func(name string, timestamp metav1.Time) {
-				backupMetadata := api.BackupMetadata{
-					Name:           name,
-					Mode:           string(backupv1.PushMode),
-					StartTimestamp: &timestamp,
-				}
+			DescribeTable("should succeed without touching the domain when the backup is not running", func(backupMetadata api.BackupMetadata) {
 				metadataCache.Backup.Store(backupMetadata)
-				backupOptions.BackupStartTime = pointer.P(metav1.Date(1, 1, 1, 1, 1, 1, 1, time.Local))
+				backupOptions.BackupStartTime = new(metav1.Date(1, 1, 1, 1, 1, 1, 1, time.Local))
 
-				Expect(manager.AbortVirtualMachineBackup(vmi, backupOptions)).To(
-					MatchError(
-						ContainSubstring("failed to abort backup: requested backup differs from ongoing one"),
-					),
-				)
+				Expect(manager.AbortVirtualMachineBackup(vmi, backupOptions)).To(Succeed())
 			},
-				Entry("with backup name mismatch",
-					"wrong-name",
-					metav1.Date(1, 1, 1, 1, 1, 1, 1, time.Local),
-				),
-				Entry("with start timestamp mismatch",
-					backupName,
-					metav1.Date(2, 2, 2, 2, 2, 2, 2, time.Local),
-				),
-			)
-
-			It("should fail to abort a backup that hasn't started yet", func() {
-				backupMetadata := api.BackupMetadata{
-					Name:           backupOptions.BackupName,
-					StartTimestamp: nil,
-				}
-				metadataCache.Backup.Store(backupMetadata)
-
-				Expect(manager.AbortVirtualMachineBackup(vmi, backupOptions)).To(
-					MatchError(
-						ContainSubstring("failed to abort backup: backup did not start yet"),
-					),
-				)
-			})
-
-			It("should fail to abort a backup that already completed", func() {
-				backupMetadata := api.BackupMetadata{
-					Name:           backupOptions.BackupName,
-					StartTimestamp: backupOptions.BackupStartTime,
+				Entry("with no backup recorded", api.BackupMetadata{}),
+				Entry("with another backup's name recorded", api.BackupMetadata{
+					Name:           "wrong-name",
+					StartTimestamp: new(metav1.Date(1, 1, 1, 1, 1, 1, 1, time.Local)),
+				}),
+				Entry("with another start timestamp recorded", api.BackupMetadata{
+					Name:           backupName,
+					StartTimestamp: new(metav1.Date(2, 2, 2, 2, 2, 2, 2, time.Local)),
+				}),
+				Entry("with the backup already completed", api.BackupMetadata{
+					Name:           backupName,
+					StartTimestamp: new(metav1.Date(1, 1, 1, 1, 1, 1, 1, time.Local)),
 					Completed:      true,
-				}
-				metadataCache.Backup.Store(backupMetadata)
-
-				Expect(manager.AbortVirtualMachineBackup(vmi, backupOptions)).To(
-					MatchError(
-						ContainSubstring("failed to abort backup: backup already completed"),
-					),
-				)
-			})
+				}),
+			)
 
 			It("should return an error when the libvirt domain is not found", func() {
 				backupMetadata := api.BackupMetadata{
