@@ -2461,6 +2461,9 @@ func updateBackupStatus(vmi *v1.VirtualMachineInstance, domain *api.Domain) {
 		vmi.Status.ChangedBlockTracking.BackupStatus = nil
 		return
 	}
+	if !backupMetadata.RequiresFinalize && !reportsBackup(vmi.Status.ChangedBlockTracking.BackupStatus, backupMetadata) {
+		return
+	}
 
 	backupStatus := &v1.VirtualMachineInstanceBackupStatus{
 		BackupName:     backupMetadata.Name,
@@ -2483,4 +2486,10 @@ func updateBackupStatus(vmi *v1.VirtualMachineInstance, domain *api.Domain) {
 		}
 	}
 	vmi.Status.ChangedBlockTracking.BackupStatus = backupStatus
+}
+
+func reportsBackup(backupStatus *v1.VirtualMachineInstanceBackupStatus, backupMetadata *api.BackupMetadata) bool {
+	return backupStatus != nil &&
+		backupStatus.BackupName == backupMetadata.Name &&
+		backupMetadata.StartTimestamp.Equal(backupStatus.StartTimestamp)
 }

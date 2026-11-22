@@ -3939,14 +3939,15 @@ var _ = Describe("updateBackupStatus", func() {
 
 			domain := api.NewMinimalDomainWithUUID("testvmi", vmiTestUUID)
 			domain.Spec.Metadata.KubeVirt.Backup = &api.BackupMetadata{
-				Name:           "test-backup",
-				StartTimestamp: &startTime,
-				EndTimestamp:   &endTime,
-				CheckpointName: "test-checkpoint",
-				BackupMsg:      "backup completed successfully",
-				Completed:      true,
-				Volumes:        `[{"volumeName":"rootdisk"},{"volumeName":"datadisk"}]`,
-				QuiesceStatus:  "Succeeded",
+				Name:             "test-backup",
+				StartTimestamp:   &startTime,
+				EndTimestamp:     &endTime,
+				CheckpointName:   "test-checkpoint",
+				BackupMsg:        "backup completed successfully",
+				Completed:        true,
+				Volumes:          `[{"volumeName":"rootdisk"},{"volumeName":"datadisk"}]`,
+				QuiesceStatus:    "Succeeded",
+				RequiresFinalize: true,
 			}
 
 			updateBackupStatus(vmi, domain)
@@ -3976,6 +3977,50 @@ var _ = Describe("updateBackupStatus", func() {
 			Completed:      true,
 		}),
 	)
+
+	Context("with a record from a launcher that never finalizes it", func() {
+		completedRecord := &api.BackupMetadata{
+			Name:           "test-backup",
+			StartTimestamp: &startTime,
+			EndTimestamp:   &endTime,
+			Completed:      true,
+		}
+
+		DescribeTable("should not report it on a VMI that has",
+			func(backupStatus *v1.VirtualMachineInstanceBackupStatus) {
+				vmi := newVMI(backupStatus)
+
+				domain := api.NewMinimalDomainWithUUID("testvmi", vmiTestUUID)
+				domain.Spec.Metadata.KubeVirt.Backup = completedRecord
+
+				updateBackupStatus(vmi, domain)
+				Expect(vmi.Status.ChangedBlockTracking.BackupStatus).To(Equal(backupStatus))
+			},
+			Entry("no backup status", nil),
+			Entry("another backup's status", &v1.VirtualMachineInstanceBackupStatus{
+				BackupName:     "other-backup",
+				StartTimestamp: &startTime,
+			}),
+			Entry("a status with the same name and another start time", &v1.VirtualMachineInstanceBackupStatus{
+				BackupName:     "test-backup",
+				StartTimestamp: &endTime,
+			}),
+		)
+
+		It("should fill in the status of the same backup", func() {
+			vmi := newVMI(&v1.VirtualMachineInstanceBackupStatus{
+				BackupName:     "test-backup",
+				StartTimestamp: &startTime,
+			})
+
+			domain := api.NewMinimalDomainWithUUID("testvmi", vmiTestUUID)
+			domain.Spec.Metadata.KubeVirt.Backup = completedRecord
+
+			updateBackupStatus(vmi, domain)
+			Expect(vmi.Status.ChangedBlockTracking.BackupStatus.Completed).To(BeTrue())
+			Expect(vmi.Status.ChangedBlockTracking.BackupStatus.EndTimestamp).To(Equal(&endTime))
+		})
+	})
 
 	DescribeTable("should remove the backup status when the launcher has",
 		func(backupMetadata *api.BackupMetadata) {
