@@ -269,11 +269,6 @@ var VirtLauncherErrorAllowlist = []AllowlistEntry{
 		SIGs:  SIGCompute | SIGPerformance | SIGStorage,
 	},
 	{
-		ID:    51,
-		Regex: regexp.MustCompile(`"level":"error","msg":"Failed to run backup job",".*"reason":"backup .* already executed, finished at .*, completed: [^"]+"`),
-		SIGs:  SIGCompute | SIGStorage,
-	},
-	{
 		ID:    53,
 		Regex: regexp.MustCompile(`"level":"error","msg":"Live migration failed\. Failure is forced by functional tests suite\.",".*"pos":"live-migration-source.go`),
 		SIGs:  SIGCompute,

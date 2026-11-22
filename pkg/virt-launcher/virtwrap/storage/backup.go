@@ -68,13 +68,13 @@ func (m *StorageManager) BackupVirtualMachine(vmi *v1.VirtualMachineInstance, ba
 	if m.MigrationInProgress() {
 		return fmt.Errorf("failed to do backup, VMI is currently during migration")
 	}
-	inProgress, err := m.initializeBackupMetadata(backupOptions)
+	alreadyStarted, err := m.initializeBackupMetadata(backupOptions)
 	if err != nil {
 		logger.Reason(err).Warning("Failed to initialize backup metadata")
 		return err
 	}
-	if inProgress {
-		logger.Info("Backup already in progress")
+	if alreadyStarted {
+		logger.Info("Backup was already started")
 		return nil
 	}
 
@@ -91,43 +91,30 @@ func (m *StorageManager) BackupVirtualMachine(vmi *v1.VirtualMachineInstance, ba
 	return nil
 }
 
-func (m *StorageManager) initializeBackupMetadata(backupOptions *backupv1.BackupOptions) (bool, error) {
-	backupMetadata, exists := m.metadataCache.Backup.Load()
-	if exists && backupMetadata.Name != "" {
-		sameBackup := backupMetadata.Name == backupOptions.BackupName &&
-			backupMetadata.StartTimestamp != nil && backupOptions.BackupStartTime != nil &&
-			backupMetadata.StartTimestamp.Equal(backupOptions.BackupStartTime)
-
-		if sameBackup {
-			if backupMetadata.EndTimestamp == nil {
-				// backup is already in progress, ignore
-				return true, nil
-			} else {
-				// backup already completed should not initialize the same backup again
-				return false, fmt.Errorf("backup %s that started at %s already executed, finished at %v, completed: %t",
-					backupOptions.BackupName, *backupMetadata.StartTimestamp, *backupMetadata.EndTimestamp, backupMetadata.Completed)
+func (m *StorageManager) initializeBackupMetadata(backupOptions *backupv1.BackupOptions) (alreadyStarted bool, err error) {
+	m.metadataCache.Backup.WithSafeBlock(func(backupMetadata *api.BackupMetadata, _ bool) {
+		if backupMetadata.Name != "" {
+			if backupMetadata.Name == backupOptions.BackupName && backupMetadata.StartTimestamp.Equal(backupOptions.BackupStartTime) {
+				alreadyStarted = true
+				return
 			}
-		} else {
 			if backupMetadata.EndTimestamp == nil {
-				// another backup already exists and has not completed yet
-				return false, fmt.Errorf("backup %s already in progress, need to wait for completion", backupMetadata.Name)
+				err = fmt.Errorf("backup %s already in progress, need to wait for completion", backupMetadata.Name)
+				return
 			}
-			// Old backup has completed, allow new backup to overwrite the metadata
 			log.Log.Infof("Previous backup %s completed at %v, initializing new backup %s",
 				backupMetadata.Name, backupMetadata.EndTimestamp, backupOptions.BackupName)
 		}
-	}
 
-	b := api.BackupMetadata{
-		Name:           backupOptions.BackupName,
-		StartTimestamp: backupOptions.BackupStartTime,
-		SkipQuiesce:    backupOptions.SkipQuiesce,
-		Mode:           string(backupOptions.Mode),
-	}
-	m.metadataCache.Backup.Store(b)
-	log.Log.Infof("Initialized backup metadata: %v", b)
-
-	return false, nil
+		*backupMetadata = api.BackupMetadata{
+			Name:           backupOptions.BackupName,
+			StartTimestamp: backupOptions.BackupStartTime,
+			SkipQuiesce:    backupOptions.SkipQuiesce,
+			Mode:           string(backupOptions.Mode),
+		}
+		log.Log.Infof("Initialized backup metadata: %v", *backupMetadata)
+	})
+	return alreadyStarted, err
 }
 
 func (m *StorageManager) backup(vmi *v1.VirtualMachineInstance, backupOptions *backupv1.BackupOptions) (failed error) {

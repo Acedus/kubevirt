@@ -141,20 +141,19 @@ var _ = Describe("Backup", func() {
 		})
 
 		Context("when backup has already completed", func() {
-			It("should fail to reinitialize", func() {
-				// Set up completed backup with same timestamp
-				completedTime := metav1.Now()
+			It("should not run it again", func() {
 				existingBackup := api.BackupMetadata{
 					Name:           backupOptions.BackupName,
 					StartTimestamp: backupOptions.BackupStartTime,
-					EndTimestamp:   &completedTime,
+					EndTimestamp:   new(metav1.Now()),
 					Completed:      true,
 				}
 				metadataCache.Backup.Store(existingBackup)
 
-				err := manager.BackupVirtualMachine(vmi, backupOptions)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("already executed"))
+				Expect(manager.BackupVirtualMachine(vmi, backupOptions)).To(Succeed())
+
+				recorded, _ := metadataCache.Backup.Load()
+				Expect(recorded).To(Equal(existingBackup))
 			})
 		})
 
