@@ -82,8 +82,12 @@ func (m *StorageManager) BackupVirtualMachine(vmi *v1.VirtualMachineInstance, ba
 	err = m.backup(vmi, backupOptions)
 	if err != nil {
 		logger.Reason(err).Error("Backup failed to start")
-		// Reset metadata cache so retries can proceed with fresh metadata
-		m.metadataCache.Backup.Store(api.BackupMetadata{})
+		m.metadataCache.Backup.WithSafeBlock(func(backupMetadata *api.BackupMetadata, _ bool) {
+			backupMetadata.Completed = true
+			backupMetadata.Failed = true
+			backupMetadata.BackupMsg = err.Error()
+			backupMetadata.EndTimestamp = new(metav1.Now())
+		})
 		return err
 	}
 

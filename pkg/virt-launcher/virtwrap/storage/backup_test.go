@@ -158,8 +158,7 @@ var _ = Describe("Backup", func() {
 			})
 		})
 
-		It("backup after failure should allow retry", func() {
-			// simulate empty backup metadata from previous failure
+		It("should start a backup after the previous record was finalized", func() {
 			emptyBackup := api.BackupMetadata{}
 			metadataCache.Backup.Store(emptyBackup)
 
@@ -437,8 +436,8 @@ var _ = Describe("Backup", func() {
 			})
 		})
 
-		Context("when BackupBegin fails after freeze", func() {
-			It("should still thaw the filesystem", func() {
+		Context("when BackupBegin fails", func() {
+			It("should still thaw a frozen filesystem", func() {
 				backupOptions.SkipQuiesce = false
 
 				mockConn.EXPECT().LookupDomainByName(gomock.Any()).Return(mockDomain, nil)
@@ -458,9 +457,24 @@ var _ = Describe("Backup", func() {
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("backup begin failed"))
 
-				backupMetadata, exists := metadataCache.Backup.Load()
-				Expect(exists).To(BeTrue())
-				Expect(backupMetadata.Name).To(BeEmpty())
+			})
+
+			It("should record the backup as ended and failed with the error", func() {
+				backupOptions.SkipQuiesce = true
+
+				mockConn.EXPECT().LookupDomainByName(gomock.Any()).Return(mockDomain, nil)
+				mockDomain.EXPECT().GetXMLDesc(gomock.Any()).Return(domainXML, nil)
+				mockDomain.EXPECT().BackupBegin(gomock.Any(), gomock.Any(), gomock.Any()).Return(fmt.Errorf("backup begin failed"))
+				mockDomain.EXPECT().Free().Return(nil)
+
+				Expect(manager.BackupVirtualMachine(vmi, backupOptions)).To(MatchError(ContainSubstring("backup begin failed")))
+
+				backupMetadata, _ := metadataCache.Backup.Load()
+				Expect(backupMetadata.Name).To(Equal(backupOptions.BackupName))
+				Expect(backupMetadata.Completed).To(BeTrue())
+				Expect(backupMetadata.Failed).To(BeTrue())
+				Expect(backupMetadata.BackupMsg).To(ContainSubstring("backup begin failed"))
+				Expect(backupMetadata.EndTimestamp).ToNot(BeNil())
 			})
 		})
 
