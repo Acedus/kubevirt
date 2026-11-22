@@ -296,6 +296,9 @@ func (l *LibvirtDomainManager) startMigration(vmi *v1.VirtualMachineInstance, op
 	if vmi.Status.ChangedBlockTracking != nil && vmi.Status.ChangedBlockTracking.BackupStatus != nil {
 		return fmt.Errorf("cannot migrate VMI until backup %s is completed", vmi.Status.ChangedBlockTracking.BackupStatus.BackupName)
 	}
+	if backup, exists := l.metadataCache.Backup.Load(); exists && backup.Name != "" && !backup.Completed {
+		return fmt.Errorf("cannot migrate VMI until backup %s is completed", backup.Name)
+	}
 	if vmi.Status.MigrationState == nil {
 		return fmt.Errorf("cannot migrate VMI until migrationState is ready")
 	}

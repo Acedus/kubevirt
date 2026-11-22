@@ -3044,6 +3044,20 @@ var _ = Describe("Manager", func() {
 			})
 		})
 
+		It("should refuse to migrate while the launcher has a backup that has not ended", func() {
+			vmi := newVMI(testNamespace, testVmName)
+			vmi.Status.MigrationState = &v1.VirtualMachineInstanceMigrationState{
+				MigrationUID: "111222333",
+			}
+			metadataCache.Backup.Store(api.BackupMetadata{Name: "running-backup"})
+			manager, _ := newLibvirtDomainManagerDefault()
+
+			Expect(manager.MigrateVMI(vmi, &cmdclient.MigrationOptions{})).To(MatchError(ContainSubstring("until backup running-backup is completed")))
+
+			_, migrationStarted := metadataCache.Migration.Load()
+			Expect(migrationStarted).To(BeFalse())
+		})
+
 		It("should detect inprogress migration job", func() {
 			vmi := newVMI(testNamespace, testVmName)
 			vmi.Status.MigrationState = &v1.VirtualMachineInstanceMigrationState{
