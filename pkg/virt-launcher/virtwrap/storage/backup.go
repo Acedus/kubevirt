@@ -98,19 +98,16 @@ func (m *StorageManager) initializeBackupMetadata(backupOptions *backupv1.Backup
 				alreadyStarted = true
 				return
 			}
-			if backupMetadata.EndTimestamp == nil {
-				err = fmt.Errorf("backup %s already in progress, need to wait for completion", backupMetadata.Name)
-				return
-			}
-			log.Log.Infof("Previous backup %s completed at %v, initializing new backup %s",
-				backupMetadata.Name, backupMetadata.EndTimestamp, backupOptions.BackupName)
+			err = fmt.Errorf("backup %s holds the VMI until it is finalized", backupMetadata.Name)
+			return
 		}
 
 		*backupMetadata = api.BackupMetadata{
-			Name:           backupOptions.BackupName,
-			StartTimestamp: backupOptions.BackupStartTime,
-			SkipQuiesce:    backupOptions.SkipQuiesce,
-			Mode:           string(backupOptions.Mode),
+			Name:             backupOptions.BackupName,
+			StartTimestamp:   backupOptions.BackupStartTime,
+			SkipQuiesce:      backupOptions.SkipQuiesce,
+			Mode:             string(backupOptions.Mode),
+			RequiresFinalize: true,
 		}
 		log.Log.Infof("Initialized backup metadata: %v", *backupMetadata)
 	})

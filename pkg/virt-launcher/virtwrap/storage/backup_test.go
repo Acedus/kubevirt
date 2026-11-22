@@ -124,21 +124,22 @@ var _ = Describe("Backup", func() {
 			})
 		})
 
-		Context("when a different backup is already in progress", func() {
-			It("should fail", func() {
-				// Set up existing backup with different timestamp
-				oldTime := metav1.Time{Time: time.Now().Add(-1 * time.Hour)}
-				existingBackup := api.BackupMetadata{
-					Name:           "old-backup",
-					StartTimestamp: &oldTime,
-				}
-				metadataCache.Backup.Store(existingBackup)
+		DescribeTable("should refuse to start while another backup's record has not been finalized", func(ended bool) {
+			existingBackup := api.BackupMetadata{
+				Name:           "old-backup",
+				StartTimestamp: new(metav1.NewTime(time.Now().Add(-1 * time.Hour))),
+				Completed:      ended,
+			}
+			metadataCache.Backup.Store(existingBackup)
 
-				err := manager.BackupVirtualMachine(vmi, backupOptions)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("already in progress"))
-			})
-		})
+			Expect(manager.BackupVirtualMachine(vmi, backupOptions)).To(MatchError(ContainSubstring("old-backup holds the VMI until it is finalized")))
+
+			recorded, _ := metadataCache.Backup.Load()
+			Expect(recorded).To(Equal(existingBackup))
+		},
+			Entry("when that backup is still running", false),
+			Entry("when that backup has ended", true),
+		)
 
 		Context("when backup has already completed", func() {
 			It("should not run it again", func() {
@@ -188,6 +189,7 @@ var _ = Describe("Backup", func() {
 			Expect(newMetadata.Name).To(Equal("test-backup"))
 			Expect(newMetadata.StartTimestamp).To(Equal(backupOptions.BackupStartTime))
 			Expect(newMetadata.Mode).To(Equal(string(backupv1.PushMode)))
+			Expect(newMetadata.RequiresFinalize).To(BeTrue())
 		})
 
 		Context("incremental backup", func() {
