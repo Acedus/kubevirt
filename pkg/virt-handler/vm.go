@@ -2453,40 +2453,34 @@ func parseLibvirtQuantity(value int64, unit string) *resource.Quantity {
 }
 
 func updateBackupStatus(vmi *v1.VirtualMachineInstance, domain *api.Domain) {
-	if domain == nil ||
-		domain.Spec.Metadata.KubeVirt.Backup == nil ||
-		vmi.Status.ChangedBlockTracking == nil ||
-		vmi.Status.ChangedBlockTracking.BackupStatus == nil {
+	if domain == nil || vmi.Status.ChangedBlockTracking == nil {
 		return
 	}
 	backupMetadata := domain.Spec.Metadata.KubeVirt.Backup
-	// Handle the case where a new backupStatus was initiated but
-	// the backupMetadata wasnt reinitialized yet
-	timestampMatch := backupMetadata.StartTimestamp.Equal(vmi.Status.ChangedBlockTracking.BackupStatus.StartTimestamp)
-	if vmi.Status.ChangedBlockTracking.BackupStatus.BackupName != backupMetadata.Name || !timestampMatch {
+	if backupMetadata == nil || backupMetadata.Name == "" {
+		vmi.Status.ChangedBlockTracking.BackupStatus = nil
 		return
 	}
-	vmi.Status.ChangedBlockTracking.BackupStatus.Completed = backupMetadata.Completed
-	vmi.Status.ChangedBlockTracking.BackupStatus.Failed = backupMetadata.Failed
-	if backupMetadata.StartTimestamp != nil {
-		vmi.Status.ChangedBlockTracking.BackupStatus.StartTimestamp = backupMetadata.StartTimestamp
-	}
-	if backupMetadata.EndTimestamp != nil {
-		vmi.Status.ChangedBlockTracking.BackupStatus.EndTimestamp = backupMetadata.EndTimestamp
+
+	backupStatus := &v1.VirtualMachineInstanceBackupStatus{
+		BackupName:     backupMetadata.Name,
+		StartTimestamp: backupMetadata.StartTimestamp,
+		EndTimestamp:   backupMetadata.EndTimestamp,
+		Completed:      backupMetadata.Completed,
+		Failed:         backupMetadata.Failed,
+		QuiesceStatus:  backupMetadata.QuiesceStatus,
 	}
 	if backupMetadata.BackupMsg != "" {
-		vmi.Status.ChangedBlockTracking.BackupStatus.BackupMsg = &backupMetadata.BackupMsg
+		backupStatus.BackupMsg = new(backupMetadata.BackupMsg)
 	}
 	if backupMetadata.CheckpointName != "" {
-		vmi.Status.ChangedBlockTracking.BackupStatus.CheckpointName = &backupMetadata.CheckpointName
+		backupStatus.CheckpointName = new(backupMetadata.CheckpointName)
 	}
 	if backupMetadata.Volumes != "" {
 		var volumes []v1.VirtualMachineInstanceBackupVolumeInfo
 		if err := json.Unmarshal([]byte(backupMetadata.Volumes), &volumes); err == nil && len(volumes) > 0 {
-			vmi.Status.ChangedBlockTracking.BackupStatus.Volumes = volumes
+			backupStatus.Volumes = volumes
 		}
 	}
-	if backupMetadata.QuiesceStatus != "" {
-		vmi.Status.ChangedBlockTracking.BackupStatus.QuiesceStatus = backupMetadata.QuiesceStatus
-	}
+	vmi.Status.ChangedBlockTracking.BackupStatus = backupStatus
 }
