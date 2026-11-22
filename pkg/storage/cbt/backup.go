@@ -607,6 +607,8 @@ func (ctrl *VMBackupController) checkPrerequisites(backup *backupv1.VirtualMachi
 }
 
 func (ctrl *VMBackupController) reconcileActive(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, backupStatus *v1.VirtualMachineInstanceBackupStatus, backupDeleting bool) error {
+	recordStart(backup)
+
 	if !vmi.IsRunning() || vmi.DeletionTimestamp != nil {
 		done, err := ctrl.cleanupVMIState(backup, vmi)
 		if err != nil {
@@ -642,6 +644,8 @@ func (ctrl *VMBackupController) reconcileActive(backup *backupv1.VirtualMachineB
 }
 
 func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, backupTracker *backupv1.VirtualMachineBackupTracker, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
+	recordStart(backup)
+
 	if isPullMode(backup) {
 		setPullCompletionStatus(backup, backupStatus)
 	}
@@ -735,12 +739,7 @@ func (ctrl *VMBackupController) startBackup(backup *backupv1.VirtualMachineBacku
 	}
 	log.Log.Object(backup).Infof("Started backup for VMI %s successfully", vmi.Name)
 
-	if err := ctrl.updateSourceBackupInProgress(vmi, backup.Name, backup.CreationTimestamp); err != nil {
-		return fmt.Errorf("failed to update source backup in progress: %w", err)
-	}
-
 	setProgressing(backup)
-	backup.Status.StartTimestamp = new(metav1.Now())
 	return nil
 }
 
@@ -946,46 +945,6 @@ func (ctrl *VMBackupController) verifyVMIEligibleForBackup(vmi *v1.VirtualMachin
 	return ""
 }
 
-func (ctrl *VMBackupController) updateSourceBackupInProgress(vmi *v1.VirtualMachineInstance, backupName string, creationTimestamp metav1.Time) error {
-	if hasVMIBackupStatus(vmi) {
-		if vmi.Status.ChangedBlockTracking.BackupStatus.BackupName != backupName {
-			return fmt.Errorf("another backup %s is already in progress, cannot start backup %s",
-				vmi.Status.ChangedBlockTracking.BackupStatus.BackupName, backupName)
-		}
-		return nil
-	}
-
-	var startTimestamp *metav1.Time
-	if !creationTimestamp.IsZero() {
-		startTimestamp = creationTimestamp.DeepCopy()
-	}
-	backupStatus := &v1.VirtualMachineInstanceBackupStatus{
-		BackupName:     backupName,
-		StartTimestamp: startTimestamp,
-	}
-
-	patchSet := patch.New(
-		patch.WithTest("/status/changedBlockTracking/backupStatus", vmi.Status.ChangedBlockTracking.BackupStatus),
-	)
-	if vmi.Status.ChangedBlockTracking.BackupStatus == nil {
-		patchSet.AddOption(patch.WithAdd("/status/changedBlockTracking/backupStatus", backupStatus))
-	} else {
-		patchSet.AddOption(patch.WithReplace("/status/changedBlockTracking/backupStatus", backupStatus))
-	}
-	patchBytes, err := patchSet.GeneratePayload()
-	if err != nil {
-		return err
-	}
-
-	_, err = ctrl.client.VirtualMachineInstance(vmi.Namespace).Patch(context.Background(), vmi.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
-	if err != nil {
-		log.Log.Errorf("Failed to update source backup in progress: %s", err)
-		return err
-	}
-
-	return nil
-}
-
 func (ctrl *VMBackupController) resolveCompletion(backup *backupv1.VirtualMachineBackup, status *v1.VirtualMachineInstanceBackupStatus) {
 	msgOrDefault := func(msg *string) string {
 		if msg == nil {
@@ -1125,15 +1084,17 @@ func isBackupDeleting(backup *backupv1.VirtualMachineBackup) bool {
 	return backup != nil && backup.DeletionTimestamp != nil
 }
 
-func hasVMIBackupStatus(vmi *v1.VirtualMachineInstance) bool {
-	return vmi != nil && vmi.Status.ChangedBlockTracking != nil && vmi.Status.ChangedBlockTracking.BackupStatus != nil
-}
-
 func setInitializing(backup *backupv1.VirtualMachineBackup, reason string) {
 	meta.SetStatusCondition(&backup.Status.Conditions, metav1.Condition{
 		Type: string(backupv1.ConditionProgressing), Status: metav1.ConditionTrue,
 		Reason: backupv1.ReasonInitializing, Message: reason,
 	})
+}
+
+func recordStart(backup *backupv1.VirtualMachineBackup) {
+	if backup.Status.StartTimestamp == nil {
+		backup.Status.StartTimestamp = new(metav1.Now())
+	}
 }
 
 func setProgressing(backup *backupv1.VirtualMachineBackup) {
