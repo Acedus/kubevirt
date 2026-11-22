@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -73,6 +74,7 @@ const (
 	trackerDeletingMsg            = "tracker %s is being deleted"
 	invalidBackupModeMsg          = "invalid backup mode: %s"
 	vmMigrationInProgressMsg      = "vm %s is currently migrating, waiting for migration to complete before starting backup"
+	unknownBackupCommandMsg       = "unknown backup command"
 )
 
 var (
@@ -658,6 +660,9 @@ func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachi
 	if !done {
 		return fmt.Errorf("cleanup not complete for finished backup: %w", errCleanupPending)
 	}
+	if err := ctrl.finalizeBackup(backup, vmi); err != nil {
+		return err
+	}
 
 	ctrl.resolveCompletion(backup, backupStatus)
 
@@ -941,26 +946,6 @@ func (ctrl *VMBackupController) verifyVMIEligibleForBackup(vmi *v1.VirtualMachin
 	return ""
 }
 
-func (ctrl *VMBackupController) removeSourceBackupInProgress(vmi *v1.VirtualMachineInstance) error {
-	if !hasVMIBackupStatus(vmi) {
-		return nil
-	}
-
-	patchBytes, err := patch.New(
-		patch.WithRemove("/status/changedBlockTracking/backupStatus"),
-	).GeneratePayload()
-	if err != nil {
-		return err
-	}
-
-	_, err = ctrl.client.VirtualMachineInstance(vmi.Namespace).Patch(context.Background(), vmi.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to remove BackupInProgress from VMI %s/%s: %w", vmi.Namespace, vmi.Name, err)
-	}
-
-	return nil
-}
-
 func (ctrl *VMBackupController) updateSourceBackupInProgress(vmi *v1.VirtualMachineInstance, backupName string, creationTimestamp metav1.Time) error {
 	if hasVMIBackupStatus(vmi) {
 		if vmi.Status.ChangedBlockTracking.BackupStatus.BackupName != backupName {
@@ -1092,11 +1077,24 @@ func (ctrl *VMBackupController) cleanupVMIState(backup *backupv1.VirtualMachineB
 		return false, nil
 	}
 
-	if err := ctrl.removeSourceBackupInProgress(vmi); err != nil {
-		return false, err
+	return true, nil
+}
+
+func (ctrl *VMBackupController) finalizeBackup(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) error {
+	if !vmi.IsRunning() {
+		return nil
 	}
 
-	return true, nil
+	backupOptions := &backupv1.BackupOptions{
+		BackupName:      backup.Name,
+		Cmd:             backupv1.Finalize,
+		BackupStartTime: &backup.CreationTimestamp,
+	}
+	err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions)
+	if err != nil && !strings.Contains(err.Error(), unknownBackupCommandMsg) {
+		return fmt.Errorf("failed to finalize backup: %w", err)
+	}
+	return nil
 }
 
 func backupConditions(backup *backupv1.VirtualMachineBackup) []metav1.Condition {

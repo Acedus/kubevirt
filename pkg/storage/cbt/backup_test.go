@@ -272,6 +272,16 @@ var _ = Describe("Backup Controller", func() {
 		}
 	}
 
+	expectFinalize := func() {
+		vmiInterface.EXPECT().
+			Backup(gomock.Any(), vmName, gomock.Any()).
+			DoAndReturn(func(ctx context.Context, name string, options *backupv1.BackupOptions) error {
+				Expect(options.Cmd).To(Equal(backupv1.Finalize))
+				Expect(options.BackupName).To(Equal(backupName))
+				return nil
+			})
+	}
+
 	syncBackup := func(backup *backupv1.VirtualMachineBackup) (*backupv1.VirtualMachineBackup, error) {
 		backupCopy := backup.DeepCopy()
 		if backupCopy.Status == nil {
@@ -791,6 +801,68 @@ var _ = Describe("Backup Controller", func() {
 		Expect(failedCond.Message).To(ContainSubstring("VMI backup status was lost"))
 	})
 
+	Context("finalizing a completed backup", func() {
+		var (
+			backup *backupv1.VirtualMachineBackup
+			vmi    *v1.VirtualMachineInstance
+		)
+
+		BeforeEach(func() {
+			controller.vmStore.Add(createVM(vmName))
+			controller.pvcStore.Add(createPVC(pvcName))
+			backup = createBackup(backupName, vmName, pvcName, backupv1.PushMode)
+			backup.Finalizers = []string{backupv1.VirtualMachineBackupFinalizer}
+			vmi = createVMI()
+			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
+				BackupName: backupName,
+				Completed:  true,
+			}
+		})
+
+		It("should finalize the backup and complete", func() {
+			controller.vmiStore.Add(vmi)
+
+			expectFinalize()
+
+			backupCopy, err := syncBackup(backup)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(IsBackupTerminal(backupCopy)).To(BeTrue())
+		})
+
+		It("should not complete when finalizing fails", func() {
+			controller.vmiStore.Add(vmi)
+
+			vmiInterface.EXPECT().
+				Backup(gomock.Any(), vmName, gomock.Any()).
+				Return(fmt.Errorf("launcher unreachable"))
+
+			backupCopy, err := syncBackup(backup)
+			Expect(err).To(MatchError(ContainSubstring("failed to finalize backup")))
+			Expect(IsBackupTerminal(backupCopy)).To(BeFalse())
+		})
+
+		It("should complete when the launcher does not know the Finalize command", func() {
+			controller.vmiStore.Add(vmi)
+
+			vmiInterface.EXPECT().
+				Backup(gomock.Any(), vmName, gomock.Any()).
+				Return(fmt.Errorf("server error. command Backup failed: \"recieved unknown backup command\""))
+
+			backupCopy, err := syncBackup(backup)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(IsBackupTerminal(backupCopy)).To(BeTrue())
+		})
+
+		It("should complete without finalizing when the VMI is no longer running", func() {
+			vmi.Status.Phase = v1.Succeeded
+			controller.vmiStore.Add(vmi)
+
+			backupCopy, err := syncBackup(backup)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(IsBackupTerminal(backupCopy)).To(BeTrue())
+		})
+	})
+
 	Context("Backup deletion cleanup", func() {
 		It("should populate includedVolumes early when backup in progress and volumes available", func() {
 			backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
@@ -918,9 +990,7 @@ var _ = Describe("Backup Controller", func() {
 			pvc := createPVC(pvcName)
 			controller.pvcStore.Add(pvc)
 
-			vmiInterface.EXPECT().
-				Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
-				Return(vmi, nil)
+			expectFinalize()
 
 			err := controller.sync(backup)
 			Expect(err).ToNot(HaveOccurred())
@@ -929,35 +999,6 @@ var _ = Describe("Backup Controller", func() {
 			Expect(condition).ToNot(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 			Expect(condition.Reason).To(Equal(backupv1.ReasonQuiesceSucceeded))
-		})
-
-		It("should patch VMI to remove backup status when backup is completed", func() {
-			backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
-			backup.Finalizers = []string{backupv1.VirtualMachineBackupFinalizer}
-			backup.Status = &backupv1.VirtualMachineBackupStatus{
-				Conditions: []metav1.Condition{
-					newCondition(string(backupv1.ConditionProgressing), metav1.ConditionTrue, "Progressing", ""),
-				},
-			}
-			vm := createVM(vmName)
-			controller.vmStore.Add(vm)
-			vmi := createVMI()
-			vmi.Status.ChangedBlockTracking.BackupStatus = &v1.VirtualMachineInstanceBackupStatus{
-				BackupName:     backupName,
-				Completed:      true,
-				CheckpointName: pointer.P(checkpointName),
-			}
-			controller.vmiStore.Add(vmi)
-			pvc := createPVC(pvcName)
-			controller.pvcStore.Add(pvc)
-
-			vmiInterface.EXPECT().
-				Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
-				Return(vmi, nil)
-
-			backupCopy, err := syncBackup(backup)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(meta.IsStatusConditionTrue(backupCopy.Status.Conditions, string(backupv1.ConditionComplete))).To(BeTrue())
 		})
 
 		It("should remove finalizer when a completed backup is being deleted", func() {
@@ -1180,14 +1221,12 @@ var _ = Describe("Backup Controller", func() {
 			}
 			controller.vmiStore.Add(vmiCanceled)
 
-			vmiInterface.EXPECT().
-				Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
-				Return(vmiCanceled, nil)
-
 			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
 				Fail("Backup was canceled and failed, should not update the tracker")
 				return true, nil, nil
 			})
+
+			expectFinalize()
 
 			backupCopy, err := syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
@@ -1242,10 +1281,6 @@ var _ = Describe("Backup Controller", func() {
 			vmiDetached.Spec.UtilityVolumes = nil
 			vmiDetached.Status.VolumeStatus = nil
 			controller.vmiStore.Add(vmiDetached)
-
-			vmiInterface.EXPECT().
-				Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
-				Return(vmiDetached, nil)
 
 			backupCopy, err := syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
@@ -1640,7 +1675,7 @@ var _ = Describe("Backup Controller", func() {
 		Expect(err).To(MatchError(errCleanupPending))
 	})
 
-	It("should remove backup status from VMI and return completed event when already detached", func() {
+	It("should return completed event when already detached", func() {
 		backup := createBackup(backupName, vmName, pvcName, backupv1.PushMode)
 		backup.Finalizers = []string{backupv1.VirtualMachineBackupFinalizer}
 		backup.Status = &backupv1.VirtualMachineBackupStatus{
@@ -1669,13 +1704,7 @@ var _ = Describe("Backup Controller", func() {
 		pvc := createPVC(pvcName)
 		controller.pvcStore.Add(pvc)
 
-		vmiInterface.EXPECT().
-			Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
-			DoAndReturn(func(ctx context.Context, name string, patchType types.PatchType, patchBytes []byte, opts metav1.PatchOptions, subresources ...string) (*v1.VirtualMachineInstance, error) {
-				Expect(string(patchBytes)).To(ContainSubstring("backupStatus"))
-				Expect(string(patchBytes)).To(ContainSubstring("remove"))
-				return vmi, nil
-			})
+		expectFinalize()
 
 		backupCopy, err := syncBackup(backup)
 		Expect(err).ToNot(HaveOccurred())
@@ -1723,10 +1752,6 @@ var _ = Describe("Backup Controller", func() {
 			controller.pvcStore.Add(pvc)
 
 			// Expect patch to remove backup status from VMI
-			vmiInterface.EXPECT().
-				Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
-				Return(vmi, nil)
-
 			// Expect patch to update backupTracker with the new checkpoint
 			trackerPatched := false
 			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
@@ -1752,6 +1777,8 @@ var _ = Describe("Backup Controller", func() {
 
 			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
 				Return(kubevirtClient.BackupV1beta1().VirtualMachineBackupTrackers(testNamespace))
+
+			expectFinalize()
 
 			backupCopy, err := syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
@@ -2216,10 +2243,6 @@ var _ = Describe("Backup Controller", func() {
 			backupStatus.Volumes = []v1.VirtualMachineInstanceBackupVolumeInfo{{VolumeName: pvcName}}
 			controller.vmiStore.Update(vmiDone)
 
-			vmiInterface.EXPECT().
-				Patch(gomock.Any(), vmName, types.JSONPatchType, gomock.Any(), gomock.Any()).
-				Return(vmiDone, nil)
-
 			trackerPatched := false
 			kubevirtClient.Fake.PrependReactor("patch", "virtualmachinebackuptrackers", func(action testing.Action) (handled bool, obj runtime.Object, err error) {
 				trackerPatched = true
@@ -2229,6 +2252,8 @@ var _ = Describe("Backup Controller", func() {
 			})
 			virtClient.EXPECT().VirtualMachineBackupTracker(testNamespace).
 				Return(kubevirtClient.BackupV1beta1().VirtualMachineBackupTrackers(testNamespace)).AnyTimes()
+
+			expectFinalize()
 
 			backupCopy, err := syncBackup(backup)
 			Expect(err).ToNot(HaveOccurred())
