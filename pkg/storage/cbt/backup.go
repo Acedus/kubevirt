@@ -75,6 +75,8 @@ const (
 	invalidBackupModeMsg          = "invalid backup mode: %s"
 	vmMigrationInProgressMsg      = "vm %s is currently migrating, waiting for migration to complete before starting backup"
 	unknownBackupCommandMsg       = "unknown backup command"
+	anotherBackupInProgressMsg    = "another backup %s is in progress on the VM"
+	staleBackupReleasingMsg       = "waiting for backup %s to release the VM"
 )
 
 var (
@@ -455,6 +457,9 @@ func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) erro
 		if err := ctrl.releaseSourceVM(backup); err != nil {
 			return err
 		}
+		if err := ctrl.finalizeTerminalBackup(backup); err != nil {
+			return err
+		}
 		if !backupDeleting {
 			log.Log.Object(backup).V(4).Info("Backup is already done, skipping reconciliation")
 			return nil
@@ -489,14 +494,21 @@ func (ctrl *VMBackupController) sync(backup *backupv1.VirtualMachineBackup) erro
 	}
 
 	backupStatus := getBackupStatus(vmi)
+	owner := backupStatusOwnerOf(backupStatus, backup)
 
 	switch {
-	case backupStatus != nil && backupStatus.Completed:
+	case owner == ownBackupStatus && backupStatus.Completed:
 		return ctrl.reconcileCompleted(backup, vmi, backupTracker, backupStatus)
-	case backupStatus != nil:
-		return ctrl.reconcileActive(backup, vmi, backupStatus, backupDeleting)
+	case backupDeleting:
+		return ctrl.reconcileDeleting(backup, vmi, vmiExists, owner == ownBackupStatus)
+	case owner == ownBackupStatus:
+		return ctrl.reconcileActive(backup, vmi, backupStatus)
+	case backup.Status.StartTimestamp != nil:
+		return ctrl.reconcileLost(backup, vmi, vmiExists)
+	case owner == otherBackupStatus:
+		return ctrl.reconcileBlocked(backup, vmi, backupStatus)
 	default:
-		return ctrl.reconcileStart(backup, vmi, vmiExists, backupTracker, backupDeleting, sourceName)
+		return ctrl.reconcileStart(backup, vmi, vmiExists, backupTracker, sourceName)
 	}
 }
 
@@ -507,57 +519,103 @@ func getBackupStatus(vmi *v1.VirtualMachineInstance) *v1.VirtualMachineInstanceB
 	return vmi.Status.ChangedBlockTracking.BackupStatus.DeepCopy()
 }
 
-func (ctrl *VMBackupController) reconcileStart(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, vmiExists bool, backupTracker *backupv1.VirtualMachineBackupTracker, backupDeleting bool, sourceName string) error {
-	if backupDeleting {
-		log.Log.Object(backup).V(3).Infof("Backup deleting during initialization")
-		if !vmiExists {
-			return ctrl.removeBackupFinalizer(backup)
+func (ctrl *VMBackupController) reconcileDeleting(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, vmiExists, own bool) error {
+	if !vmiExists {
+		return ctrl.removeBackupFinalizer(backup)
+	}
+
+	if vmi.IsRunning() {
+		if own {
+			return ctrl.abort(backup, vmi)
 		}
-		done, err := ctrl.cleanupVMIState(backup, vmi)
-		if err != nil {
+		if err := ctrl.sendBackupCommand(vmi, backupv1.Abort, backup.Name, &backup.CreationTimestamp); err != nil {
+			log.Log.Object(backup).Reason(err).Warning("Failed to abort a backup deleted before its status appeared on the VMI")
+		}
+		if _, err := ctrl.finalize(vmi, backup.Name, &backup.CreationTimestamp); err != nil {
 			return err
 		}
-		if !done {
-			return fmt.Errorf("ongoing cleanup for backup deletion: %w", errCleanupPending)
-		}
+	}
+
+	done, err := ctrl.cleanupVMIState(backup, vmi)
+	if err != nil {
+		return err
+	}
+	if !done {
+		return fmt.Errorf("ongoing cleanup for backup deletion: %w", errCleanupPending)
+	}
+	if backup.Status.StartTimestamp == nil {
 		ctrl.setFailed(backup, backupv1.ReasonDeletedDuringInit, "backup was deleted during initialization")
-		return nil
+	} else {
+		ctrl.setFailed(backup, backupv1.ReasonFailed, "backup was deleted before it completed")
 	}
+	return nil
+}
 
-	if backup.Status.StartTimestamp != nil {
-		if !vmiExists {
-			if isPullMode(backup) {
-				if err := ctrl.cleanupBackupExport(backup); err != nil {
-					return err
-				}
+func (ctrl *VMBackupController) reconcileLost(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, vmiExists bool) error {
+	if !vmiExists {
+		if isPullMode(backup) {
+			if err := ctrl.cleanupBackupExport(backup); err != nil {
+				return err
 			}
-			ctrl.setFailed(backup, backupv1.ReasonSourceLost, "VMI was deleted during backup")
-			return nil
 		}
-		log.Log.Object(backup).V(3).Infof("VMI backup status was lost while progressing")
-		done, err := ctrl.cleanupVMIState(backup, vmi)
-		if err != nil {
-			return err
-		}
-		if !done {
-			return fmt.Errorf("ongoing cleanup for lost backup status: %w", errCleanupPending)
-		}
-		ctrl.setFailed(backup, backupv1.ReasonSourceLost, "VMI backup status was lost")
+		ctrl.setFailed(backup, backupv1.ReasonSourceLost, "VMI was deleted during backup")
+		return nil
+	}
+	log.Log.Object(backup).V(3).Infof("VMI backup status was lost while progressing")
+	done, err := ctrl.cleanupVMIState(backup, vmi)
+	if err != nil {
+		return err
+	}
+	if !done {
+		return fmt.Errorf("ongoing cleanup for lost backup status: %w", errCleanupPending)
+	}
+	ctrl.setFailed(backup, backupv1.ReasonSourceLost, "VMI backup status was lost")
+	return nil
+}
+
+func (ctrl *VMBackupController) reconcileBlocked(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
+	if ctrl.backupStatusOwnerActive(backup.Namespace, backupStatus) {
+		setInitializing(backup, fmt.Sprintf(anotherBackupInProgressMsg, backupStatus.BackupName))
 		return nil
 	}
 
+	setInitializing(backup, fmt.Sprintf(staleBackupReleasingMsg, backupStatus.BackupName))
+	if !vmi.IsRunning() {
+		return nil
+	}
+	if !backupStatus.Completed {
+		if err := ctrl.sendBackupCommand(vmi, backupv1.Abort, backupStatus.BackupName, backupStatus.StartTimestamp); err != nil {
+			return fmt.Errorf("failed to abort stale backup %s: %w", backupStatus.BackupName, err)
+		}
+		return nil
+	}
+	supported, err := ctrl.finalize(vmi, backupStatus.BackupName, backupStatus.StartTimestamp)
+	if err != nil {
+		return err
+	}
+	if !supported {
+		return ctrl.removeBackupStatus(vmi, backupStatus)
+	}
+	return nil
+}
+
+func (ctrl *VMBackupController) reconcileStart(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, vmiExists bool, backupTracker *backupv1.VirtualMachineBackupTracker, sourceName string) error {
 	reason, err := ctrl.checkPrerequisites(backup, vmi, vmiExists, backupTracker, sourceName)
 	if reason != "" {
 		setInitializing(backup, reason)
+		return err
 	}
 	if err != nil {
 		return err
 	}
-	if reason != "" {
-		return nil
+
+	err = ctrl.sendBackupCommand(vmi, backupv1.Probe, backup.Name, &backup.CreationTimestamp)
+	launcherFinalizes := !isUnknownBackupCommand(err)
+	if err != nil && launcherFinalizes {
+		return fmt.Errorf("failed to probe the launcher: %w", err)
 	}
 
-	return ctrl.startBackup(backup, vmi, backupTracker)
+	return ctrl.startBackup(backup, vmi, backupTracker, launcherFinalizes)
 }
 
 func (ctrl *VMBackupController) checkPrerequisites(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, vmiExists bool, backupTracker *backupv1.VirtualMachineBackupTracker, sourceName string) (string, error) {
@@ -606,7 +664,7 @@ func (ctrl *VMBackupController) checkPrerequisites(backup *backupv1.VirtualMachi
 	return "", nil
 }
 
-func (ctrl *VMBackupController) reconcileActive(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, backupStatus *v1.VirtualMachineInstanceBackupStatus, backupDeleting bool) error {
+func (ctrl *VMBackupController) reconcileActive(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
 	recordStart(backup)
 
 	if !vmi.IsRunning() || vmi.DeletionTimestamp != nil {
@@ -619,10 +677,6 @@ func (ctrl *VMBackupController) reconcileActive(backup *backupv1.VirtualMachineB
 		}
 		ctrl.setFailed(backup, backupv1.ReasonSourceUnhealthy, fmt.Sprintf("VMI is not in a running state: %s", vmi.Status.Phase))
 		return nil
-	}
-
-	if backupDeleting {
-		return ctrl.abort(backup, vmi)
 	}
 
 	if isPullMode(backup) {
@@ -664,9 +718,6 @@ func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachi
 	if !done {
 		return fmt.Errorf("cleanup not complete for finished backup: %w", errCleanupPending)
 	}
-	if err := ctrl.finalizeBackup(backup, vmi); err != nil {
-		return err
-	}
 
 	ctrl.resolveCompletion(backup, backupStatus)
 
@@ -684,7 +735,7 @@ func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachi
 	return nil
 }
 
-func (ctrl *VMBackupController) startBackup(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, backupTracker *backupv1.VirtualMachineBackupTracker) error {
+func (ctrl *VMBackupController) startBackup(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, backupTracker *backupv1.VirtualMachineBackupTracker, launcherFinalizes bool) error {
 	if err := ctrl.addBackupFinalizer(backup); err != nil {
 		return err
 	}
@@ -739,21 +790,55 @@ func (ctrl *VMBackupController) startBackup(backup *backupv1.VirtualMachineBacku
 	}
 	log.Log.Object(backup).Infof("Started backup for VMI %s successfully", vmi.Name)
 
+	if !launcherFinalizes {
+		if err := ctrl.reportBackupOnVMI(vmi, backup); err != nil {
+			return err
+		}
+	}
+
 	setProgressing(backup)
 	return nil
 }
 
-func (ctrl *VMBackupController) abort(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) error {
-	backupOptions := &backupv1.BackupOptions{
-		BackupName:      backup.Name,
-		Cmd:             backupv1.Abort,
-		BackupStartTime: &backup.CreationTimestamp,
+func (ctrl *VMBackupController) reportBackupOnVMI(vmi *v1.VirtualMachineInstance, backup *backupv1.VirtualMachineBackup) error {
+	backupStatus := &v1.VirtualMachineInstanceBackupStatus{
+		BackupName:     backup.Name,
+		StartTimestamp: backup.CreationTimestamp.DeepCopy(),
 	}
-	if err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions); err != nil {
+	patchBytes, err := patch.New(
+		patch.WithTest("/status/changedBlockTracking/backupStatus", nil),
+		patch.WithAdd("/status/changedBlockTracking/backupStatus", backupStatus),
+	).GeneratePayload()
+	if err != nil {
+		return err
+	}
+
+	_, err = ctrl.client.VirtualMachineInstance(vmi.Namespace).Patch(context.Background(), vmi.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to report the backup on VMI %s/%s: %w", vmi.Namespace, vmi.Name, err)
+	}
+	return nil
+}
+
+func (ctrl *VMBackupController) abort(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) error {
+	if err := ctrl.sendBackupCommand(vmi, backupv1.Abort, backup.Name, &backup.CreationTimestamp); err != nil {
 		return err
 	}
 	ctrl.setAborting(backup)
 	return nil
+}
+
+func (ctrl *VMBackupController) sendBackupCommand(vmi *v1.VirtualMachineInstance, cmd backupv1.BackupCmd, backupName string, backupStartTime *metav1.Time) error {
+	backupOptions := &backupv1.BackupOptions{
+		BackupName:      backupName,
+		Cmd:             cmd,
+		BackupStartTime: backupStartTime,
+	}
+	return ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions)
+}
+
+func isUnknownBackupCommand(err error) bool {
+	return err != nil && strings.Contains(err.Error(), unknownBackupCommandMsg)
 }
 
 func generateFinalizerPatch(test, replace []string) ([]byte, error) {
@@ -1039,21 +1124,96 @@ func (ctrl *VMBackupController) cleanupVMIState(backup *backupv1.VirtualMachineB
 	return true, nil
 }
 
-func (ctrl *VMBackupController) finalizeBackup(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) error {
+func (ctrl *VMBackupController) finalize(vmi *v1.VirtualMachineInstance, backupName string, backupStartTime *metav1.Time) (supported bool, err error) {
 	if !vmi.IsRunning() {
+		return true, nil
+	}
+
+	err = ctrl.sendBackupCommand(vmi, backupv1.Finalize, backupName, backupStartTime)
+	if isUnknownBackupCommand(err) {
+		return false, nil
+	}
+	if err != nil {
+		return true, fmt.Errorf("failed to finalize backup %s: %w", backupName, err)
+	}
+	return true, nil
+}
+
+func (ctrl *VMBackupController) finalizeTerminalBackup(backup *backupv1.VirtualMachineBackup) error {
+	sourceName, err := BackupSourceVMName(ctrl.backupTrackerInformer.GetStore(), backup)
+	if err != nil || sourceName == "" {
+		return err
+	}
+	vmi, vmiExists, err := ctrl.getVMI(backup.Namespace, sourceName)
+	if err != nil || !vmiExists {
+		return err
+	}
+	backupStatus := getBackupStatus(vmi)
+	if !ownsBackupStatus(backupStatus, backup) {
 		return nil
 	}
 
-	backupOptions := &backupv1.BackupOptions{
-		BackupName:      backup.Name,
-		Cmd:             backupv1.Finalize,
-		BackupStartTime: &backup.CreationTimestamp,
+	supported, err := ctrl.finalize(vmi, backup.Name, &backup.CreationTimestamp)
+	if err != nil {
+		return err
 	}
-	err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions)
-	if err != nil && !strings.Contains(err.Error(), unknownBackupCommandMsg) {
-		return fmt.Errorf("failed to finalize backup: %w", err)
+	if !supported {
+		return ctrl.removeBackupStatus(vmi, backupStatus)
 	}
 	return nil
+}
+
+func (ctrl *VMBackupController) removeBackupStatus(vmi *v1.VirtualMachineInstance, backupStatus *v1.VirtualMachineInstanceBackupStatus) error {
+	patchBytes, err := patch.New(
+		patch.WithTest("/status/changedBlockTracking/backupStatus/backupName", backupStatus.BackupName),
+		patch.WithTest("/status/changedBlockTracking/backupStatus/startTimestamp", backupStatus.StartTimestamp),
+		patch.WithRemove("/status/changedBlockTracking/backupStatus"),
+	).GeneratePayload()
+	if err != nil {
+		return err
+	}
+
+	_, err = ctrl.client.VirtualMachineInstance(vmi.Namespace).Patch(context.Background(), vmi.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to remove the backup status from VMI %s/%s: %w", vmi.Namespace, vmi.Name, err)
+	}
+	return nil
+}
+
+type backupStatusOwner int
+
+const (
+	noBackupStatus backupStatusOwner = iota
+	ownBackupStatus
+	otherBackupStatus
+)
+
+func backupStatusOwnerOf(backupStatus *v1.VirtualMachineInstanceBackupStatus, backup *backupv1.VirtualMachineBackup) backupStatusOwner {
+	switch {
+	case backupStatus == nil:
+		return noBackupStatus
+	case ownsBackupStatus(backupStatus, backup):
+		return ownBackupStatus
+	default:
+		return otherBackupStatus
+	}
+}
+
+func ownsBackupStatus(backupStatus *v1.VirtualMachineInstanceBackupStatus, backup *backupv1.VirtualMachineBackup) bool {
+	if backupStatus == nil || backupStatus.BackupName != backup.Name {
+		return false
+	}
+	return backupStatus.StartTimestamp == nil || backupStatus.StartTimestamp.Equal(&backup.CreationTimestamp)
+}
+
+func (ctrl *VMBackupController) backupStatusOwnerActive(namespace string, backupStatus *v1.VirtualMachineInstanceBackupStatus) bool {
+	key := types.NamespacedName{Namespace: namespace, Name: backupStatus.BackupName}.String()
+	obj, exists, err := ctrl.backupInformer.GetStore().GetByKey(key)
+	if err != nil || !exists {
+		return false
+	}
+	owner := obj.(*backupv1.VirtualMachineBackup)
+	return ownsBackupStatus(backupStatus, owner) && !IsBackupTerminal(owner)
 }
 
 func backupConditions(backup *backupv1.VirtualMachineBackup) []metav1.Condition {
