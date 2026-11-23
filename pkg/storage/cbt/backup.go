@@ -618,16 +618,10 @@ func (ctrl *VMBackupController) reconcileActive(backup *backupv1.VirtualMachineB
 	}
 
 	if backupDeleting {
-		abortReason := backupv1.BackupAbortCancel
-		if shouldFinalizePullBackupOnDelete(backup) {
-			// Pull-mode deletion is the client completion signal. Finalize when
-			// DeletionTimestamp is before the TTL deadline; otherwise Cancel.
-			abortReason = backupv1.BackupAbortFinalize
-		}
-		if err := ctrl.handleAbort(backup, vmi, abortReason); err != nil {
+		if err := ctrl.handleAbort(backup, vmi); err != nil {
 			return err
 		}
-		ctrl.setAborting(backup, backupAborting, abortReason)
+		ctrl.setAborting(backup, backupAborting)
 	} else if isPullMode(backup) {
 		if err := ctrl.handlePullMode(backup, vmi); err != nil {
 			return err
@@ -665,11 +659,7 @@ func (ctrl *VMBackupController) reconcileCompleted(backup *backupv1.VirtualMachi
 
 	ctrl.resolveCompletion(backup, backupStatus)
 
-	if backupStatus.Failed {
-		// Active reconcile may have copied CheckpointName once volumes appeared;
-		// a failed/canceled backup must not retain it as a usable checkpoint.
-		backup.Status.CheckpointName = nil
-	} else if backupTracker != nil {
+	if backupTracker != nil && !backupStatus.Failed {
 		backup.Status.CheckpointName = backupStatus.CheckpointName
 	}
 	backup.Status.IncludedVolumes = toBackupVolumeInfo(backupStatus.Volumes)
@@ -745,12 +735,11 @@ func (ctrl *VMBackupController) startBackup(backup *backupv1.VirtualMachineBacku
 	return nil
 }
 
-func (ctrl *VMBackupController) handleAbort(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, abortReason backupv1.BackupAbortReason) error {
+func (ctrl *VMBackupController) handleAbort(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) error {
 	backupOptions := &backupv1.BackupOptions{
 		BackupName:      backup.Name,
 		Cmd:             backupv1.Abort,
 		BackupStartTime: &backup.CreationTimestamp,
-		AbortReason:     abortReason,
 	}
 
 	if err := ctrl.client.VirtualMachineInstance(vmi.Namespace).Backup(context.Background(), vmi.Name, backupOptions); err != nil {
@@ -1152,13 +1141,12 @@ func setProgressing(backup *backupv1.VirtualMachineBackup) {
 	})
 }
 
-func (ctrl *VMBackupController) setAborting(backup *backupv1.VirtualMachineBackup, message string, abortReason backupv1.BackupAbortReason) {
+func (ctrl *VMBackupController) setAborting(backup *backupv1.VirtualMachineBackup, message string) {
 	cond := meta.FindStatusCondition(backup.Status.Conditions, string(backupv1.ConditionProgressing))
 	if cond == nil || cond.Reason != backupv1.ReasonAborting {
-		eventSev := corev1.EventTypeWarning
-		if abortReason == backupv1.BackupAbortFinalize {
-			// Pull-mode finalize (delete after successful client pull) is expected.
-			eventSev = corev1.EventTypeNormal
+		eventSev := corev1.EventTypeNormal
+		if backup.IsPushMode() {
+			eventSev = corev1.EventTypeWarning
 		}
 		ctrl.recorder.Event(backup, eventSev, backupAbortingEvent, message)
 	}
