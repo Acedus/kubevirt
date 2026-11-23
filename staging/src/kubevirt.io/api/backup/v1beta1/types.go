@@ -203,7 +203,10 @@ type VirtualMachineBackupSpec struct {
 	Source corev1.TypedLocalObjectReference `json:"source"`
 	// +optional
 	// +kubebuilder:validation:Enum=Push;Pull
-	// Mode specifies the way the backup output will be recieved
+	// Mode specifies the way the backup output will be received.
+	// Deleting an in-progress backup aborts it. A Pull backup deleted before its
+	// TTL expires is marked Complete, unless a system-critical migration of its
+	// VM was requested before the deletion; any other aborted backup is marked Failed.
 	Mode *BackupMode `json:"mode,omitempty"`
 	// +optional
 	// PvcName required in push mode. Specifies the name of the PVC
@@ -220,10 +223,10 @@ type VirtualMachineBackupSpec struct {
 	// will be used to pull the backup from an associated endpoint
 	TokenSecretRef string `json:"tokenSecretRef,omitempty"`
 	// +optional
-	// TtlDuration limits the lifetime of a pull mode backup and its export
-	// If this field is set, after this duration has passed from counting from CreationTimestamp,
-	// the backup is eligible to be automatically considered as complete.
-	// If this field is omitted, a reasonable default is applied.
+	// TTLDuration limits the lifetime of a pull mode backup and its export,
+	// counting from CreationTimestamp. An in-progress backup that outlives it
+	// is aborted and marked Failed.
+	// When omitted, a reasonable default is applied.
 	// +optional
 	TTLDuration *metav1.Duration `json:"ttlDuration,omitempty"`
 }

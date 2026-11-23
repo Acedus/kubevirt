@@ -11233,7 +11233,11 @@ var CRDsValidation map[string]string = map[string]string{
           description: ForceFullBackup indicates that a full backup is desired
           type: boolean
         mode:
-          description: Mode specifies the way the backup output will be recieved
+          description: |-
+            Mode specifies the way the backup output will be received.
+            Deleting an in-progress backup aborts it. A Pull backup deleted before its
+            TTL expires is marked Complete, unless a system-critical migration of its
+            VM was requested before the deletion; any other aborted backup is marked Failed.
           enum:
           - Push
           - Pull
@@ -11292,10 +11296,10 @@ var CRDsValidation map[string]string = map[string]string{
           type: string
         ttlDuration:
           description: |-
-            TtlDuration limits the lifetime of a pull mode backup and its export
-            If this field is set, after this duration has passed from counting from CreationTimestamp,
-            the backup is eligible to be automatically considered as complete.
-            If this field is omitted, a reasonable default is applied.
+            TTLDuration limits the lifetime of a pull mode backup and its export,
+            counting from CreationTimestamp. An in-progress backup that outlives it
+            is aborted and marked Failed.
+            When omitted, a reasonable default is applied.
           type: string
       required:
       - source

@@ -17903,7 +17903,7 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupSpec(ref common.R
 					},
 					"mode": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Mode specifies the way the backup output will be recieved",
+							Description: "Mode specifies the way the backup output will be received. Deleting an in-progress backup aborts it. A Pull backup deleted before its TTL expires is marked Complete, unless a system-critical migration of its VM was requested before the deletion; any other aborted backup is marked Failed.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -17938,7 +17938,7 @@ func schema_kubevirtio_api_backup_v1alpha1_VirtualMachineBackupSpec(ref common.R
 					},
 					"ttlDuration": {
 						SchemaProps: spec.SchemaProps{
-							Description: "TtlDuration limits the lifetime of a pull mode backup and its export If this field is set, after this duration has passed from counting from CreationTimestamp, the backup is eligible to be automatically considered as complete. If this field is omitted, a reasonable default is applied.",
+							Description: "TTLDuration limits the lifetime of a pull mode backup and its export, counting from CreationTimestamp. An in-progress backup that outlives it is aborted and marked Failed. When omitted, a reasonable default is applied.",
 							Ref:         ref(metav1.Duration{}.OpenAPIModelName()),
 						},
 					},
@@ -18507,7 +18507,7 @@ func schema_kubevirtio_api_backup_v1beta1_VirtualMachineBackupSpec(ref common.Re
 					},
 					"mode": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Mode specifies the way the backup output will be recieved",
+							Description: "Mode specifies the way the backup output will be received. Deleting an in-progress backup aborts it. A Pull backup deleted before its TTL expires is marked Complete, unless a system-critical migration of its VM was requested before the deletion; any other aborted backup is marked Failed.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -18542,7 +18542,7 @@ func schema_kubevirtio_api_backup_v1beta1_VirtualMachineBackupSpec(ref common.Re
 					},
 					"ttlDuration": {
 						SchemaProps: spec.SchemaProps{
-							Description: "TtlDuration limits the lifetime of a pull mode backup and its export If this field is set, after this duration has passed from counting from CreationTimestamp, the backup is eligible to be automatically considered as complete. If this field is omitted, a reasonable default is applied.",
+							Description: "TTLDuration limits the lifetime of a pull mode backup and its export, counting from CreationTimestamp. An in-progress backup that outlives it is aborted and marked Failed. When omitted, a reasonable default is applied.",
 							Ref:         ref(metav1.Duration{}.OpenAPIModelName()),
 						},
 					},

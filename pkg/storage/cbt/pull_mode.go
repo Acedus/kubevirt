@@ -34,54 +34,108 @@ import (
 	v1 "kubevirt.io/api/core/v1"
 	exportv1 "kubevirt.io/api/export/v1"
 
+	"kubevirt.io/kubevirt/pkg/controller"
 	"kubevirt.io/kubevirt/pkg/pointer"
 )
 
 const (
-	failedExportCreate             = "failed to create backup export: %w"
-	exportExistsWithDifferentOwner = "VMExport %s already exists but is not owned by backup %s"
-	defaultPullModeDurationTTL     = 2 * time.Hour
-	backupTTLExpiredMsg            = "pull mode backup TTL has expired"
+	failedExportCreate               = "failed to create backup export: %w"
+	exportExistsWithDifferentOwner   = "VMExport %s already exists but is not owned by backup %s"
+	defaultPullModeDurationTTL       = 2 * time.Hour
+	backupTTLExpiredMsg              = "pull mode backup TTL has expired"
+	pullBackupAbortedMsg             = "pull mode backup was aborted before the client finished"
+	pullBackupAbortedForMigrationMsg = "a system-critical migration was requested before the pull mode backup was deleted"
 )
 
 func isPullMode(backup *backupv1.VirtualMachineBackup) bool {
 	return backup.Spec.Mode != nil && *backup.Spec.Mode == backupv1.PullMode
 }
 
-func getPullBackupTTL(backup *backupv1.VirtualMachineBackup) *metav1.Duration {
-	ttl := &metav1.Duration{Duration: defaultPullModeDurationTTL}
+func pullBackupTTL(backup *backupv1.VirtualMachineBackup) time.Duration {
 	if backup.Spec.TTLDuration != nil {
-		ttl = backup.Spec.TTLDuration
+		return backup.Spec.TTLDuration.Duration
 	}
-	return ttl
+	return defaultPullModeDurationTTL
 }
 
-func getPullBackupRemainingTTL(backup *backupv1.VirtualMachineBackup) *metav1.Duration {
-	totalTTL := getPullBackupTTL(backup)
-	creationTime := backup.CreationTimestamp.Time
-
-	if creationTime.IsZero() {
-		return totalTTL
-	}
-
-	elapsed := time.Since(creationTime)
-	remaining := totalTTL.Duration - elapsed
-
-	if remaining <= 0 {
-		return &metav1.Duration{Duration: 0}
-	}
-
-	return &metav1.Duration{Duration: remaining}
+func pullBackupTTLDeadline(backup *backupv1.VirtualMachineBackup) time.Time {
+	return backup.CreationTimestamp.Add(pullBackupTTL(backup))
 }
 
 func isPullBackupTTLExpired(backup *backupv1.VirtualMachineBackup) bool {
-	ttl := getPullBackupTTL(backup)
-	return time.Since(backup.CreationTimestamp.Time) >= ttl.Duration
+	return !time.Now().Before(pullBackupTTLDeadline(backup))
+}
+
+func getPullBackupRemainingTTL(backup *backupv1.VirtualMachineBackup) *metav1.Duration {
+	if backup.CreationTimestamp.IsZero() {
+		return &metav1.Duration{Duration: pullBackupTTL(backup)}
+	}
+	return &metav1.Duration{Duration: max(time.Until(pullBackupTTLDeadline(backup)), 0)}
+}
+
+func isDeletedBeforeTTLDeadline(backup *backupv1.VirtualMachineBackup) bool {
+	return backup.DeletionTimestamp != nil && backup.DeletionTimestamp.Time.Before(pullBackupTTLDeadline(backup))
+}
+
+func (ctrl *VMBackupController) setPullCompletionStatus(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance, status *v1.VirtualMachineInstanceBackupStatus) error {
+	if status.Failed {
+		return nil
+	}
+	if !isDeletedBeforeTTLDeadline(backup) {
+		status.Failed = true
+		status.BackupMsg = new(backupTTLExpiredMsg)
+		if status.EndTimestamp != nil && status.EndTimestamp.Time.Before(pullBackupTTLDeadline(backup)) {
+			status.BackupMsg = new(pullBackupAbortedMsg)
+		}
+		return nil
+	}
+	aborted, err := ctrl.criticalMigrationRequestedBeforeDeletion(backup, vmi)
+	if err != nil {
+		return err
+	}
+	if aborted {
+		status.Failed = true
+		status.BackupMsg = new(pullBackupAbortedForMigrationMsg)
+	}
+	return nil
+}
+
+func (ctrl *VMBackupController) criticalMigrationRequestedBeforeDeletion(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) (bool, error) {
+	objs, err := ctrl.migrationIndexer.ByIndex(controller.ByVMINameIndex, types.NamespacedName{Namespace: vmi.Namespace, Name: vmi.Name}.String())
+	if err != nil {
+		return false, err
+	}
+	started := backup.CreationTimestamp
+	if backup.Status != nil && backup.Status.StartTimestamp != nil {
+		started = *backup.Status.StartTimestamp
+	}
+	for _, obj := range objs {
+		migration := obj.(*v1.VirtualMachineInstanceMigration)
+		if migration.Spec.Priority == nil || *migration.Spec.Priority != v1.PrioritySystemCritical {
+			continue
+		}
+		if !backup.DeletionTimestamp.Before(&migration.CreationTimestamp) && !migrationFinishedBefore(migration, started) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func migrationFinishedBefore(migration *v1.VirtualMachineInstanceMigration, t metav1.Time) bool {
+	if !migration.IsFinal() {
+		return false
+	}
+	for _, transition := range migration.Status.PhaseTransitionTimestamps {
+		if transition.Phase == migration.Status.Phase {
+			return transition.PhaseTransitionTimestamp.Before(&t)
+		}
+	}
+	return false
 }
 
 func (ctrl *VMBackupController) handlePullMode(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) error {
 	if isPullBackupTTLExpired(backup) {
-		return ctrl.handlePullModeTTLExpiry(backup, vmi)
+		return ctrl.abort(backup, vmi)
 	}
 
 	vmExport, err := ctrl.getOrCreateBackupExport(backup)
@@ -201,16 +255,6 @@ func toBackupLink(link *exportv1.VirtualMachineExportLink) *backupv1.BackupLink 
 		bl.Volumes = append(bl.Volumes, vl)
 	}
 	return bl
-}
-
-func (ctrl *VMBackupController) handlePullModeTTLExpiry(backup *backupv1.VirtualMachineBackup, vmi *v1.VirtualMachineInstance) error {
-	if hasVMIBackupStatus(vmi) && !vmi.Status.ChangedBlockTracking.BackupStatus.Completed {
-		if err := ctrl.handleAbort(backup, vmi); err != nil {
-			return err
-		}
-		ctrl.setAborting(backup, fmt.Sprintf("%s: %s", backupTTLExpiredMsg, backupAborting))
-	}
-	return nil
 }
 
 func (ctrl *VMBackupController) cleanupBackupExport(backup *backupv1.VirtualMachineBackup) error {
