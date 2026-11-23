@@ -3472,6 +3472,8 @@ func (l *LibvirtDomainManager) BackupVirtualMachine(vmi *v1.VirtualMachineInstan
 		return l.storageManager.AbortVirtualMachineBackup(vmi, backupOptions)
 	case backupv1.Finalize:
 		return l.storageManager.FinalizeVirtualMachineBackup(backupOptions)
+	case backupv1.Probe:
+		return nil
 	default:
 		return fmt.Errorf("recieved unknown backup command")
 	}

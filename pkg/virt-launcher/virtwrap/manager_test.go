@@ -45,6 +45,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	backupv1 "kubevirt.io/api/backup/v1beta1"
 	v1 "kubevirt.io/api/core/v1"
 	api2 "kubevirt.io/client-go/api"
 	"kubevirt.io/client-go/log"
@@ -3042,6 +3043,25 @@ var _ = Describe("Manager", func() {
 				Expect(c.GPUHostDevices[0].Alias).ToNot(BeNil())
 				Expect(c.GPUHostDevices[0].Alias.GetName()).To(ContainSubstring(vGPUName))
 			})
+		})
+
+		It("should accept a backup Probe without touching the backup record", func() {
+			vmi := newVMI(testNamespace, testVmName)
+			record := api.BackupMetadata{Name: "running-backup"}
+			metadataCache.Backup.Store(record)
+			manager, _ := newLibvirtDomainManagerDefault()
+
+			Expect(manager.BackupVirtualMachine(vmi, &backupv1.BackupOptions{Cmd: backupv1.Probe, BackupName: "running-backup"})).To(Succeed())
+
+			recorded, _ := metadataCache.Backup.Load()
+			Expect(recorded).To(Equal(record))
+		})
+
+		It("should reject a backup command it does not know", func() {
+			vmi := newVMI(testNamespace, testVmName)
+			manager, _ := newLibvirtDomainManagerDefault()
+
+			Expect(manager.BackupVirtualMachine(vmi, &backupv1.BackupOptions{Cmd: "Unknown"})).To(MatchError(ContainSubstring("unknown backup command")))
 		})
 
 		It("should refuse to migrate while the launcher has a backup that has not ended", func() {

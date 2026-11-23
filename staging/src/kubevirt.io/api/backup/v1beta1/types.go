@@ -108,6 +108,7 @@ const (
 	Start    BackupCmd = "Start"
 	Abort    BackupCmd = "Abort"
 	Finalize BackupCmd = "Finalize"
+	Probe    BackupCmd = "Probe"
 )
 
 // BackupOptions are options used to configure virtual machine backup job
